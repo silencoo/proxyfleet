@@ -1,64 +1,98 @@
-# Easy Proxies
+# Easy Proxies — 增强 Fork
 
 [English](README.md) | 简体中文
 
-Easy Proxies 是一个基于 sing-box 的代理池管理工具。
+> 面向爬虫与自动化任务的生产级 sing-box 代理池：既能提供统一轮换
+> 入口，也能为每个节点保留稳定的独立端口。
 
-目标是把大量上游节点统一成稳定的本地 HTTP/SOCKS5 代理入口，同时支持按节点独立端口访问。
+本仓库基于
+[jasonwong1991/easy_proxies](https://github.com/jasonwong1991/easy_proxies)
+持续开发。它保留了上游的协议基础，但运行时生命周期、状态持久化、
+WebUI 和首次启动体验已经明显分化。上游更新会经过评估后选择性移植，
+不会直接覆盖本 fork 的实现。
 
-## 当前能力
+## 为什么选择这个 Fork
 
-- 运行模式：`pool`、`multi-port`、`hybrid`。
-- 实际构建的上游协议：`vmess`、`vless`、`trojan`、`ss/shadowsocks`、`ssr/shadowsocksr`、`hysteria`、`hysteria2/hy2`、`socks5/socks5h/socks`、`http/https`、`anytls`、`tuic`。
-- 节点来源：
-  - `config.yaml` 的 `nodes`
-  - `nodes_file`（每行一个 URI）
-  - `subscriptions`（支持 Base64/纯文本/Clash YAML 解析）
-- 有界并发且串行化批次的健康检查、探测超时、失败熔断、黑名单恢复与健康状态持久化。
-- Web 管理面板 + API：
-  - 节点状态/探测/导出
-  - **手动拉黑/解封节点**
-  - 动态设置（`external_ip`、`probe_target`、`probe_concurrency`、`skip_cert_verify`、`geoip`）
-  - 节点配置增删改查 + 重载
-  - 订阅状态查询 + 手动刷新 + 带回滚保护的事务化即时生效
-  - **实时日志控制台**（最近 1000 行，WebSocket 流式传输）
-- 节点级差异重载：未变化的监听器和现有连接保持运行，移除节点按超时排空。
-- 中英文黑白主题 WebUI：正式图标、表格排序、搜索、地域筛选、分页、彩色日志和敏感字段遮罩。
-- 新增可配置 DNS 解析器（对 VMess 域名节点非常关键）。
-- 可选 GeoIP 标记（支持 JP/KR/US/HK/TW/SG 地域分区，可在 WebUI 中开关，支持自动更新和热重载）。
-- **可配置日志轮转**，支持大小限制、备份数量和压缩。
+| 方向 | 本 Fork 的增强 |
+|------|----------------|
+| 首次启动 | 原生二进制无需提前准备 `config.yaml`；自动生成仅监听本机的安全默认配置，在终端显示绝对路径，并以零节点 WebUI 启动 |
+| 代理入口 | `pool`、`multi-port`、`hybrid` 三种模式，可同时满足自动轮换和指定节点出口 |
+| 在线更新 | 节点级 diff 保持未变化监听器和现有连接，删除的出站会先排空，不会在每次订阅刷新时整体中断 |
+| 稳定身份 | 订阅改名、重排和重启不会改变节点独立端口；端口、节点认证、健康状态和黑名单均可持久化 |
+| 订阅安全 | 有界并发、私网目标保护、按来源缓存回退、稳定身份去重、候选测活、原子持久化和失败回滚 |
+| WebUI | 内置中英文黑白界面、正式 SVG 图标、排序、搜索、地域筛选、分页、诊断、分色日志和敏感字段遮罩 |
+| 运行保障 | 健康检查批次串行化、严格探测超时、瞬时故障冷却、代理重试/会话保持、日志轮转和事务化配置写入 |
+| 地域观察 | 按真实出口 IP 进行 GeoIP 路由，并通过节点名补充 JP/KR/US/HK/TW/SG/住宅节点分组展示 |
+
+## 三种使用方式
+
+| 模式 | 适用场景 | 对外入口 |
+|------|----------|----------|
+| `pool` | 爬虫希望自动轮换健康节点 | 一个 HTTP/SOCKS5 混合端口 |
+| `multi-port` | 外部任务需要固定使用某个节点 | 每个节点一个稳定的混合端口 |
+| `hybrid` | 同时需要轮换池和指定节点 | 统一池端口 + 全部节点独立端口 |
 
 ## 快速开始
 
-### 1）准备配置
+### 原生零配置启动（推荐）
 
-```bash
-cp config.example.yaml config.yaml
-cp nodes.example nodes.txt
-```
-
-编辑 `config.yaml`，并配置节点来源（`nodes.txt` / `subscriptions` / `nodes`）。
-
-### 2）启动
-
-Docker：
-
-```bash
-./start.sh
-# 或
-docker compose up -d
-```
-
-本地完整协议构建（与 Docker 镜像使用相同的可选标签）：
+构建完整协议版本：
 
 ```bash
 go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
-./easy_proxies -config config.yaml
+./easy_proxies
 ```
 
-Windows 请将输出改为 `easy_proxies.exe`，然后执行 `.\easy_proxies.exe -config config.yaml`。
+Windows：
 
-上面的标签会启用真实 Clash 订阅常见的可选协议实现。其中 Hysteria、Hysteria2 和 TUIC 必须使用 `with_quic`；无标签的普通 `go build` 虽然可以解析这些节点，但启动时会拒绝加载。仅使用非可选协议时，仍可执行精简构建：`go run ./cmd/easy_proxies -config config.yaml`。
+```powershell
+go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies.exe ./cmd/easy_proxies
+.\easy_proxies.exe
+```
+
+首次启动时程序会：
+
+1. 当前工作目录缺少 `config.yaml` 时自动创建默认配置。
+2. 在终端明确显示实际使用的配置文件绝对路径。
+3. 以仅管理模式启动内置 WebUI：`http://127.0.0.1:9091`。
+4. 在订阅刷新或节点编辑产生可用节点后，自动启动代理运行时，无需重启进程。
+
+进入 WebUI 的**系统设置**，填写订阅地址并保存、刷新。节点通过校验后，
+默认统一入口为 `127.0.0.1:2323`：
+
+```bash
+curl -x http://127.0.0.1:2323 https://api.ipify.org
+```
+
+完整标签用于启用真实 Clash 订阅常见的可选协议实现。其中 Hysteria、
+Hysteria2 和 TUIC 必须使用 `with_quic`；无标签构建虽然能解析这些节点，
+但无法启动对应出站。
+
+### 使用已有配置
+
+```bash
+./easy_proxies -config /path/to/config.yaml
+```
+
+`-config` 可以省略；省略时使用当前工作目录的 `config.yaml`。
+
+### 使用当前 Fork 的 Docker 版本
+
+默认 Compose 会从当前检出的源码构建镜像，避免误拉取原版镜像：
+
+```bash
+./start.sh
+```
+
+也可以手动准备 bind mount 文件后构建：
+
+```bash
+cp config.example.yaml config.yaml
+touch nodes.txt
+docker compose up -d --build
+```
+
+启动后访问 `http://127.0.0.1:9091`。
 
 ## 最小配置示例（Pool）
 
@@ -66,7 +100,7 @@ Windows 请将输出改为 `easy_proxies.exe`，然后执行 `.\easy_proxies.exe
 mode: pool
 
 listener:
-  address: 0.0.0.0
+  address: 127.0.0.1
   port: 2323
   username: user
   password: pass

@@ -1,59 +1,101 @@
-# Easy Proxies
+# Easy Proxies — Enhanced Fork
 
-[简体中文](README_ZH.md)
+[简体中文](README_ZH.md) | English
 
-> A sing-box based proxy pool manager -- aggregate many upstream proxy nodes into one stable, health-checked, load-balanced local proxy endpoint.
+> A production-oriented sing-box proxy pool for crawlers and automation: one
+> rotating endpoint, one stable port per node, or both at the same time.
 
-## Features
+This repository is an actively developed fork of
+[jasonwong1991/easy_proxies](https://github.com/jasonwong1991/easy_proxies).
+It keeps the upstream protocol foundation, but its runtime lifecycle, state
+persistence, WebUI, and first-run experience have diverged substantially.
+Upstream changes are reviewed and selectively ported instead of blindly merged.
 
-- **Three runtime modes**: `pool` (single-port load balancing), `multi-port` (one port per node), and `hybrid` (both simultaneously)
-- **Wide protocol support**: VLESS, VMess, Trojan, Shadowsocks, ShadowsocksR, Hysteria v1/v2, TUIC, AnyTLS, SOCKS5/SOCKS5H, HTTP/HTTPS
-- **Bounded health checking** with serialized sweeps, probe deadlines, persistent health state, configurable failure thresholds, and manual blacklist/release
-- **GeoIP region routing**: classify nodes by country and route traffic through a specific region via a dedicated HTTP proxy endpoint
-- **Multiple node sources**: inline config, `nodes.txt` file, or subscription URLs (Base64, plain text, Clash YAML)
-- **Transactional subscription refresh**: per-source fallback, stable-identity deduplication, candidate health checks, atomic persistence, and automatic rollback
-- **Drain-safe node-level reloads**: unchanged listeners and connections stay alive while added/removed nodes are diffed and replaced
-- **Bilingual WebUI dashboard**: Chinese/English, monochrome theme, sortable/searchable/paginated node tables, traffic charts, diagnostics, colored logs, and masked secrets
-- **Management API**: RESTful endpoints for node CRUD, probing, blacklisting, subscription management, and config reload
-- **Configurable DNS resolver** with fallback servers and IPv4/IPv6 strategy control
-- **Log rotation**: size-based rotation with configurable backup count, age, and compression
-- **Multi-platform Docker**: supports amd64 and arm64 with host networking
+## Why This Fork
+
+| Area | Enhancement in this fork |
+|------|--------------------------|
+| First run | A native binary can start without `config.yaml`; it creates a safe loopback-only default, prints the absolute config path, and opens a zero-node WebUI |
+| Proxy access | `pool`, `multi-port`, and `hybrid` modes support rotating traffic and deterministic direct access to individual nodes |
+| Live updates | Node-level diffs keep unchanged listeners and connections alive; removed outbounds drain instead of being cut off immediately |
+| Stable identity | Subscription reorder/rename does not change dedicated ports; port mappings, per-node credentials, and health/blacklist state survive restarts |
+| Subscription safety | Bounded concurrent fetching, private-network protection, per-source fallback, deduplication, candidate health checks, atomic persistence, and rollback |
+| WebUI | Embedded bilingual Chinese/English UI with a monochrome theme, formal SVG icons, sorting, search, region filters, pagination, diagnostics, colored logs, and masked secrets |
+| Operations | Serialized health sweeps, probe deadlines, transient cooldown, retry/session-affinity controls, log rotation, and transactional config writes |
+| Region insight | Exit-IP GeoIP routing plus name-based JP/KR/US/HK/TW/SG/residential fallback grouping for dashboard visibility |
+
+## Runtime Modes
+
+| Mode | Best for | Entry points |
+|------|----------|--------------|
+| `pool` | Crawlers that want automatic node rotation | One mixed HTTP/SOCKS5 port |
+| `multi-port` | Jobs that must pin traffic to a specific node | One stable mixed port per node |
+| `hybrid` | Using rotation and node pinning together | Pool port plus all dedicated node ports |
 
 ## Quick Start
 
-### 1. Prepare Configuration
+### Native Zero-Config Start (Recommended)
+
+Build the full-protocol binary:
+
+```bash
+go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
+./easy_proxies
+```
+
+Windows:
+
+```powershell
+go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies.exe ./cmd/easy_proxies
+.\easy_proxies.exe
+```
+
+On the first launch, Easy Proxies:
+
+1. Creates `config.yaml` in the current working directory if it is missing.
+2. Prints the absolute path of the config it is using.
+3. Starts the embedded WebUI at `http://127.0.0.1:9091` in management-only mode.
+4. Starts the proxy runtime automatically after a subscription refresh or node edit produces usable nodes.
+
+In the WebUI, open **System Settings**, add a subscription, save and refresh it.
+The generated pool listener is available at `127.0.0.1:2323` after nodes pass
+validation:
+
+```bash
+curl -x http://127.0.0.1:2323 https://api.ipify.org
+```
+
+The full tag set is important for real-world Clash subscriptions. Hysteria,
+Hysteria2, and TUIC require `with_quic`; a plain untagged build can parse those
+nodes but cannot start them.
+
+### Start with an Existing Config
+
+```bash
+./easy_proxies -config /path/to/config.yaml
+```
+
+The `-config` flag is optional. When omitted, the program uses
+`config.yaml` in the current working directory.
+
+### Docker from This Fork
+
+The Compose setup builds the image from the current checkout so it cannot
+silently run the original upstream image:
+
+```bash
+./start.sh
+```
+
+Or prepare the bind-mounted files and build manually:
 
 ```bash
 cp config.example.yaml config.yaml
 touch nodes.txt
+docker compose up -d --build
 ```
 
-Edit `config.yaml` and add your proxy nodes (inline nodes, `nodes.txt` file, or subscription URLs).
-
-> **Important**: `config.yaml` and `nodes.txt` MUST exist as files before starting the Docker container. If they don't exist, Docker will create them as directories, causing startup failure. Use `start.sh` to avoid this issue.
-
-### 2. Run with Docker (Recommended)
-
-```bash
-./start.sh
-# or manually:
-docker compose up -d
-```
-
-### 3. Run Natively from Source
-
-```bash
-go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
-./easy_proxies -config config.yaml
-```
-
-On Windows, use `-o easy_proxies.exe` and start it with `.\easy_proxies.exe -config config.yaml`.
-
-The tag set above matches the Docker build and enables the optional protocol implementations used by real-world Clash subscriptions. In particular, Hysteria, Hysteria2, and TUIC require `with_quic`; a plain untagged `go build` can parse those nodes but cannot start them. If you only need the non-optional protocols, the reduced build remains available with `go run ./cmd/easy_proxies -config config.yaml`.
-
-### 4. Access WebUI
-
-Open `http://localhost:9091` in your browser.
+Open `http://127.0.0.1:9091` after startup.
 
 ## Configuration
 
@@ -86,7 +128,7 @@ Transient network failures use a short cooldown instead of immediately increasin
 mode: pool
 
 listener:
-  address: 0.0.0.0
+  address: 127.0.0.1
   port: 2323
   username: user
   password: pass
@@ -344,7 +386,9 @@ The default setup uses host networking (recommended for automatic port managemen
 ```yaml
 services:
   easy_proxies:
-    image: ghcr.io/jasonwong1991/easy_proxies:latest
+    build:
+      context: .
+    image: easy_proxies:fork
     container_name: easy_proxies
     restart: unless-stopped
     network_mode: host
@@ -356,6 +400,7 @@ services:
 
 ### Important Notes
 
+- **Builds this fork**: the default Compose file builds the current checkout instead of pulling the original upstream image.
 - **Create config files first**: `config.yaml` and `nodes.txt` must exist as files before running `docker compose up`. Use `./start.sh` which handles this automatically.
 - **Permissions**: Files must be writable by the container user for WebUI settings to persist. Prefer correct ownership with `0600`/`0640` permissions; avoid world-writable configuration files.
 - **Multi-platform**: Supports amd64 and arm64 architectures.

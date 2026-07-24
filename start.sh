@@ -35,4 +35,6 @@ fi
 # Ensure config files are writable for WebUI settings
 chmod 666 config.yaml nodes.txt 2>/dev/null || true
 
-docker compose pull && docker compose down && docker compose up -d
+# Build the current checkout so this fork never silently starts the upstream
+# prebuilt image referenced by older versions of docker-compose.yml.
+docker compose down && docker compose up -d --build
