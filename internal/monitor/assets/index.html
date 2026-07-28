@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Easy Proxies - 监控中心</title>
+  <title>ProxyFleet - 监控中心</title>
+  <link rel="icon" type="image/png" href="/assets/proxyfleet-logo.png" />
   <style>
     :root {
       /* Monochrome dark theme */
@@ -111,13 +112,15 @@
       font-weight: 700;
       gap: 10px;
     }
-    .brand-icon {
-      width: 28px; height: 28px;
-      background: var(--text-main);
-      color: var(--primary-contrast);
-      border: 1px solid var(--text-main);
-      border-radius: 6px;
-      display: flex; align-items: center; justify-content: center;
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      flex: 0 0 36px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #ffffff;
+      object-fit: cover;
+      object-position: center;
     }
     .nav { padding: 16px 0; flex: 1; }
     .nav-item {
@@ -550,10 +553,8 @@
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-icon">
-        <svg class="icon"><use href="#i-network"></use></svg>
-      </div>
-      Easy Proxies
+      <img class="brand-logo" src="/assets/proxyfleet-logo.png" alt="" width="36" height="36" />
+      ProxyFleet
     </div>
     <div class="nav">
       <button type="button" class="nav-item active" data-tab="dashboard" aria-current="page" onclick="switchTab('dashboard')"><svg class="icon"><use href="#i-dashboard"></use></svg><span>监控看板</span></button>
@@ -1665,7 +1666,7 @@
       currentLanguage = language === 'en' ? 'en' : 'zh-CN';
       localStorage.setItem('uiLanguage', currentLanguage);
       document.documentElement.lang = currentLanguage;
-      document.title = currentLanguage === 'en' ? 'Easy Proxies - Control Center' : 'Easy Proxies - 监控中心';
+      document.title = currentLanguage === 'en' ? 'ProxyFleet - Control Center' : 'ProxyFleet - 监控中心';
       translateTree(document.body);
       const selector = document.getElementById('settingLanguage');
       if (selector) selector.value = currentLanguage;

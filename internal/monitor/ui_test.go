@@ -50,6 +50,44 @@ func TestEmbeddedWebUIUsesBundledECharts(t *testing.T) {
 	}
 }
 
+func TestEmbeddedWebUIUsesProxyFleetLogo(t *testing.T) {
+	data, err := embeddedFS.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatalf("read embedded WebUI: %v", err)
+	}
+	html := string(data)
+	for _, value := range []string{
+		`<link rel="icon" type="image/png" href="/assets/proxyfleet-logo.png" />`,
+		`<img class="brand-logo" src="/assets/proxyfleet-logo.png" alt="" width="36" height="36" />`,
+		`ProxyFleet - 监控中心`,
+	} {
+		if !strings.Contains(html, value) {
+			t.Errorf("embedded WebUI missing ProxyFleet branding %q", value)
+		}
+	}
+
+	logo, err := embeddedFS.ReadFile("assets/proxyfleet-logo.png")
+	if err != nil {
+		t.Fatalf("read embedded ProxyFleet logo: %v", err)
+	}
+	if len(logo) < 8 || string(logo[:8]) != "\x89PNG\r\n\x1a\n" {
+		t.Fatal("embedded ProxyFleet logo is not a PNG")
+	}
+
+	server := &Server{}
+	recorder := httptest.NewRecorder()
+	server.handleLogoAsset(recorder, httptest.NewRequest(http.MethodGet, "/assets/proxyfleet-logo.png", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("logo status = %d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("logo Content-Type = %q", got)
+	}
+	if recorder.Body.Len() != len(logo) {
+		t.Fatalf("logo response length = %d, want %d", recorder.Body.Len(), len(logo))
+	}
+}
+
 func TestEmbeddedWebUIUsesReadableLocalFontStack(t *testing.T) {
 	data, err := embeddedFS.ReadFile("assets/index.html")
 	if err != nil {

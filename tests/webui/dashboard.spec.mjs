@@ -88,6 +88,10 @@ test('keeps all three dashboard charts visible with an empty pool and no traffic
   });
   await page.goto('/assets/index.html');
 
+  const brandLogo = page.locator('.brand-logo');
+  await expect(brandLogo).toBeVisible();
+  await expect(page.locator('.brand')).toContainText('ProxyFleet');
+  await expect.poll(() => brandLogo.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
   await expect(page.locator('#dashboardTab')).toHaveClass(/active/);
   await expect.poll(() => page.evaluate(() => typeof window.echarts)).toBe('object');
   expect(consoleErrors).toEqual([]);

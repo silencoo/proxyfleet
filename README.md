@@ -1,4 +1,8 @@
-# Easy Proxies — Enhanced Fork
+<p align="center">
+  <img src="internal/monitor/assets/proxyfleet-logo.png" alt="ProxyFleet dithering snowman logo" width="180" />
+</p>
+
+<h1 align="center">ProxyFleet</h1>
 
 [简体中文](README_ZH.md) | English
 
@@ -50,7 +54,7 @@ go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvis
 .\easy_proxies.exe
 ```
 
-On the first launch, Easy Proxies:
+On the first launch, ProxyFleet:
 
 1. Creates `config.yaml` in the current working directory if it is missing.
 2. Prints the absolute path of the config it is using.
@@ -164,7 +168,7 @@ See [config.example.yaml](config.example.yaml) for the full documented configura
 
 ### Overview
 
-When GeoIP is enabled, Easy Proxies automatically classifies your proxy nodes by geographic region and provides a separate HTTP proxy endpoint that lets you route traffic through nodes in a specific country/region.
+When GeoIP is enabled, ProxyFleet automatically classifies your proxy nodes by geographic region and provides a separate HTTP proxy endpoint that lets you route traffic through nodes in a specific country/region.
 
 ### Supported Regions
 

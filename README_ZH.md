@@ -1,4 +1,8 @@
-# Easy Proxies — 增强 Fork
+<p align="center">
+  <img src="internal/monitor/assets/proxyfleet-logo.png" alt="ProxyFleet 黑白抖动雪人 Logo" width="180" />
+</p>
+
+<h1 align="center">ProxyFleet</h1>
 
 [English](README.md) | 简体中文
 

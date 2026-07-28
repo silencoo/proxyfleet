@@ -396,6 +396,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/assets/echarts.min.js", s.handleEChartsAsset)
+	mux.HandleFunc("/assets/proxyfleet-logo.png", s.handleLogoAsset)
 	mux.HandleFunc("/api/auth", s.handleAuth)
 	mux.HandleFunc("/api/session", s.withRole(RoleViewer, s.handleSession))
 	mux.HandleFunc("/api/build-info", s.withRole(RoleViewer, s.handleBuildInfo))
@@ -734,6 +735,30 @@ func (s *Server) handleEChartsAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	setManagementSecurityHeaders(w)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleLogoAsset(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/assets/proxyfleet-logo.png" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	data, err := embeddedFS.ReadFile("assets/proxyfleet-logo.png")
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
 	setManagementSecurityHeaders(w)
 	if r.Method == http.MethodHead {
 		return
