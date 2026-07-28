@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"easy_proxies/internal/app"
@@ -49,7 +50,8 @@ func main() {
 	}
 
 	// Setup logging based on config
-	setupLogging(cfg)
+	stopLogging := setupLogging(cfg)
+	defer stopLogging()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -72,30 +74,64 @@ func prepareConfigFile(path string) (string, bool, error) {
 	return resolvedPath, created, nil
 }
 
-func setupLogging(cfg *config.Config) {
+func setupLogging(cfg *config.Config) func() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
-	// Always include the in-memory ring buffer for dashboard console
+	// Always include the in-memory ring buffer for dashboard console.
 	writers := []io.Writer{os.Stdout, monitor.LogWriter()}
-
+	var rotatingFile *lumberjack.Logger
 	if cfg.Log.Output == "file" {
-		// Ensure log directory exists
 		logDir := filepath.Dir(cfg.Log.File)
 		if err := os.MkdirAll(logDir, 0o755); err != nil {
-			log.Printf("\u26a0\ufe0f Failed to create log dir %s: %v, falling back to stdout", logDir, err)
+			log.Printf("⚠️ Failed to create log dir %s: %v, falling back to stdout", logDir, err)
 		} else {
-			lj := &lumberjack.Logger{
+			rotatingFile = &lumberjack.Logger{
 				Filename:   cfg.Log.File,
-				MaxSize:    cfg.Log.MaxSize, // MB
+				MaxSize:    cfg.Log.MaxSize,
 				MaxBackups: cfg.Log.MaxBackups,
-				MaxAge:     cfg.Log.MaxAge, // days
+				MaxAge:     cfg.Log.MaxAge,
 				Compress:   cfg.Log.Compress,
 			}
-			writers = append(writers, lj)
-			log.Printf("\u2705 Log rotation enabled: file=%s, maxSize=%dMB, maxBackups=%d, maxAge=%dd",
-				cfg.Log.File, cfg.Log.MaxSize, cfg.Log.MaxBackups, cfg.Log.MaxAge)
+			writers = append(writers, rotatingFile)
 		}
 	}
-
 	log.SetOutput(io.MultiWriter(writers...))
+	if rotatingFile == nil {
+		return func() {}
+	}
+
+	log.Printf("✅ Log rotation enabled: file=%s, maxSize=%dMB, maxBackups=%d, maxAge=%dd, interval=%s",
+		cfg.Log.File, cfg.Log.MaxSize, cfg.Log.MaxBackups, cfg.Log.MaxAge, cfg.Log.RotateInterval)
+	if cfg.Log.RotateInterval <= 0 {
+		return func() { _ = rotatingFile.Close() }
+	}
+
+	stop := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		ticker := time.NewTicker(cfg.Log.RotateInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := rotatingFile.Rotate(); err != nil {
+					log.Printf("⚠️ Timed log rotation failed: %v", err)
+				} else {
+					log.Printf("✅ Timed log archive created")
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			close(stop)
+			wait.Wait()
+			_ = rotatingFile.Close()
+		})
+	}
 }

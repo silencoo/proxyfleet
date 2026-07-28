@@ -46,12 +46,13 @@ type Config struct {
 
 // LogConfig controls log output and rotation.
 type LogConfig struct {
-	Output     string `yaml:"output"`      // 日志输出: "stdout", "file", 默认 "stdout"
-	File       string `yaml:"file"`        // 日志文件路径，默认 "logs/easy_proxies.log"
-	MaxSize    int    `yaml:"max_size"`    // 单个日志文件最大 MB，默认 50
-	MaxBackups int    `yaml:"max_backups"` // 保留旧日志文件个数，默认 3
-	MaxAge     int    `yaml:"max_age"`     // 保留旧日志文件天数，默认 7
-	Compress   bool   `yaml:"compress"`    // 是否压缩旧日志，默认 false
+	Output         string        `yaml:"output"`          // 日志输出: "stdout", "file", 默认 "stdout"
+	File           string        `yaml:"file"`            // 日志文件路径，默认 "logs/easy_proxies.log"
+	MaxSize        int           `yaml:"max_size"`        // 单个日志文件最大 MB，默认 50
+	MaxBackups     int           `yaml:"max_backups"`     // 保留旧日志文件个数，默认 3
+	MaxAge         int           `yaml:"max_age"`         // 保留旧日志文件天数，默认 7
+	Compress       bool          `yaml:"compress"`        // 是否压缩旧日志，默认 false
+	RotateInterval time.Duration `yaml:"rotate_interval"` // 定时轮转间隔；0 表示仅按大小轮转
 }
 
 // GeoIPConfig controls GeoIP-based region routing.
@@ -117,13 +118,17 @@ type MultiPortConfig struct {
 
 // ManagementConfig controls the monitoring HTTP endpoint.
 type ManagementConfig struct {
-	Enabled          *bool  `yaml:"enabled"`
-	Listen           string `yaml:"listen"`
-	ProbeTarget      string `yaml:"probe_target"`
-	ProbeConcurrency int    `yaml:"probe_concurrency"` // 全局批量探测并发数（1-1024，默认 32）
-	Password         string `yaml:"password"`          // WebUI 访问密码，为空则不需要密码
-	TLSCertFile      string `yaml:"tls_cert_file,omitempty"`
-	TLSKeyFile       string `yaml:"tls_key_file,omitempty"`
+	Enabled          *bool         `yaml:"enabled"`
+	Listen           string        `yaml:"listen"`
+	ProbeTarget      string        `yaml:"probe_target"`
+	ProbeConcurrency int           `yaml:"probe_concurrency"` // 全局批量探测并发数（1-1024，默认 32）
+	ProbeMode        string        `yaml:"probe_mode"`        // all、sample 或 manual
+	ProbeInterval    time.Duration `yaml:"probe_interval"`    // 自动探测间隔，默认 5m
+	ProbeTimeout     time.Duration `yaml:"probe_timeout"`     // 单节点探测超时，默认 10s
+	ProbeBatchSize   int           `yaml:"probe_batch_size"`  // sample 模式每轮节点数，默认 100
+	Password         string        `yaml:"password"`          // WebUI 访问密码，为空则不需要密码
+	TLSCertFile      string        `yaml:"tls_cert_file,omitempty"`
+	TLSKeyFile       string        `yaml:"tls_key_file,omitempty"`
 }
 
 // SubscriptionRefreshConfig controls subscription auto-refresh and reload settings.
@@ -351,6 +356,9 @@ func (c *Config) normalize() error {
 			err = errors.New("probe target is empty")
 		}
 		return fmt.Errorf("invalid management probe_target: %w", err)
+	}
+	if err := c.normalizeManagementProbeConfig(); err != nil {
+		return err
 	}
 	if c.Management.Enabled == nil {
 		defaultEnabled := true
@@ -1041,6 +1049,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		}
 		return fmt.Errorf("invalid management probe_target: %w", err)
 	}
+	if err := c.normalizeManagementProbeConfig(); err != nil {
+		return err
+	}
 	if c.Management.Enabled == nil {
 		defaultEnabled := true
 		c.Management.Enabled = &defaultEnabled
@@ -1267,6 +1278,56 @@ func (c *Config) normalizeGeoIPConfig() {
 	}
 }
 
+const (
+	defaultProbeMode      = "all"
+	defaultProbeInterval  = 5 * time.Minute
+	defaultProbeTimeout   = 10 * time.Second
+	defaultProbeBatchSize = 100
+	minimumProbeInterval  = 10 * time.Second
+	minimumProbeTimeout   = 100 * time.Millisecond
+	maximumProbeBatchSize = 1_000_000
+)
+
+func normalizeProbeMode(value string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	if mode == "" {
+		mode = defaultProbeMode
+	}
+	switch mode {
+	case "all", "sample", "manual":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unsupported management probe_mode %q (use 'all', 'sample', or 'manual')", value)
+	}
+}
+
+func (c *Config) normalizeManagementProbeConfig() error {
+	mode, err := normalizeProbeMode(c.Management.ProbeMode)
+	if err != nil {
+		return err
+	}
+	c.Management.ProbeMode = mode
+	if c.Management.ProbeInterval <= 0 {
+		c.Management.ProbeInterval = defaultProbeInterval
+	}
+	if c.Management.ProbeInterval < minimumProbeInterval {
+		return fmt.Errorf("management probe_interval must be at least %s", minimumProbeInterval)
+	}
+	if c.Management.ProbeTimeout <= 0 {
+		c.Management.ProbeTimeout = defaultProbeTimeout
+	}
+	if c.Management.ProbeTimeout < minimumProbeTimeout {
+		return fmt.Errorf("management probe_timeout must be at least %s", minimumProbeTimeout)
+	}
+	if c.Management.ProbeBatchSize <= 0 {
+		c.Management.ProbeBatchSize = defaultProbeBatchSize
+	}
+	if c.Management.ProbeBatchSize > maximumProbeBatchSize {
+		return fmt.Errorf("management probe_batch_size must not exceed %d", maximumProbeBatchSize)
+	}
+	return nil
+}
+
 // normalizeLogConfig applies defaults to the log config.
 func (c *Config) normalizeLogConfig() {
 	if c.Log.Output == "" {
@@ -1287,6 +1348,9 @@ func (c *Config) normalizeLogConfig() {
 	}
 	if c.Log.MaxAge <= 0 {
 		c.Log.MaxAge = 7
+	}
+	if c.Log.RotateInterval < 0 {
+		c.Log.RotateInterval = 0
 	}
 }
 
@@ -1334,6 +1398,45 @@ func ValidateManagementConfig(cfg ManagementConfig) error {
 		return errors.New("management TLS is required when listen is not loopback")
 	}
 	return nil
+}
+
+// ProbeModeOrDefault returns the automatic health-check policy.
+func (c *Config) ProbeModeOrDefault() string {
+	if c == nil {
+		return defaultProbeMode
+	}
+	mode, err := normalizeProbeMode(c.Management.ProbeMode)
+	if err != nil {
+		return defaultProbeMode
+	}
+	return mode
+}
+
+// ProbeIntervalOrDefault returns the interval between automatic health checks.
+func (c *Config) ProbeIntervalOrDefault() time.Duration {
+	if c == nil || c.Management.ProbeInterval <= 0 {
+		return defaultProbeInterval
+	}
+	return c.Management.ProbeInterval
+}
+
+// ProbeTimeoutOrDefault returns the per-node automatic probe timeout.
+func (c *Config) ProbeTimeoutOrDefault() time.Duration {
+	if c == nil || c.Management.ProbeTimeout <= 0 {
+		return defaultProbeTimeout
+	}
+	return c.Management.ProbeTimeout
+}
+
+// ProbeBatchSizeOrDefault returns the sample-mode nodes per automatic pass.
+func (c *Config) ProbeBatchSizeOrDefault() int {
+	if c == nil || c.Management.ProbeBatchSize <= 0 {
+		return defaultProbeBatchSize
+	}
+	if c.Management.ProbeBatchSize > maximumProbeBatchSize {
+		return maximumProbeBatchSize
+	}
+	return c.Management.ProbeBatchSize
 }
 
 // ProbeConcurrencyOrDefault returns the process-wide health probe worker

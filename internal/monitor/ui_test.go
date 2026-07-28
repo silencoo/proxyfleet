@@ -50,6 +50,32 @@ func TestEmbeddedWebUIUsesBundledECharts(t *testing.T) {
 	}
 }
 
+func TestEmbeddedWebUIUsesReadableLocalFontStack(t *testing.T) {
+	data, err := embeddedFS.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatalf("read embedded WebUI: %v", err)
+	}
+	html := string(data)
+
+	required := []string{
+		`--font-ui: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei UI"`,
+		`--font-mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono"`,
+		`font-size: 14px;`,
+		`line-height: 1.5;`,
+		`text-rendering: optimizeLegibility;`,
+		`button, input, select, textarea { font-family: var(--font-ui); }`,
+		`.sensitive-textarea { font-family: var(--font-mono); }`,
+		`const CHART_FONT_FAMILY = '"Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei UI"`,
+	}
+	for _, value := range required {
+		if !strings.Contains(html, value) {
+			t.Errorf("embedded WebUI is missing readable typography rule %q", value)
+		}
+	}
+	if strings.Contains(html, `--font-ui: "Inter"`) {
+		t.Error("embedded WebUI still prefers Inter for mixed Chinese and English content")
+	}
+}
 func TestEmbeddedWebUIHasMonochromeIconsAndLanguageSwitcher(t *testing.T) {
 	data, err := embeddedFS.ReadFile("assets/index.html")
 	if err != nil {
@@ -106,7 +132,7 @@ func TestEmbeddedWebUIHasScalableNodeOperations(t *testing.T) {
 		`['resident',`,
 		`function getNodeRegion(node)`,
 		`function getChartNodeDisplayName(node)`,
-		`.replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '')`,
+		`function sanitizeChartLabel(value)`,
 		`sorted.map(getChartNodeDisplayName)`,
 		`const REGION_CHART_COLORS = Object.freeze({`,
 		`function getRegionChartStyle(region, stat)`,

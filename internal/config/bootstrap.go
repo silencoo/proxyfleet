@@ -25,12 +25,17 @@ management:
   enabled: true
   listen: 127.0.0.1:9091
   probe_target: www.apple.com:80
+  probe_mode: sample
+  probe_interval: 5m
+  probe_timeout: 10s
+  probe_batch_size: 100
 
 subscription_refresh:
   enabled: true
 
 log:
   output: stdout
+  rotate_interval: 0s
 
 subscriptions: []
 nodes: []

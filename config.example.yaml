@@ -22,6 +22,7 @@ log_level: info
 # max_backups: 保留旧日志文件个数，默认 3
 # max_age: 保留旧日志文件天数，默认 7
 # compress: 是否压缩轮转后的旧日志，默认 false
+# rotate_interval: 定时打包间隔（如 24h）；0 表示仅按 max_size 轮转
 log:
   output: stdout
   file: logs/easy_proxies.log
@@ -29,6 +30,7 @@ log:
   max_backups: 3
   max_age: 7
   compress: false
+  rotate_interval: 0s
 
 # 全局跳过 SSL 证书验证（默认 false，不建议在生产环境启用）
 skip_cert_verify: false
@@ -93,6 +95,10 @@ management:
   enabled: true                                      # 是否启用管理面板
   listen: 127.0.0.1:9091                             # 默认仅本机访问
   probe_target: http://cp.cloudflare.com/generate_204  # 健康检查目标
+  probe_mode: sample                                  # all 全量 / sample 分批轮转 / manual 仅手动
+  probe_interval: 5m                                 # 自动探测间隔（至少 10s）
+  probe_timeout: 10s                                 # 单节点超时（至少 100ms）
+  probe_batch_size: 100                              # sample 模式每轮探测节点数
   probe_concurrency: 32  # 全局批量探测并发数（1-1024）
   password: ""                                       # WebUI 访问密码，为空则不需要密码
   # 非回环 listen 必须同时配置强密码和下列原生 TLS 证书，禁止明文远程管理。

@@ -520,16 +520,19 @@ func (m *Manager) reloadRuntimeLocked(operationCtx context.Context, newCfg *conf
 			healthTimeout = defaultHealthCheckTimeout
 		}
 		if _, probeConfigured := m.monitorMgr.DestinationForProbe(); probeConfigured && minAvailableNodes > 0 {
-			if err := m.monitorMgr.ProbeAllNowContext(operationCtx, healthTimeout); err != nil {
+			ran, err := m.monitorMgr.ProbeConfiguredNowContext(operationCtx, healthTimeout, minAvailableNodes)
+			if err != nil {
 				return rollbackReplacement(fmt.Errorf("replacement health check: %w", err))
 			}
-			available, total := m.availableNodeCount()
-			if available < minAvailableNodes {
-				healthErr := fmt.Errorf("health check rejected replacement: %d/%d nodes available (need >= %d)", available, total, minAvailableNodes)
-				return rollbackReplacement(healthErr)
+			if ran {
+				available, total := m.availableNodeCount()
+				if available < minAvailableNodes {
+					healthErr := fmt.Errorf("health check rejected replacement: %d/%d nodes available (need >= %d)", available, total, minAvailableNodes)
+					return rollbackReplacement(healthErr)
+				}
 			}
 		} else {
-			go m.monitorMgr.ProbeAllNow(periodicHealthTimeout)
+			go m.monitorMgr.ProbeConfiguredNow(periodicHealthTimeout)
 		}
 	}
 	if newCfg.GeoIP.Enabled {
@@ -671,15 +674,18 @@ func (m *Manager) reloadManagementOnlyRuntimeLocked(
 		}
 		minAvailableNodes := newCfg.SubscriptionRefresh.MinAvailableNodes
 		if _, probeConfigured := m.monitorMgr.DestinationForProbe(); probeConfigured && minAvailableNodes > 0 {
-			if err := m.monitorMgr.ProbeAllNowContext(operationCtx, healthTimeout); err != nil {
+			ran, err := m.monitorMgr.ProbeConfiguredNowContext(operationCtx, healthTimeout, minAvailableNodes)
+			if err != nil {
 				return rollbackCandidate(fmt.Errorf("first runtime health check: %w", err))
 			}
-			available, total := m.availableNodeCount()
-			if available < minAvailableNodes {
-				return rollbackCandidate(fmt.Errorf("health check rejected first runtime: %d/%d nodes available (need >= %d)", available, total, minAvailableNodes))
+			if ran {
+				available, total := m.availableNodeCount()
+				if available < minAvailableNodes {
+					return rollbackCandidate(fmt.Errorf("health check rejected first runtime: %d/%d nodes available (need >= %d)", available, total, minAvailableNodes))
+				}
 			}
 		} else {
-			go m.monitorMgr.ProbeAllNow(periodicHealthTimeout)
+			go m.monitorMgr.ProbeConfiguredNow(periodicHealthTimeout)
 		}
 	}
 	if newCfg.GeoIP.Enabled {
@@ -1229,7 +1235,7 @@ func (m *Manager) syncCommittedHealth(cfg *config.Config) {
 	if timeout <= 0 {
 		timeout = defaultHealthCheckTimeout
 	}
-	m.monitorMgr.ProbeAllNow(timeout)
+	m.monitorMgr.ProbeConfiguredNow(timeout)
 }
 
 func probeOutboundConnection(ctx context.Context, outbound adapter.Outbound, target monitor.ProbeTarget) error {
@@ -2289,6 +2295,11 @@ func (m *Manager) startMonitorServer(ctx context.Context) error {
 	return nil
 }
 
+// PersistDiagnosticsState flushes cleared monitor counters to the health sidecar.
+func (m *Manager) PersistDiagnosticsState() error {
+	return pool.PersistHealthStateNow()
+}
+
 // applyConfigSettings extracts runtime settings from config.
 func (m *Manager) applyConfigSettings(cfg *config.Config) {
 	if cfg == nil {
@@ -2311,7 +2322,7 @@ func (m *Manager) startPeriodicHealthChecks() {
 	}
 	m.mu.Unlock()
 	if monitorToStart != nil {
-		monitorToStart.StartPeriodicHealthCheck(periodicHealthInterval, periodicHealthTimeout)
+		monitorToStart.StartConfiguredPeriodicHealthCheck()
 	}
 }
 

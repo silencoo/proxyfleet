@@ -42,7 +42,7 @@ func TestLogsRequireGETAndReturnJSONErrors(t *testing.T) {
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if got := recorder.Header().Get("Allow"); got != http.MethodGet {
+	if got := recorder.Header().Get("Allow"); got != "GET, DELETE" {
 		t.Fatalf("Allow=%q", got)
 	}
 	if got := recorder.Header().Get("Content-Type"); got != "application/json" {

@@ -29,8 +29,8 @@
       --log-trace: #c084fc;
       --chart-primary: #f5f5f5;
       --chart-secondary: #8a8a8a;
-      --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+      --font-ui: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+      --font-mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Microsoft YaHei UI", monospace;
       --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.03);
       --shadow-md: 0 12px 30px rgba(0, 0, 0, 0.45);
     }
@@ -81,12 +81,16 @@
       font-family: var(--font-ui);
       background: var(--bg-base);
       color: var(--text-main);
-      font-size: 13px;
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
       display: flex;
       min-height: 100vh;
       height: 100dvh;
       overflow: hidden;
     }
+    button, input, select, textarea { font-family: var(--font-ui); }
     /* Layout */
     .sidebar {
       width: 240px;
@@ -201,13 +205,15 @@
     .tab-content.active { display: block; animation: fadeIn 0.3s; }
     .setting-input {
       background: var(--bg-input); border: 1px solid var(--border); color: var(--text-main);
-      padding: 8px 12px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px;
+      padding: 8px 12px; border-radius: 6px; font-family: var(--font-ui); font-size: 14px; line-height: 1.45;
       outline: none; width: 100%; box-sizing: border-box; transition: border-color 0.2s;
     }
     .setting-input:focus { border-color: var(--primary); }
     .setting-input:disabled { opacity: 0.55; cursor: not-allowed; }
     .settings-grid { padding: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; }
     .settings-help { grid-column: 1 / -1; font-size: 11px; line-height: 1.6; color: var(--text-muted); }
+    .field-help { font-size: 11px; line-height: 1.45; color: var(--text-muted); }
+    .field-error { min-height: 16px; font-size: 11px; line-height: 1.45; color: var(--error); }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 
     /* UI Components */
@@ -286,6 +292,11 @@
     .table-search input { width: 100%; padding-left: 34px; }
     .table-page-size { display: inline-flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12px; }
     .table-page-size select { width: auto; min-width: 76px; padding: 6px 28px 6px 10px; }
+    .table-toolbar-actions { display: inline-flex; align-items: center; gap: 8px; }
+    .icon-only { width: 30px; height: 30px; padding: 0; align-items: center; justify-content: center; }
+    .uri-cell { display: flex; align-items: center; gap: 8px; min-width: 240px; max-width: 380px; }
+    .uri-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .confirm-copy { color: var(--text-muted); line-height: 1.65; }
     .pagination {
       display: flex; align-items: center; justify-content: flex-end; gap: 10px;
       padding: 12px 16px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px;
@@ -345,7 +356,7 @@
     .modal-overlay.show { display: flex; }
     .modal {
       background: var(--bg-panel); border: 1px solid var(--border);
-      border-radius: 8px; width: 400px; box-shadow: var(--shadow-md);
+      border-radius: 8px; width: min(400px, calc(100vw - 32px)); box-shadow: var(--shadow-md);
     }
     .modal-header { padding: 16px 24px; border-bottom: 1px solid var(--border); font-size: 16px; font-weight: 600; }
     .modal-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
@@ -371,13 +382,14 @@
     label { font-size: 12px; color: var(--text-muted); }
     input[type="text"], input[type="password"], input[type="number"] {
       background: var(--bg-input); border: 1px solid var(--border); color: var(--text-main);
-      padding: 8px 12px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; outline: none;
+      padding: 8px 12px; border-radius: 6px; font-family: var(--font-ui); font-size: 14px; outline: none;
     }
     input:focus { border-color: var(--primary); }
     .sensitive-field { position: relative; }
     .sensitive-field .setting-input,
     .sensitive-field > input { width: 100%; padding-right: 42px; }
     .sensitive-field textarea { padding-right: 42px; }
+    .sensitive-textarea { font-family: var(--font-mono); }
     .sensitive-toggle {
       position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
       width: 30px; height: 30px; padding: 0; border: 0; background: transparent;
@@ -502,6 +514,8 @@
     <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.2 6.2L4 8m2 7a7 7 0 0 0 11.8 2.8L20 16"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 21h16"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
@@ -702,11 +716,14 @@
               <svg class="icon"><use href="#i-search"></use></svg>
               <input id="configNodeSearch" class="setting-input" type="search" placeholder="搜索节点名称、URI、端口或来源" oninput="setConfigNodeSearch(this.value)" />
             </div>
-            <label class="table-page-size">每页
-              <select id="configNodePageSize" class="setting-input" onchange="setConfigNodePageSize(this.value)">
-                <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option>
-              </select>
-            </label>
+            <div class="table-toolbar-actions">
+              <label class="table-page-size">每页
+                <select id="configNodePageSize" class="setting-input" onchange="setConfigNodePageSize(this.value)">
+                  <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option>
+                </select>
+              </label>
+              <button type="button" class="btn btn-sm icon-only" id="configNodesRevealAll" onclick="toggleAllConfigNodeURIs()" aria-label="显示全部 URI" title="显示全部 URI" aria-pressed="false"><svg class="icon"><use href="#i-eye"></use></svg></button>
+            </div>
           </div>
           <div class="table-container">
             <table>
@@ -751,7 +768,10 @@
         </div>
 
         <div class="panel">
-          <div class="panel-header"><div class="panel-title">节点质量分析</div></div>
+          <div class="panel-header">
+            <div class="panel-title">节点质量分析</div>
+            <button type="button" class="btn btn-sm btn-danger" onclick="clearAllDiagnostics()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空记录</span></button>
+          </div>
           <div class="table-toolbar">
             <div class="table-search">
               <svg class="icon"><use href="#i-search"></use></svg>
@@ -772,6 +792,7 @@
                   <th><button type="button" class="sort-button" data-sort-table="debug" data-sort-key="calls" onclick="sortDebugTable('calls')">成功 / 失败<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
                   <th><button type="button" class="sort-button" data-sort-table="debug" data-sort-key="connections" onclick="sortDebugTable('connections')">连接<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
                   <th>最近调用时间线</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody id="debugNodesTableBody"></tbody>
@@ -792,6 +813,7 @@
             <div class="panel-title">控制台日志 (Console Logs)</div>
             <div style="display:flex; align-items:center; gap:12px;">
               <label style="font-size:13px; color:var(--text-muted); display:flex; align-items:center; gap:6px;"><input type="checkbox" id="autoScrollLogs" checked> 自动滚动</label>
+              <button type="button" class="btn btn-sm btn-danger" onclick="clearConsoleLogs()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空日志</span></button>
               <button type="button" class="btn btn-sm" onclick="pollLogs()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新</span></button>
             </div>
           </div>
@@ -836,18 +858,38 @@
                   <label>外部 IP (External IP)</label>
                   <input type="text" id="settingExternalIP" class="setting-input" placeholder="0.0.0.0" />
                 </div>
+
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">探测策略 (Probe)</div></div>
+              <div class="settings-grid">
                 <div class="form-group">
-                  <label>探测目标 (Probe Target)</label>
-                  <input type="text" id="settingProbeTarget" class="setting-input" placeholder="www.apple.com:80" />
+                  <label for="settingProbeMode">自动探测模式</label>
+                  <select id="settingProbeMode" class="setting-input" onchange="toggleProbePolicySettings()">
+                    <option value="all">all - 每轮全量</option>
+                    <option value="sample">sample - 分批轮转</option>
+                    <option value="manual">manual - 仅手动</option>
+                  </select>
+                </div>
+                <div class="form-group"><label for="settingProbeTarget">探测目标 (Probe Target)</label><input type="text" id="settingProbeTarget" class="setting-input" placeholder="www.apple.com:80" /></div>
+                <div class="form-group">
+                  <label for="settingProbeInterval">自动探测间隔</label>
+                  <input type="text" id="settingProbeInterval" class="setting-input" placeholder="5m" aria-describedby="settingProbeIntervalHelp settingProbeIntervalError" oninput="clearDurationError('settingProbeInterval', 'settingProbeIntervalError')" onblur="normalizeDurationInput('settingProbeInterval')" />
+                  <div class="field-help" id="settingProbeIntervalHelp">单位支持 ms / s / m / h，可组合填写，例如 30s、5m、1h30m；最短 10s。</div>
+                  <div class="field-error" id="settingProbeIntervalError" role="alert"></div>
                 </div>
                 <div class="form-group">
-                  <label>探测并发数</label>
-                  <input type="number" id="settingProbeConcurrency" class="setting-input" min="1" max="1024" placeholder="32" />
+                  <label for="settingProbeTimeout">单节点超时</label>
+                  <input type="text" id="settingProbeTimeout" class="setting-input" placeholder="10s" aria-describedby="settingProbeTimeoutHelp settingProbeTimeoutError" oninput="clearDurationError('settingProbeTimeout', 'settingProbeTimeoutError')" onblur="normalizeDurationInput('settingProbeTimeout')" />
+                  <div class="field-help" id="settingProbeTimeoutHelp">例如 500ms 或 10s；最短 100ms。</div>
+                  <div class="field-error" id="settingProbeTimeoutError" role="alert"></div>
                 </div>
-                <div class="form-group" style="justify-content:flex-end;">
-                  <label>&nbsp;</label>
-                  <div class="checkbox-row"><input type="checkbox" id="settingSkipCertVerify" /><label for="settingSkipCertVerify">跳过 SSL 证书验证</label></div>
-                </div>
+                <div class="form-group"><label for="settingProbeBatchSize">每轮节点数</label><input type="number" id="settingProbeBatchSize" class="setting-input" min="1" max="1000000" placeholder="100" /></div>
+                <div class="form-group"><label for="settingProbeConcurrency">探测并发数</label><input type="number" id="settingProbeConcurrency" class="setting-input" min="1" max="1024" placeholder="32" /></div>
+                <div class="checkbox-row"><input type="checkbox" id="settingSkipCertVerify" /><label for="settingSkipCertVerify">跳过 SSL 证书验证</label></div>
+                <div class="settings-help">大池建议使用 sample：每轮只探测固定数量，并按节点顺序轮转覆盖全池；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。</div>
               </div>
             </div>
 
@@ -939,6 +981,7 @@
                   <div class="form-group"><label>单文件最大 MB</label><input type="number" id="settingLogMaxSize" class="setting-input" min="1" max="1024" placeholder="50" /></div>
                   <div class="form-group"><label>保留旧日志个数</label><input type="number" id="settingLogMaxBackups" class="setting-input" min="0" max="100" placeholder="3" /></div>
                   <div class="form-group"><label>保留天数</label><input type="number" id="settingLogMaxAge" class="setting-input" min="0" max="365" placeholder="7" /></div>
+                  <div class="form-group"><label for="settingLogRotateInterval">定时打包间隔</label><input type="text" id="settingLogRotateInterval" class="setting-input" placeholder="0 / 24h" /></div>
                   <div class="form-group" style="justify-content:flex-end;">
                     <label>&nbsp;</label>
                     <div class="checkbox-row"><input type="checkbox" id="settingLogCompress" /><label for="settingLogCompress">压缩旧日志</label></div>
@@ -1040,7 +1083,17 @@
     </div>
   </div>
 
-
+  <!-- Shared destructive-action confirmation -->
+  <div class="modal-overlay" id="confirmOverlay">
+    <div class="modal" id="confirmDialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage" tabindex="-1">
+      <div class="modal-header" id="confirmTitle">确认操作</div>
+      <div class="modal-body"><p class="confirm-copy" id="confirmMessage"></p></div>
+      <div class="modal-footer">
+        <button type="button" class="btn" id="confirmCancel" onclick="resolveConfirmation(false)">取消</button>
+        <button type="button" class="btn btn-danger" id="confirmAccept" onclick="resolveConfirmation(true)">确认删除</button>
+      </div>
+    </div>
+  </div>
 
   <div class="toast-container" id="toastContainer"></div>
 
@@ -1068,13 +1121,16 @@
     let currentRegionFilter = 'all';
     let isEditMode = false;
     let configNodes = [];
+    let configNodesRevealAll = false;
+    let confirmResolver = null;
+    let confirmReturnFocus = null;
     let _savedSubSnapshot = '';
     let _savedCoreSnapshot = '';
     let settingsETag = '';
     let subscriptionETag = '';
     let subscriptionSettingsLoaded = false;
     let _lastLogsPayload = null;
-    const CHART_FONT_FAMILY = '"Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif';
+    const CHART_FONT_FAMILY = '"Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Segoe UI Variable", "Segoe UI", sans-serif';
     const REGION_CHART_COLORS = Object.freeze({
       HK: '#e11d48',
       JP: '#f97316',
@@ -1143,6 +1199,11 @@
       '下一页': 'Next page',
       '显示敏感信息': 'Show sensitive value',
       '隐藏敏感信息': 'Hide sensitive value',
+      '显示全部 URI': 'Reveal all URIs',
+      '隐藏全部 URI': 'Hide all URIs',
+      '复制 URI': 'Copy URI',
+      'URI 已复制': 'URI copied',
+      '复制 URI 失败': 'Failed to copy URI',
       '节点监控列表': 'Node monitor',
       '状态': 'Status',
       '地域': 'Region',
@@ -1172,12 +1233,15 @@
       '全局质量分数 (Overall Health Score)': 'Overall health score',
       '稳定性掉线排行 (Top Unstable Nodes)': 'Most unstable nodes',
       '节点质量分析': 'Node quality analysis',
+      '清空记录': 'Clear records',
       '节点': 'Node',
+      '未命名节点': 'Unnamed node',
       '成功率': 'Success rate',
       '成功 / 失败': 'Success / failure',
       '最近调用时间线': 'Recent call timeline',
       '控制台日志 (Console Logs)': 'Console logs',
       '自动滚动': 'Auto scroll',
+      '清空日志': 'Clear logs',
       '界面偏好': 'Interface preferences',
       '界面语言': 'Interface language',
       '语言设置保存在当前浏览器并立即生效': 'The language preference is stored in this browser and applied immediately.',
@@ -1187,9 +1251,24 @@
       'multi-port - 多端口模式': 'multi-port - one port per node',
       'hybrid - 混合模式': 'hybrid - pool and per-node ports',
       '外部 IP (External IP)': 'External IP',
+      '探测策略 (Probe)': 'Probe policy',
+      '自动探测模式': 'Automatic probe mode',
+      'all - 每轮全量': 'all - full pool each pass',
+      'sample - 分批轮转': 'sample - rotating batches',
+      'manual - 仅手动': 'manual - explicit probes only',
       '探测目标 (Probe Target)': 'Probe target',
+      '自动探测间隔': 'Automatic probe interval',
+      '单位支持 ms / s / m / h，可组合填写，例如 30s、5m、1h30m；最短 10s。': 'Units: ms, s, m, and h. Combinations such as 30s, 5m, or 1h30m are supported. Minimum: 10s.',
+      '自动探测间隔格式无效，请填写 30s、5m 或 1h30m 等格式。': 'Invalid automatic probe interval. Use a value such as 30s, 5m, or 1h30m.',
+      '自动探测间隔不能短于 10s。': 'Automatic probe interval cannot be shorter than 10s.',
+      '单节点超时': 'Per-node timeout',
+      '例如 500ms 或 10s；最短 100ms。': 'For example, 500ms or 10s. Minimum: 100ms.',
+      '单节点超时格式无效，请填写 500ms 或 10s 等格式。': 'Invalid per-node timeout. Use a value such as 500ms or 10s.',
+      '单节点超时不能短于 100ms。': 'Per-node timeout cannot be shorter than 100ms.',
+      '每轮节点数': 'Nodes per pass',
       '探测并发数': 'Probe concurrency',
       '跳过 SSL 证书验证': 'Skip SSL certificate verification',
+      '大池建议使用 sample：每轮只探测固定数量，并按节点顺序轮转覆盖全池；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。': 'For large pools, sample probes a bounded rotating batch each pass. Manual disables startup and scheduled probes; Probe all remains available. Restart the process to apply policy changes.',
       '监听配置 (Listener)': 'Pool listener',
       '监听地址': 'Listen address',
       '监听端口': 'Listen port',
@@ -1233,6 +1312,7 @@
       '单文件最大 MB': 'Maximum file size (MB)',
       '保留旧日志个数': 'Log backups',
       '保留天数': 'Retention days',
+      '定时打包间隔': 'Scheduled archive interval',
       '压缩旧日志': 'Compress old logs',
       '日志设置需重启服务生效': 'Restart the service to apply logging changes.',
       '订阅配置': 'Subscriptions',
@@ -1262,6 +1342,8 @@
       '映射端口 (可选)': 'Mapped port (optional)',
       '取消': 'Cancel',
       '保存': 'Save',
+      '确认操作': 'Confirm action',
+      '确认删除': 'Confirm deletion',
       '处理中...': 'Processing...',
       '编辑节点': 'Edit node',
       '加载节点失败': 'Failed to load node',
@@ -1288,7 +1370,17 @@
       '刷新失败：{error}': 'Refresh failed: {error}',
       '成功': 'Success',
       '确定删除节点 {name}？': 'Delete node {name}?',
+      '删除节点后需要重载核心才会从运行时移除。': 'Reload the core after deletion to remove the node from the runtime.',
       '删除成功': 'Node deleted',
+      '删除诊断记录 {name}？': 'Delete the diagnostic record for {name}?',
+      '只会清除诊断计数和时间线，不会删除节点或改变路由状态。': 'This clears diagnostic counters and timeline only. It does not delete the node or change routing state.',
+      '诊断记录已删除': 'Diagnostic record deleted',
+      '清空全部诊断记录？': 'Clear every diagnostic record?',
+      '这会清除所有节点的诊断计数和时间线，不会删除节点。': 'This clears diagnostic counters and timelines for every node. Nodes are not deleted.',
+      '诊断记录已清空': 'Diagnostic records cleared',
+      '清空 Console 日志？': 'Clear console logs?',
+      '只会清除当前内存中的 Console 日志，磁盘日志和归档不受影响。': 'Only the in-memory console log is cleared. Log files and archives are unchanged.',
+      'Console 日志已清空': 'Console logs cleared',
       '立即重载核心？': 'Reload the core now?',
       '重载成功': 'Core reloaded',
       '配置未变更': 'No configuration changes',
@@ -1367,14 +1459,19 @@
       return normalizeNodeName((node && (node.name || node.tag)) || '');
     }
 
-    function getChartNodeDisplayName(node) {
-      const fullName = getNodeDisplayName(node);
-      const chartName = fullName
-        .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '')
-        .replace(/\uFE0F/g, '')
+    function sanitizeChartLabel(value) {
+      return normalizeNodeName(value)
+        .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, '')
+        .replace(/\p{Extended_Pictographic}/gu, '')
+        .replace(/[\u200D\u20E3\uFE0E\uFE0F\uFFFD]/g, '')
         .replace(/\s+/g, ' ')
         .trim();
-      return chartName || fullName;
+    }
+
+    function getChartNodeDisplayName(node) {
+      return sanitizeChartLabel(getNodeDisplayName(node)) ||
+        sanitizeChartLabel(node && node.tag) ||
+        tr('未命名节点');
     }
 
     function getNodeRegion(node) {
@@ -1514,6 +1611,54 @@
       c.appendChild(t);
       setTimeout(() => { t.style.opacity=0; setTimeout(()=>t.remove(),300); }, 3000);
     }
+
+    function requestConfirmation(title, message, confirmLabel) {
+      if (confirmResolver) resolveConfirmation(false);
+      confirmReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      document.getElementById('confirmTitle').textContent = title || tr('确认操作');
+      document.getElementById('confirmMessage').textContent = message || '';
+      document.getElementById('confirmAccept').textContent = confirmLabel || tr('确认删除');
+      const overlay = document.getElementById('confirmOverlay');
+      overlay.classList.add('show');
+      return new Promise(resolve => {
+        confirmResolver = resolve;
+        requestAnimationFrame(() => document.getElementById('confirmCancel').focus());
+      });
+    }
+
+    function resolveConfirmation(confirmed) {
+      const resolver = confirmResolver;
+      confirmResolver = null;
+      document.getElementById('confirmOverlay').classList.remove('show');
+      if (confirmReturnFocus && document.contains(confirmReturnFocus)) confirmReturnFocus.focus();
+      confirmReturnFocus = null;
+      if (resolver) resolver(Boolean(confirmed));
+    }
+
+    document.addEventListener('keydown', event => {
+      const overlay = document.getElementById('confirmOverlay');
+      if (!overlay.classList.contains('show')) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        resolveConfirmation(false);
+        return;
+      }
+      if (event.key === 'Tab') {
+        const focusable = [document.getElementById('confirmCancel'), document.getElementById('confirmAccept')];
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        } else if (!focusable.includes(document.activeElement)) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    });
 
     function showLoginOverlay() {
       document.getElementById('loginOverlay').classList.add('show');
@@ -1743,9 +1888,9 @@
              return `${params.name}<br/>${tr('区域总数')}: ${stat.total}<br/>${tr('区域可用')}: ${stat.healthy}`;
           }
         },
-        legend: { top: 'bottom', textStyle: { color: getCssVar('--text-muted') } },
+        legend: { bottom: 0, textStyle: { color: getCssVar('--text-muted') } },
         series: [{
-          name: tr('地域'), type: 'pie', radius: ['40%', '70%'], center: ['50%', '55%'],
+          name: tr('地域'), type: 'pie', radius: ['36%', '64%'], center: ['50%', '42%'],
           itemStyle: { borderRadius: 10, borderColor: getCssVar('--bg-panel'), borderWidth: 2 },
           label: { show: false, position: 'center' },
           emphasis: { label: { show: true, fontSize: '20', fontWeight: 'bold', color: getCssVar('--text-main') } },
@@ -2075,6 +2220,17 @@
       renderConfigNodes();
     }
 
+    function syncConfigNodesRevealButton() {
+      const button = document.getElementById('configNodesRevealAll');
+      if (!button) return;
+      const label = tr(configNodesRevealAll ? '隐藏全部 URI' : '显示全部 URI');
+      button.setAttribute('aria-label', label);
+      button.setAttribute('title', label);
+      button.setAttribute('aria-pressed', String(configNodesRevealAll));
+      const use = button.querySelector('use');
+      if (use) use.setAttribute('href', configNodesRevealAll ? '#i-eye-off' : '#i-eye');
+    }
+
     function renderConfigNodes() {
       const query = configNodeTableState.search;
       let nodes = configNodes;
@@ -2084,29 +2240,128 @@
       }
       const page = pageSlice(nodes, configNodeTableState);
       updatePagination('configNode', nodes.length, configNodeTableState, page.start, page.pageCount);
+      syncConfigNodesRevealButton();
       const tbody = document.getElementById('configNodesTableBody');
-      tbody.innerHTML = page.rows.length ? page.rows.map(n => `
+      tbody.innerHTML = page.rows.length ? page.rows.map(n => {
+        const revealed = n._uriRevealed === true;
+        const uriText = revealed ? n.uri : maskNodeURI(n.uri);
+        const revealLabel = tr(revealed ? '隐藏敏感信息' : '显示敏感信息');
+        const copyLabel = tr('复制 URI');
+        return `
         <tr>
           <td><strong>${escapeHtml(normalizeNodeName(n.name))}</strong></td>
-          <td class="tt-mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(maskNodeURI(n.uri))}</td>
+          <td class="tt-mono"><div class="uri-cell"><span class="uri-value">${escapeHtml(uriText)}</span><button type="button" class="btn btn-sm icon-only" onclick="toggleConfigNodeURI(${inlineStringArg(n.id)})" aria-label="${escapeHtml(revealLabel)}" title="${escapeHtml(revealLabel)}" aria-pressed="${revealed}">${iconMarkup(revealed ? 'eye-off' : 'eye')}</button><button type="button" class="btn btn-sm icon-only" onclick="copyConfigNodeURI(${inlineStringArg(n.id)}, this)" aria-label="${escapeHtml(copyLabel)}" title="${escapeHtml(copyLabel)}">${iconMarkup('copy')}</button></div></td>
           <td class="tt-mono">${n.port || '-'}</td>
           <td><span class="badge ${n.source==='subscription'?'badge-warning':'badge-healthy'}">${n.source||'manual'}</span></td>
           <td>
             <button type="button" class="btn btn-sm" onclick="showEditNodeModal(${inlineStringArg(n.id)})">${iconMarkup('edit')}<span>${tr('编辑')}</span></button>
             <button type="button" class="btn btn-sm btn-danger" onclick="deleteNode(${inlineStringArg(n.id)}, ${inlineStringArg(n.name)})">${iconMarkup('trash')}<span>${tr('删除')}</span></button>
           </td>
-        </tr>
-      `).join('') : `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">${tr('暂无数据')}</td></tr>`;
+        </tr>`;
+      }).join('') : `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">${tr('暂无数据')}</td></tr>`;
     }
 
-    async function loadConfigNodes() {
+    async function loadConfigNodes(reveal = configNodesRevealAll) {
       try {
-        const res = await fetch('/api/nodes/config');
+        const res = await fetch(reveal ? '/api/nodes/config?reveal=true' : '/api/nodes/config');
         const data = await readAPIJSON(res, '加载数据失败');
-        configNodes = data.nodes || [];
+        configNodes = (data.nodes || []).map(node => ({...node, _uriRevealed: Boolean(reveal)}));
         renderConfigNodes();
         document.getElementById('subscriptionWarning').style.display = configNodes.some(n=>n.source==='subscription') ? 'block' : 'none';
-      } catch(e){ showToast(e.message, 'error'); }
+        return true;
+      } catch(e){ showToast(e.message, 'error'); return false; }
+    }
+
+    async function toggleAllConfigNodeURIs() {
+      const previous = configNodesRevealAll;
+      configNodesRevealAll = !previous;
+      syncConfigNodesRevealButton();
+      if (!(await loadConfigNodes(configNodesRevealAll))) {
+        configNodesRevealAll = previous;
+        syncConfigNodesRevealButton();
+      }
+    }
+
+    async function getConfigNodeURIForCopy(id) {
+      const index = configNodes.findIndex(node => String(node.id) === String(id));
+      if (index < 0) throw new Error(tr('加载节点失败'));
+      const cachedURI = String(configNodes[index].uri || '');
+      if (cachedURI && !cachedURI.includes('********')) return cachedURI;
+      const response = await fetch('/api/nodes/config/' + encodeURIComponent(id));
+      const payload = await readAPIJSON(response, '加载节点失败');
+      if (!payload.node || !payload.node.uri) throw new Error(tr('加载节点失败'));
+      configNodes[index] = {...configNodes[index], ...payload.node, _uriRevealed: configNodes[index]._uriRevealed === true};
+      return payload.node.uri;
+    }
+
+    async function writeClipboardText(value) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      textarea.remove();
+      if (!copied) throw new Error(tr('复制 URI 失败'));
+    }
+
+    async function copyConfigNodeURI(id, button) {
+      const use = button && button.querySelector('use');
+      const copyLabel = tr('复制 URI');
+      if (button) {
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+      }
+      try {
+        const uri = await getConfigNodeURIForCopy(id);
+        await writeClipboardText(uri);
+        if (use) use.setAttribute('href', '#i-check');
+        if (button) {
+          button.setAttribute('aria-label', tr('URI 已复制'));
+          button.setAttribute('title', tr('URI 已复制'));
+        }
+        showToast(tr('URI 已复制'));
+        setTimeout(() => {
+          if (!button || !document.contains(button)) return;
+          const currentUse = button.querySelector('use');
+          if (currentUse) currentUse.setAttribute('href', '#i-copy');
+          button.setAttribute('aria-label', copyLabel);
+          button.setAttribute('title', copyLabel);
+        }, 1500);
+      } catch (error) {
+        showToast(error.message || tr('复制 URI 失败'), 'error');
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.removeAttribute('aria-busy');
+        }
+      }
+    }
+
+    async function toggleConfigNodeURI(id) {
+      const index = configNodes.findIndex(node => String(node.id) === String(id));
+      if (index < 0) return;
+      if (configNodes[index]._uriRevealed) {
+        configNodes[index]._uriRevealed = false;
+        configNodesRevealAll = false;
+        renderConfigNodes();
+        return;
+      }
+      try {
+        const response = await fetch('/api/nodes/config/' + encodeURIComponent(id));
+        const payload = await readAPIJSON(response, '加载节点失败');
+        if (!payload.node) throw new Error(tr('加载节点失败'));
+        configNodes[index] = {...configNodes[index], ...payload.node, _uriRevealed: true};
+        renderConfigNodes();
+      } catch (error) {
+        showToast(error.message || tr('加载节点失败'), 'error');
+      }
     }
 
     function showAddNodeModal() { isEditMode=false; document.getElementById('nodeModalTitle').textContent=tr('添加节点'); document.getElementById('nodeName').value=''; document.getElementById('nodeUri').value=''; document.getElementById('nodePort').value=''; document.getElementById('nodeModalOverlay').classList.add('show');}
@@ -2136,7 +2391,12 @@
       } catch(e){ showToast(e.message, 'error'); }
     }
     async function deleteNode(id, name) {
-      if(!confirm(tr('确定删除节点 {name}？', {name}))) return;
+      const confirmed = await requestConfirmation(
+        tr('确认删除'),
+        `${tr('确定删除节点 {name}？', {name})} ${tr('删除节点后需要重载核心才会从运行时移除。')}`,
+        tr('确认删除')
+      );
+      if (!confirmed) return;
       try {
         const r = await fetch('/api/nodes/config/'+encodeURIComponent(id), {method:'DELETE'});
         await readAPIJSON(r, '请求失败');
@@ -2205,8 +2465,43 @@
           <td class="tt-mono"><span style="color:var(--success)">${n.success_count||0}</span> / <span style="color:var(--error)">${n.failure_count||0}</span></td>
           <td class="tt-mono">${n.active_connections||0}</td>
           <td><div class="timeline">${tl||'-'}</div></td>
+          <td><button type="button" class="btn btn-sm btn-danger" onclick="clearDiagnostic(${inlineStringArg(n.tag)}, ${inlineStringArg(getNodeDisplayName(n))})">${iconMarkup('trash')}<span>${tr('删除')}</span></button></td>
         </tr>`;
-      }).join('') : `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">${tr('暂无数据')}</td></tr>`;
+      }).join('') : `<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">${tr('暂无数据')}</td></tr>`;
+    }
+
+    async function clearDiagnostic(tag, name) {
+      const confirmed = await requestConfirmation(
+        tr('确认删除'),
+        `${tr('删除诊断记录 {name}？', {name})} ${tr('只会清除诊断计数和时间线，不会删除节点或改变路由状态。')}`,
+        tr('确认删除')
+      );
+      if (!confirmed) return;
+      try {
+        const response = await fetch('/api/debug/' + encodeURIComponent(tag), {method: 'DELETE'});
+        await readAPIJSON(response, '请求失败');
+        showToast(tr('诊断记录已删除'));
+        await loadDebugData();
+      } catch (error) {
+        showToast(error.message || tr('请求失败'), 'error');
+      }
+    }
+
+    async function clearAllDiagnostics() {
+      const confirmed = await requestConfirmation(
+        tr('清空记录'),
+        `${tr('清空全部诊断记录？')} ${tr('这会清除所有节点的诊断计数和时间线，不会删除节点。')}`,
+        tr('清空记录')
+      );
+      if (!confirmed) return;
+      try {
+        const response = await fetch('/api/debug', {method: 'DELETE'});
+        await readAPIJSON(response, '请求失败');
+        showToast(tr('诊断记录已清空'));
+        await loadDebugData();
+      } catch (error) {
+        showToast(error.message || tr('请求失败'), 'error');
+      }
     }
 
     async function loadDebugData() {
@@ -2261,7 +2556,7 @@
       // Top failures
       if (!window._debugNodes) return;
       const failSorted = window._debugNodes.filter(n => (n.failure_count||0) > 0).sort((a,b) => (b.failure_count||0) - (a.failure_count||0)).slice(0, 10);
-      const failX = failSorted.map(getNodeDisplayName);
+      const failX = failSorted.map(getChartNodeDisplayName);
       const failY = failSorted.map(n => n.failure_count);
 
       failureChartInst && failureChartInst.setOption({
@@ -2300,6 +2595,11 @@
         document.getElementById('settingProbeTarget').value = d.probe_target||'';
         document.getElementById('settingSkipCertVerify').checked = d.skip_cert_verify||false;
         document.getElementById('settingProbeConcurrency').value = d.probe_concurrency || 32;
+        document.getElementById('settingProbeMode').value = d.probe_mode || 'all';
+        document.getElementById('settingProbeInterval').value = formatDurationForInput(d.probe_interval || '5m');
+        document.getElementById('settingProbeTimeout').value = formatDurationForInput(d.probe_timeout || '10s');
+        document.getElementById('settingProbeBatchSize').value = d.probe_batch_size || 100;
+        toggleProbePolicySettings();
         // Listener
         const ls = d.listener || {};
         document.getElementById('settingListenerAddr').value = ls.address || '';
@@ -2346,6 +2646,7 @@
         document.getElementById('settingLogMaxSize').value = logCfg.max_size || 50;
         document.getElementById('settingLogMaxBackups').value = logCfg.max_backups || 3;
         document.getElementById('settingLogMaxAge').value = logCfg.max_age || 7;
+        document.getElementById('settingLogRotateInterval').value = !logCfg.rotate_interval || logCfg.rotate_interval === '0s' ? '0' : logCfg.rotate_interval;
         document.getElementById('settingLogCompress').checked = logCfg.compress || false;
         toggleLogFileSettings();
         // Subscription
@@ -2381,6 +2682,10 @@
         probe_target: document.getElementById('settingProbeTarget').value,
         skip_cert_verify: document.getElementById('settingSkipCertVerify').checked,
         probe_concurrency: document.getElementById('settingProbeConcurrency').value,
+        probe_mode: document.getElementById('settingProbeMode').value,
+        probe_interval: document.getElementById('settingProbeInterval').value,
+        probe_timeout: document.getElementById('settingProbeTimeout').value,
+        probe_batch_size: document.getElementById('settingProbeBatchSize').value,
         listener_addr: document.getElementById('settingListenerAddr').value,
         listener_port: document.getElementById('settingListenerPort').value,
         listener_user: document.getElementById('settingListenerUser').value,
@@ -2413,12 +2718,111 @@
         log_max_size: document.getElementById('settingLogMaxSize').value,
         log_max_backups: document.getElementById('settingLogMaxBackups').value,
         log_max_age: document.getElementById('settingLogMaxAge').value,
+        log_rotate_interval: document.getElementById('settingLogRotateInterval').value,
         log_compress: document.getElementById('settingLogCompress').checked,
       });
     }
+    const DURATION_UNIT_MS = Object.freeze({ h: 3600000, m: 60000, s: 1000, ms: 1 });
+
+    function parseDurationMillis(value) {
+      const text = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+      if (!text) return NaN;
+      const tokenPattern = /(\d+(?:\.\d+)?)(ms|h|m|s)/gy;
+      let cursor = 0;
+      let total = 0;
+      while (cursor < text.length) {
+        tokenPattern.lastIndex = cursor;
+        const match = tokenPattern.exec(text);
+        if (!match) return NaN;
+        total += Number(match[1]) * DURATION_UNIT_MS[match[2]];
+        cursor = tokenPattern.lastIndex;
+      }
+      return Number.isFinite(total) && total > 0 ? total : NaN;
+    }
+
+    function formatDurationForInput(value) {
+      const total = parseDurationMillis(value);
+      if (!Number.isFinite(total)) return String(value || '').trim();
+      let remaining = total;
+      const parts = [];
+      for (const [unit, size] of [['h', 3600000], ['m', 60000], ['s', 1000]]) {
+        const amount = Math.floor(remaining / size);
+        if (amount > 0) {
+          parts.push(`${amount}${unit}`);
+          remaining -= amount * size;
+        }
+      }
+      if (remaining > 0) parts.push(`${Number(remaining.toFixed(3))}ms`);
+      return parts.join('') || '0ms';
+    }
+
+    function clearDurationError(fieldId, errorId) {
+      const field = document.getElementById(fieldId);
+      const error = document.getElementById(errorId);
+      if (field) field.removeAttribute('aria-invalid');
+      if (error) error.textContent = '';
+    }
+
+    function normalizeDurationInput(fieldId) {
+      const field = document.getElementById(fieldId);
+      if (!field || field.disabled) return;
+      const parsed = parseDurationMillis(field.value);
+      if (Number.isFinite(parsed)) field.value = formatDurationForInput(field.value);
+    }
+
+    function validateDurationField(fieldId, errorId, minimum, invalidMessage, minimumMessage) {
+      const field = document.getElementById(fieldId);
+      const error = document.getElementById(errorId);
+      if (!field || field.disabled) {
+        clearDurationError(fieldId, errorId);
+        return true;
+      }
+      const parsed = parseDurationMillis(field.value);
+      let message = '';
+      if (!Number.isFinite(parsed)) message = tr(invalidMessage);
+      else if (parsed < minimum) message = tr(minimumMessage);
+      if (message) {
+        field.setAttribute('aria-invalid', 'true');
+        if (error) error.textContent = message;
+        return false;
+      }
+      field.value = formatDurationForInput(field.value);
+      clearDurationError(fieldId, errorId);
+      return true;
+    }
+
+    function validateProbeDurationSettings() {
+      if (document.getElementById('settingProbeMode').value === 'manual') return true;
+      const intervalValid = validateDurationField(
+        'settingProbeInterval', 'settingProbeIntervalError', 10000,
+        '自动探测间隔格式无效，请填写 30s、5m 或 1h30m 等格式。',
+        '自动探测间隔不能短于 10s。'
+      );
+      const timeoutValid = validateDurationField(
+        'settingProbeTimeout', 'settingProbeTimeoutError', 100,
+        '单节点超时格式无效，请填写 500ms 或 10s 等格式。',
+        '单节点超时不能短于 100ms。'
+      );
+      if (!intervalValid) document.getElementById('settingProbeInterval').focus();
+      else if (!timeoutValid) document.getElementById('settingProbeTimeout').focus();
+      return intervalValid && timeoutValid;
+    }
+
     function toggleLogFileSettings() {
       const output = document.getElementById('settingLogOutput').value;
       document.getElementById('logFileSettings').style.display = output === 'file' ? 'grid' : 'none';
+    }
+
+    function toggleProbePolicySettings() {
+      const mode = document.getElementById('settingProbeMode').value;
+      const automatic = mode !== 'manual';
+      document.getElementById('settingProbeInterval').disabled = !automatic;
+      document.getElementById('settingProbeTimeout').disabled = !automatic;
+      document.getElementById('settingProbeBatchSize').disabled = mode !== 'sample';
+      if (!automatic) {
+        clearDurationError('settingProbeInterval', 'settingProbeIntervalError');
+        clearDurationError('settingProbeTimeout', 'settingProbeTimeoutError');
+      }
     }
 
     function togglePoolStrategySettings() {
@@ -2434,6 +2838,7 @@
 
     async function handleSettingsSave(e) {
       e.preventDefault();
+      if (!validateProbeDurationSettings()) return;
       const saveBtn = e.target.querySelector('button[type="submit"]');
       const saveLabel = document.getElementById('settingsSaveLabel');
       const originalText = saveLabel.textContent;
@@ -2479,6 +2884,10 @@
           probe_target: document.getElementById('settingProbeTarget').value,
           skip_cert_verify: document.getElementById('settingSkipCertVerify').checked,
           probe_concurrency: parseInt(document.getElementById('settingProbeConcurrency').value) || 32,
+          probe_mode: document.getElementById('settingProbeMode').value,
+          probe_interval: document.getElementById('settingProbeInterval').value.trim() || '5m',
+          probe_timeout: document.getElementById('settingProbeTimeout').value.trim() || '10s',
+          probe_batch_size: parseInt(document.getElementById('settingProbeBatchSize').value) || 100,
           mode: document.getElementById('settingMode').value,
           listener: {
             address: document.getElementById('settingListenerAddr').value,
@@ -2519,6 +2928,7 @@
             max_backups: parseInt(document.getElementById('settingLogMaxBackups').value) || 3,
             max_age: parseInt(document.getElementById('settingLogMaxAge').value) || 7,
             compress: document.getElementById('settingLogCompress').checked,
+            rotate_interval: document.getElementById('settingLogRotateInterval').value.trim() || '0',
           },
           geoip: {
             enabled: document.getElementById('settingGeoIPEnabled').checked,
@@ -2636,6 +3046,24 @@
         const d = await readAPIJSON(r, '加载日志失败');
         renderConsoleLogs(d.logs || '');
       } catch(e){ console.error('Failed to load logs:', e); stopLogPolling(); showToast(e.message, 'error'); }
+    }
+
+    async function clearConsoleLogs() {
+      const confirmed = await requestConfirmation(
+        tr('清空日志'),
+        `${tr('清空 Console 日志？')} ${tr('只会清除当前内存中的 Console 日志，磁盘日志和归档不受影响。')}`,
+        tr('清空日志')
+      );
+      if (!confirmed) return;
+      try {
+        const response = await fetch('/api/logs', {method: 'DELETE'});
+        await readAPIJSON(response, '请求失败');
+        _lastLogsPayload = null;
+        renderConsoleLogs('');
+        showToast(tr('Console 日志已清空'));
+      } catch (error) {
+        showToast(error.message || tr('请求失败'), 'error');
+      }
     }
 
     // ─── Theme System: Dark / Light / Auto (follow OS) ───

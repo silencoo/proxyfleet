@@ -83,6 +83,10 @@ type settingsUpdateRequest struct {
 	ProbeTarget      *string `json:"probe_target,omitempty"`
 	SkipCertVerify   *bool   `json:"skip_cert_verify,omitempty"`
 	ProbeConcurrency *int    `json:"probe_concurrency,omitempty"`
+	ProbeMode        *string `json:"probe_mode,omitempty"`
+	ProbeInterval    *string `json:"probe_interval,omitempty"`
+	ProbeTimeout     *string `json:"probe_timeout,omitempty"`
+	ProbeBatchSize   *int    `json:"probe_batch_size,omitempty"`
 	Mode             *string `json:"mode,omitempty"`
 	Listener         *struct {
 		Address  string `json:"address"`
@@ -118,15 +122,20 @@ type settingsUpdateRequest struct {
 		Listen           *string `json:"listen"`
 		Password         *string `json:"password"`
 		ProbeConcurrency *int    `json:"probe_concurrency"`
+		ProbeMode        *string `json:"probe_mode"`
+		ProbeInterval    *string `json:"probe_interval"`
+		ProbeTimeout     *string `json:"probe_timeout"`
+		ProbeBatchSize   *int    `json:"probe_batch_size"`
 		TLSCertFile      *string `json:"tls_cert_file"`
 		TLSKeyFile       *string `json:"tls_key_file"`
 	} `json:"management,omitempty"`
 	Log *struct {
-		Output     string `json:"output"`
-		MaxSize    int    `json:"max_size"`
-		MaxBackups int    `json:"max_backups"`
-		MaxAge     int    `json:"max_age"`
-		Compress   bool   `json:"compress"`
+		Output         string `json:"output"`
+		MaxSize        int    `json:"max_size"`
+		MaxBackups     int    `json:"max_backups"`
+		MaxAge         int    `json:"max_age"`
+		Compress       bool   `json:"compress"`
+		RotateInterval string `json:"rotate_interval"`
 	} `json:"log,omitempty"`
 	GeoIP *struct {
 		Enabled            bool   `json:"enabled"`
@@ -366,6 +375,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/nodes/probe-all", s.withAuth(s.handleProbeAll))
 	mux.HandleFunc("/api/nodes/", s.withAuth(s.handleNodeAction))
 	mux.HandleFunc("/api/debug", s.withAuth(s.handleDebug))
+	mux.HandleFunc("/api/debug/", s.withAuth(s.handleDebugItem))
 	mux.HandleFunc("/api/export", s.withAuth(s.handleExport))
 	mux.HandleFunc("/api/subscription/status", s.withAuth(s.handleSubscriptionStatus))
 	mux.HandleFunc("/api/subscription/refresh", s.withAuth(s.handleSubscriptionRefresh))
@@ -472,6 +482,16 @@ func managementRuntimeChanged(runtime Config, candidate config.ManagementConfig)
 	return !sameManagementListen(runtime.Listen, candidate.Listen) ||
 		filepath.Clean(strings.TrimSpace(runtime.TLSCertFile)) != filepath.Clean(strings.TrimSpace(candidate.TLSCertFile)) ||
 		filepath.Clean(strings.TrimSpace(runtime.TLSKeyFile)) != filepath.Clean(strings.TrimSpace(candidate.TLSKeyFile))
+}
+
+func probePolicyRuntimeChanged(runtime Config, candidate *config.Config) bool {
+	if candidate == nil {
+		return false
+	}
+	return runtime.ProbeMode != candidate.ProbeModeOrDefault() ||
+		runtime.ProbeInterval != candidate.ProbeIntervalOrDefault() ||
+		runtime.ProbeTimeout != candidate.ProbeTimeoutOrDefault() ||
+		runtime.ProbeBatchSize != candidate.ProbeBatchSizeOrDefault()
 }
 
 func (s *Server) runtimeConfigSnapshot() Config {
@@ -716,14 +736,23 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		cleared := s.mgr.ClearAllDiagnostics()
+		s.persistDiagnosticsState()
+		writeJSON(w, map[string]any{"message": "诊断记录已清空", "cleared": cleared})
+		return
+	}
 	if r.Method != http.MethodGet {
-		writeJSONMethodNotAllowed(w, http.MethodGet)
+		writeJSONMethodNotAllowed(w, "GET, DELETE")
 		return
 	}
 	snapshots := s.mgr.Snapshot()
 	var totalCalls, totalSuccess int64
 	debugNodes := make([]map[string]any, 0, len(snapshots))
 	for _, snap := range snapshots {
+		if !snap.HasDiagnostics {
+			continue
+		}
 		totalCalls += snap.SuccessCount + int64(snap.FailureCount)
 		totalSuccess += snap.SuccessCount
 		debugNodes = append(debugNodes, map[string]any{
@@ -757,6 +786,36 @@ func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleDebugItem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSONMethodNotAllowed(w, http.MethodDelete)
+		return
+	}
+	tagPart := strings.TrimPrefix(r.URL.Path, "/api/debug/")
+	tag, err := url.PathUnescape(tagPart)
+	if err != nil || tag == "" || strings.Contains(tag, "/") {
+		writeJSONError(w, http.StatusBadRequest, "节点标识无效")
+		return
+	}
+	cleared, err := s.mgr.ClearDiagnostics(tag)
+	if err != nil {
+		writeJSONError(w, runtimeNodeErrorStatus(err, http.StatusNotFound), err.Error())
+		return
+	}
+	s.persistDiagnosticsState()
+	writeJSON(w, map[string]any{"message": "诊断记录已删除", "cleared": cleared})
+}
+
+func (s *Server) persistDiagnosticsState() {
+	type diagnosticsStatePersister interface {
+		PersistDiagnosticsState() error
+	}
+	if persister, ok := s.nodeManager().(diagnosticsStatePersister); ok {
+		if err := persister.PersistDiagnosticsState(); err != nil && s.logger != nil {
+			s.logger.Printf("persist cleared diagnostics: %v", err)
+		}
+	}
+}
 func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/nodes/"), "/")
 	if len(parts) < 1 {
@@ -1390,6 +1449,49 @@ func parsePositiveSettingsDuration(value string) (time.Duration, error) {
 	return duration, nil
 }
 
+func parseOptionalSettingsDuration(value string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || trimmed == "0" || trimmed == "0s" {
+		return 0, nil
+	}
+	return parsePositiveSettingsDuration(trimmed)
+}
+
+func applyProbePolicyUpdate(candidate *config.ManagementConfig, mode, interval, timeout *string, batchSize *int) error {
+	if candidate == nil {
+		return errors.New("管理端配置未初始化")
+	}
+	if mode != nil {
+		candidate.ProbeMode = strings.ToLower(strings.TrimSpace(*mode))
+	}
+	switch candidate.ProbeMode {
+	case "", "all", "sample", "manual":
+	default:
+		return errors.New("探测模式必须为 all、sample 或 manual")
+	}
+	if interval != nil {
+		value, err := parsePositiveSettingsDuration(*interval)
+		if err != nil || value < 10*time.Second {
+			return errors.New("自动探测间隔必须至少为 10s")
+		}
+		candidate.ProbeInterval = value
+	}
+	if timeout != nil {
+		value, err := parsePositiveSettingsDuration(*timeout)
+		if err != nil || value < 100*time.Millisecond {
+			return errors.New("单节点探测超时必须至少为 100ms")
+		}
+		candidate.ProbeTimeout = value
+	}
+	if batchSize != nil {
+		if *batchSize < 1 || *batchSize > 1_000_000 {
+			return errors.New("探测批次大小必须在 1 到 1000000 之间")
+		}
+		candidate.ProbeBatchSize = *batchSize
+	}
+	return nil
+}
+
 func validateProbeTarget(value string) error {
 	_, ready, err := resolveProbeTarget(value, false)
 	if err == nil && !ready {
@@ -1484,6 +1586,9 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 			return fmt.Errorf("探测并发数必须在 1 到 %d 之间", maxProbeConcurrency)
 		}
 		candidate.Management.ProbeConcurrency = *request.ProbeConcurrency
+	}
+	if err := applyProbePolicyUpdate(&candidate.Management, request.ProbeMode, request.ProbeInterval, request.ProbeTimeout, request.ProbeBatchSize); err != nil {
+		return err
 	}
 	if request.Mode != nil {
 		candidate.Mode = strings.TrimSpace(*request.Mode)
@@ -1597,6 +1702,9 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 			}
 			candidate.Management.ProbeConcurrency = *request.Management.ProbeConcurrency
 		}
+		if err := applyProbePolicyUpdate(&candidate.Management, request.Management.ProbeMode, request.Management.ProbeInterval, request.Management.ProbeTimeout, request.Management.ProbeBatchSize); err != nil {
+			return err
+		}
 	}
 	if err := config.ValidateManagementConfig(candidate.Management); err != nil {
 		return fmt.Errorf("管理端配置无效: %w", err)
@@ -1612,8 +1720,13 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 		candidate.Log.Output = output
 		candidate.Log.MaxSize = request.Log.MaxSize
 		candidate.Log.MaxBackups = request.Log.MaxBackups
+		rotateInterval, err := parseOptionalSettingsDuration(request.Log.RotateInterval)
+		if err != nil || (rotateInterval > 0 && rotateInterval < time.Minute) {
+			return errors.New("定时日志轮转间隔必须为 0 或至少 1m")
+		}
 		candidate.Log.MaxAge = request.Log.MaxAge
 		candidate.Log.Compress = request.Log.Compress
+		candidate.Log.RotateInterval = rotateInterval
 	}
 	if request.GeoIP != nil {
 		candidate.GeoIP.Enabled = request.GeoIP.Enabled
@@ -1657,8 +1770,9 @@ func persistSettingsCandidate(candidate *config.Config) (func() error, error) {
 
 func writeSettingsSuccess(w http.ResponseWriter, candidate *config.Config, previousPassword string, runtimeConfig Config, previousLog config.LogConfig) {
 	managementRestartRequired := managementRuntimeChanged(runtimeConfig, candidate.Management)
+	probeRestartRequired := probePolicyRuntimeChanged(runtimeConfig, candidate)
 	logRestartRequired := previousLog != candidate.Log
-	needRestart := managementRestartRequired || logRestartRequired
+	needRestart := managementRestartRequired || probeRestartRequired || logRestartRequired
 	passwordChanged := !managementRestartRequired && previousPassword != candidate.Management.Password
 	writeJSON(w, map[string]any{
 		"message":          "设置已保存并生效",
@@ -1712,13 +1826,18 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"probe_target":      probeTarget,
 			"skip_cert_verify":  skipCertVerify,
 			"probe_concurrency": probeConcurrency,
+			"probe_mode":        cfg.ProbeModeOrDefault(),
+			"probe_interval":    cfg.ProbeIntervalOrDefault().String(),
+			"probe_timeout":     cfg.ProbeTimeoutOrDefault().String(),
+			"probe_batch_size":  cfg.ProbeBatchSizeOrDefault(),
 			"log": map[string]any{
-				"output":      logCfg.Output,
-				"file":        logCfg.File,
-				"max_size":    logCfg.MaxSize,
-				"max_backups": logCfg.MaxBackups,
-				"max_age":     logCfg.MaxAge,
-				"compress":    logCfg.Compress,
+				"output":          logCfg.Output,
+				"file":            logCfg.File,
+				"max_size":        logCfg.MaxSize,
+				"max_backups":     logCfg.MaxBackups,
+				"max_age":         logCfg.MaxAge,
+				"compress":        logCfg.Compress,
+				"rotate_interval": logCfg.RotateInterval.String(),
 			},
 			"geoip": map[string]any{
 				"enabled":              false,
@@ -1768,6 +1887,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"listen":            cfg.Management.Listen,
 				"password":          cfg.Management.Password,
 				"probe_concurrency": cfg.ProbeConcurrencyOrDefault(),
+				"probe_mode":        cfg.ProbeModeOrDefault(),
+				"probe_interval":    cfg.ProbeIntervalOrDefault().String(),
+				"probe_timeout":     cfg.ProbeTimeoutOrDefault().String(),
+				"probe_batch_size":  cfg.ProbeBatchSizeOrDefault(),
 				"tls_cert_file":     cfg.Management.TLSCertFile,
 				"tls_key_file":      cfg.Management.TLSKeyFile,
 			}
@@ -2293,6 +2416,14 @@ func newNodeConfigResponse(node config.NodeConfig, revealURI bool) nodeConfigRes
 	}
 }
 
+func newNodeConfigListResponse(node config.NodeConfig, revealURI bool) nodeConfigResponse {
+	response := newNodeConfigResponse(node, false)
+	if revealURI {
+		response.URI = node.URI
+	}
+	return response
+}
+
 func (p nodePayload) toConfig() config.NodeConfig {
 	return config.NodeConfig{
 		Name:     p.Name,
@@ -2321,9 +2452,13 @@ func (s *Server) handleConfigNodes(w http.ResponseWriter, r *http.Request) {
 			s.respondNodeError(w, err)
 			return
 		}
+		revealURI := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("reveal")), "true")
+		if revealURI {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		responseNodes := make([]nodeConfigResponse, 0, len(nodes))
 		for _, node := range nodes {
-			responseNodes = append(responseNodes, newNodeConfigResponse(node, false))
+			responseNodes = append(responseNodes, newNodeConfigListResponse(node, revealURI))
 		}
 		writeJSON(w, map[string]any{"nodes": responseNodes})
 	case http.MethodPost:
@@ -2510,14 +2645,17 @@ func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleLogs returns recent console log content from the in-memory ring buffer.
+// handleLogs returns or clears recent console log content in the in-memory ring buffer.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSONMethodNotAllowed(w, http.MethodGet)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]any{"logs": SharedLogBuffer.Content()})
+	case http.MethodDelete:
+		cleared := SharedLogBuffer.Clear()
+		writeJSON(w, map[string]any{"message": "Console 日志已清空", "cleared_bytes": cleared})
+	default:
+		writeJSONMethodNotAllowed(w, "GET, DELETE")
 	}
-	content := SharedLogBuffer.Content()
-	writeJSON(w, map[string]any{"logs": content})
 }
 
 // Session management functions

@@ -36,6 +36,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		ExternalIP:       cfg.ExternalIP,
 		SkipCertVerify:   cfg.SkipCertVerify,
 		ProbeConcurrency: cfg.ProbeConcurrencyOrDefault(),
+		ProbeMode:        cfg.ProbeModeOrDefault(),
+		ProbeInterval:    cfg.ProbeIntervalOrDefault(),
+		ProbeTimeout:     cfg.ProbeTimeoutOrDefault(),
+		ProbeBatchSize:   cfg.ProbeBatchSizeOrDefault(),
 	}
 
 	// Create and start BoxManager

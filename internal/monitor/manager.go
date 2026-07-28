@@ -23,11 +23,15 @@ type Config struct {
 	Password         string
 	TLSCertFile      string
 	TLSKeyFile       string
-	ProxyUsername    string // 代理池的用户名（用于导出）
-	ProxyPassword    string // 代理池的密码（用于导出）
-	ExternalIP       string // 外部 IP 地址，用于导出时替换 0.0.0.0
-	SkipCertVerify   bool   // 全局跳过 SSL 证书验证
-	ProbeConcurrency int    // 全局批量探测并发数
+	ProxyUsername    string        // 代理池的用户名（用于导出）
+	ProxyPassword    string        // 代理池的密码（用于导出）
+	ExternalIP       string        // 外部 IP 地址，用于导出时替换 0.0.0.0
+	SkipCertVerify   bool          // 全局跳过 SSL 证书验证
+	ProbeConcurrency int           // 全局批量探测并发数
+	ProbeMode        string        // all、sample 或 manual
+	ProbeInterval    time.Duration // 自动探测间隔
+	ProbeTimeout     time.Duration // 单节点探测超时
+	ProbeBatchSize   int           // sample 模式每轮节点数
 }
 
 // NodeInfo is static metadata about a proxy entry.
@@ -73,22 +77,24 @@ type Snapshot struct {
 	Available         bool            `json:"available"`
 	InitialCheckDone  bool            `json:"initial_check_done"`
 	Timeline          []TimelineEvent `json:"timeline,omitempty"`
+	HasDiagnostics    bool            `json:"-"`
 }
 
 // PersistedHealthState is the restart-safe subset of a node's monitor state.
 // Active connections, callbacks and the short debug timeline are deliberately
 // process-local and are not restored.
 type PersistedHealthState struct {
-	FailureCount     int           `yaml:"failure_count,omitempty"`
-	SuccessCount     int64         `yaml:"success_count,omitempty"`
-	BlacklistedUntil time.Time     `yaml:"blacklisted_until,omitempty"`
-	CooldownUntil    time.Time     `yaml:"cooldown_until,omitempty"`
-	LastError        string        `yaml:"last_error,omitempty"`
-	LastFailure      time.Time     `yaml:"last_failure,omitempty"`
-	LastSuccess      time.Time     `yaml:"last_success,omitempty"`
-	LastProbeLatency time.Duration `yaml:"last_probe_latency,omitempty"`
-	Available        bool          `yaml:"available,omitempty"`
-	InitialCheckDone bool          `yaml:"initial_check_done,omitempty"`
+	FailureCount       int           `yaml:"failure_count,omitempty"`
+	SuccessCount       int64         `yaml:"success_count,omitempty"`
+	BlacklistedUntil   time.Time     `yaml:"blacklisted_until,omitempty"`
+	CooldownUntil      time.Time     `yaml:"cooldown_until,omitempty"`
+	LastError          string        `yaml:"last_error,omitempty"`
+	LastFailure        time.Time     `yaml:"last_failure,omitempty"`
+	LastSuccess        time.Time     `yaml:"last_success,omitempty"`
+	LastProbeLatency   time.Duration `yaml:"last_probe_latency,omitempty"`
+	Available          bool          `yaml:"available,omitempty"`
+	InitialCheckDone   bool          `yaml:"initial_check_done,omitempty"`
+	DiagnosticsVisible bool          `yaml:"diagnostics_visible,omitempty"`
 }
 
 type probeFunc func(ctx context.Context) (time.Duration, error)
@@ -99,32 +105,33 @@ type EntryHandle struct {
 }
 
 type entry struct {
-	info             NodeInfo
-	failure          int
-	success          int64
-	timeline         []TimelineEvent
-	blacklist        bool
-	until            time.Time
-	coolingDown      bool
-	cooldownUntil    time.Time
-	lastError        string
-	lastFail         time.Time
-	lastOK           time.Time
-	lastProbe        time.Duration
-	active           atomic.Int32
-	probe            probeFunc
-	release          releaseFunc
-	blacklistFn      func(time.Duration)
-	initialCheckDone bool
-	available        bool
-	mu               sync.RWMutex
-	probeMu          sync.Mutex
-	probeGeneration  uint64
-	probeCall        *inFlightProbe
-	probeSlots       chan struct{}
-	probeLifecycleMu *sync.RWMutex
-	probeStopped     *atomic.Bool
-	probeWG          *sync.WaitGroup
+	info               NodeInfo
+	failure            int
+	success            int64
+	timeline           []TimelineEvent
+	blacklist          bool
+	until              time.Time
+	coolingDown        bool
+	cooldownUntil      time.Time
+	lastError          string
+	lastFail           time.Time
+	lastOK             time.Time
+	lastProbe          time.Duration
+	active             atomic.Int32
+	probe              probeFunc
+	release            releaseFunc
+	blacklistFn        func(time.Duration)
+	initialCheckDone   bool
+	available          bool
+	diagnosticsVisible bool
+	mu                 sync.RWMutex
+	probeMu            sync.Mutex
+	probeGeneration    uint64
+	probeCall          *inFlightProbe
+	probeSlots         chan struct{}
+	probeLifecycleMu   *sync.RWMutex
+	probeStopped       *atomic.Bool
+	probeWG            *sync.WaitGroup
 }
 
 type probeOutcome struct {
@@ -142,6 +149,7 @@ type probeSweepRequest struct {
 	generation uint64
 	ctx        context.Context
 	timeout    time.Duration
+	limit      int
 	done       chan struct{}
 	err        error
 }
@@ -185,6 +193,7 @@ type Manager struct {
 	probeSweepDone   atomic.Int32
 	probeSweepOK     atomic.Int32
 	probeSweepFail   atomic.Int32
+	probeBatchCursor atomic.Uint64
 
 	probeGate           sync.Mutex
 	sweepRunning        bool
@@ -306,31 +315,99 @@ func (m *Manager) loggerSnapshot() Logger {
 	return m.logger
 }
 
-// StartPeriodicHealthCheck starts a background goroutine that periodically checks all nodes.
-// interval: how often to check (e.g., 30 * time.Second)
-// timeout: timeout for each probe (e.g., 10 * time.Second)
+const (
+	defaultAutomaticProbeInterval = 5 * time.Minute
+	defaultAutomaticProbeBatch    = 100
+)
+
+func (m *Manager) automaticProbePolicy(minimum int) (enabled bool, limit int, interval, timeout time.Duration) {
+	m.mu.RLock()
+	cfg := m.cfg
+	m.mu.RUnlock()
+	mode := strings.ToLower(strings.TrimSpace(cfg.ProbeMode))
+	if mode == "" {
+		mode = "all"
+	}
+	if mode == "manual" {
+		return false, 0, 0, 0
+	}
+	interval = cfg.ProbeInterval
+	if interval <= 0 {
+		interval = defaultAutomaticProbeInterval
+	}
+	timeout = probeTimeout(cfg.ProbeTimeout)
+	if mode == "sample" {
+		limit = cfg.ProbeBatchSize
+		if limit <= 0 {
+			limit = defaultAutomaticProbeBatch
+		}
+		if limit < minimum {
+			limit = minimum
+		}
+	}
+	return true, limit, interval, timeout
+}
+
+// StartPeriodicHealthCheck preserves the legacy full-pool scheduler API.
 func (m *Manager) StartPeriodicHealthCheck(interval, timeout time.Duration) {
+	m.startPeriodicHealthCheck(true, 0, interval, timeout)
+}
+
+// StartConfiguredPeriodicHealthCheck starts the all/sample/manual policy from Config.
+func (m *Manager) StartConfiguredPeriodicHealthCheck() {
+	enabled, limit, interval, timeout := m.automaticProbePolicy(0)
+	m.startPeriodicHealthCheck(enabled, limit, interval, timeout)
+}
+
+func (m *Manager) startPeriodicHealthCheck(enabled bool, limit int, interval, timeout time.Duration) {
+	if !enabled {
+		if logger := m.loggerSnapshot(); logger != nil {
+			logger.Info("automatic health checks disabled; manual probes remain available")
+		}
+		return
+	}
+	if interval <= 0 {
+		interval = defaultAutomaticProbeInterval
+	}
+	timeout = probeTimeout(timeout)
 	go func() {
 		// The initial pass uses the same process-wide coordinator as periodic,
 		// post-reload and WebUI-triggered sweeps.
-		_ = m.probeAllNodesContext(m.ctx, timeout)
+		_ = m.probeNodesContext(m.ctx, timeout, limit)
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-
 		for {
 			select {
 			case <-m.ctx.Done():
 				return
 			case <-ticker.C:
-				_ = m.probeAllNodesContext(m.ctx, timeout)
+				_ = m.probeNodesContext(m.ctx, timeout, limit)
 			}
 		}
 	}()
 
 	if logger := m.loggerSnapshot(); logger != nil {
-		logger.Info("periodic health check started, interval: ", interval)
+		logger.Info("periodic health check started, interval: ", interval, ", batch size: ", limit)
 	}
+}
+
+// ProbeConfiguredNow runs one automatic-policy pass. Manual mode is a no-op.
+func (m *Manager) ProbeConfiguredNow(timeout time.Duration) {
+	_, _ = m.ProbeConfiguredNowContext(context.Background(), timeout, 0)
+}
+
+// ProbeConfiguredNowContext applies the configured sample size while ensuring a
+// validation pass can inspect at least minimum nodes. It reports whether a pass ran.
+func (m *Manager) ProbeConfiguredNowContext(ctx context.Context, timeout time.Duration, minimum int) (bool, error) {
+	enabled, limit, _, configuredTimeout := m.automaticProbePolicy(minimum)
+	if !enabled {
+		return false, nil
+	}
+	if timeout <= 0 {
+		timeout = configuredTimeout
+	}
+	return true, m.probeNodesContext(ctx, timeout, limit)
 }
 
 // ProbeAllNow triggers a one-time health check on all nodes (e.g. after reload).
@@ -346,6 +423,10 @@ func (m *Manager) ProbeAllNowContext(ctx context.Context, timeout time.Duration)
 }
 
 func (m *Manager) probeAllNodesContext(ctx context.Context, timeout time.Duration) error {
+	return m.probeNodesContext(ctx, timeout, 0)
+}
+
+func (m *Manager) probeNodesContext(ctx context.Context, timeout time.Duration, limit int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -360,6 +441,7 @@ func (m *Manager) probeAllNodesContext(ctx context.Context, timeout time.Duratio
 	request := &probeSweepRequest{
 		ctx:     ctx,
 		timeout: timeout,
+		limit:   limit,
 		done:    make(chan struct{}),
 	}
 	m.probeGate.Lock()
@@ -408,6 +490,7 @@ func (m *Manager) runProbeCoordinator() {
 
 		active := make([]*probeSweepRequest, 0, len(batch))
 		sweepTimeout := time.Duration(0)
+		sweepLimit := -1
 		for _, request := range batch {
 			if request.ctx.Err() != nil {
 				continue
@@ -415,6 +498,11 @@ func (m *Manager) runProbeCoordinator() {
 			active = append(active, request)
 			if request.timeout > sweepTimeout {
 				sweepTimeout = request.timeout
+			}
+			if request.limit <= 0 {
+				sweepLimit = 0
+			} else if sweepLimit != 0 && request.limit > sweepLimit {
+				sweepLimit = request.limit
 			}
 		}
 
@@ -432,7 +520,7 @@ func (m *Manager) runProbeCoordinator() {
 				}))
 			}
 			stops = append(stops, context.AfterFunc(m.ctx, cancelSweep))
-			sweepErr = m.runProbeSweep(sweepCtx, sweepTimeout)
+			sweepErr = m.runProbeSweep(sweepCtx, sweepTimeout, sweepLimit)
 			cancelSweep()
 			for _, stop := range stops {
 				stop()
@@ -487,7 +575,7 @@ func sweepTimeout(total, workers int, perProbe time.Duration) time.Duration {
 // runProbeSweep executes one bounded worker-pool pass. The outer sweep context
 // and the per-entry contexts both have deadlines, so even an outbound that
 // ignores cancellation cannot keep a worker or WaitGroup stuck indefinitely.
-func (m *Manager) runProbeSweep(operationCtx context.Context, timeout time.Duration) error {
+func (m *Manager) runProbeSweep(operationCtx context.Context, timeout time.Duration, limit int) error {
 	if operationCtx == nil {
 		operationCtx = context.Background()
 	}
@@ -500,6 +588,28 @@ func (m *Manager) runProbeSweep(operationCtx context.Context, timeout time.Durat
 		entries = append(entries, e)
 	}
 	m.mu.RUnlock()
+
+	if limit > 0 && limit < len(entries) {
+		type taggedEntry struct {
+			tag   string
+			entry *entry
+		}
+		tagged := make([]taggedEntry, 0, len(entries))
+		for _, candidate := range entries {
+			candidate.mu.RLock()
+			tag := candidate.info.Tag
+			candidate.mu.RUnlock()
+			tagged = append(tagged, taggedEntry{tag: tag, entry: candidate})
+		}
+		sort.Slice(tagged, func(i, j int) bool { return tagged[i].tag < tagged[j].tag })
+		start := int(m.probeBatchCursor.Load() % uint64(len(tagged)))
+		selected := make([]*entry, 0, limit)
+		for offset := 0; offset < limit; offset++ {
+			selected = append(selected, tagged[(start+offset)%len(tagged)].entry)
+		}
+		m.probeBatchCursor.Add(uint64(limit))
+		entries = selected
+	}
 
 	m.probeSweepTotal.Store(int32(len(entries)))
 	m.probeSweepDone.Store(0)
@@ -823,6 +933,47 @@ func (m *Manager) entry(tag string) (*entry, error) {
 	return e, nil
 }
 
+// ClearDiagnostics removes a node's diagnostic counters and timeline without
+// changing its availability, latency, blacklist, cooldown or routing state.
+func (m *Manager) ClearDiagnostics(tag string) (bool, error) {
+	e, err := m.entry(tag)
+	if err != nil {
+		return false, err
+	}
+	return e.clearDiagnostics(), nil
+}
+
+// ClearAllDiagnostics clears every visible diagnostic record.
+func (m *Manager) ClearAllDiagnostics() int {
+	m.mu.RLock()
+	entries := make([]*entry, 0, len(m.nodes))
+	for _, e := range m.nodes {
+		entries = append(entries, e)
+	}
+	m.mu.RUnlock()
+	cleared := 0
+	for _, e := range entries {
+		if e.clearDiagnostics() {
+			cleared++
+		}
+	}
+	return cleared
+}
+
+func (e *entry) clearDiagnostics() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	hadRecord := e.diagnosticsVisible || e.failure != 0 || e.success != 0 || len(e.timeline) != 0
+	e.failure = 0
+	e.success = 0
+	e.timeline = e.timeline[:0]
+	e.lastError = ""
+	e.lastFail = time.Time{}
+	e.lastOK = time.Time{}
+	e.diagnosticsVisible = false
+	return hadRecord
+}
+
 func (e *entry) snapshot() Snapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -858,6 +1009,7 @@ func (e *entry) snapshot() Snapshot {
 		Available:         e.available,
 		InitialCheckDone:  e.initialCheckDone,
 		Timeline:          timelineCopy,
+		HasDiagnostics:    e.diagnosticsVisible,
 	}
 }
 
@@ -866,6 +1018,7 @@ func (e *entry) recordFailure(err error) {
 	defer e.mu.Unlock()
 	errStr := SanitizeProbeError(err)
 	e.failure++
+	e.diagnosticsVisible = true
 	e.lastError = errStr
 	e.lastFail = time.Now()
 	e.appendTimelineLocked(false, 0, errStr)
@@ -875,6 +1028,7 @@ func (e *entry) recordSuccess() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.success++
+	e.diagnosticsVisible = true
 	e.lastOK = time.Now()
 	e.appendTimelineLocked(true, 0, "")
 }
@@ -883,6 +1037,7 @@ func (e *entry) recordSuccessWithLatency(latency time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.success++
+	e.diagnosticsVisible = true
 	e.lastOK = time.Now()
 	e.lastProbe = latency
 	latencyMs := latency.Milliseconds()
@@ -1205,16 +1360,17 @@ func (h *EntryHandle) ExportHealthState() PersistedHealthState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return PersistedHealthState{
-		FailureCount:     e.failure,
-		SuccessCount:     e.success,
-		BlacklistedUntil: e.until,
-		CooldownUntil:    e.cooldownUntil,
-		LastError:        SanitizeProbeError(errors.New(e.lastError)),
-		LastFailure:      e.lastFail,
-		LastSuccess:      e.lastOK,
-		LastProbeLatency: e.lastProbe,
-		Available:        e.available,
-		InitialCheckDone: e.initialCheckDone,
+		FailureCount:       e.failure,
+		SuccessCount:       e.success,
+		BlacklistedUntil:   e.until,
+		CooldownUntil:      e.cooldownUntil,
+		LastError:          SanitizeProbeError(errors.New(e.lastError)),
+		LastFailure:        e.lastFail,
+		LastSuccess:        e.lastOK,
+		LastProbeLatency:   e.lastProbe,
+		Available:          e.available,
+		InitialCheckDone:   e.initialCheckDone,
+		DiagnosticsVisible: e.diagnosticsVisible,
 	}
 }
 
@@ -1233,6 +1389,7 @@ func (h *EntryHandle) RestoreHealthState(state PersistedHealthState) {
 	e.lastProbe = state.LastProbeLatency
 	e.available = state.Available
 	e.initialCheckDone = state.InitialCheckDone
+	e.diagnosticsVisible = state.DiagnosticsVisible || state.FailureCount > 0 || state.SuccessCount > 0
 	if state.BlacklistedUntil.After(time.Now()) {
 		e.blacklist = true
 		e.until = state.BlacklistedUntil
