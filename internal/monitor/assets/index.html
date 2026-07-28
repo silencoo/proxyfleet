@@ -2087,8 +2087,6 @@
           const down = d.down || 0;
           const now = new Date().toLocaleTimeString([], {hour12: false});
           trafficRetryAttempts = 0;
-          const panel = document.getElementById('trafficPanel');
-          if (panel) panel.hidden = false;
           trafficTime.push(now);
           trafficDataUp.push(up);
           trafficDataDown.push(down);
@@ -2108,10 +2106,6 @@
         trafficSource.close();
         trafficSource = null;
         trafficRetryAttempts++;
-        if (trafficRetryAttempts >= 3 && trafficTime.length === 0) {
-          const panel = document.getElementById('trafficPanel');
-          if (panel) panel.hidden = true;
-        }
         const retryDelay = Math.min(60000, 2000 * Math.pow(2, Math.min(trafficRetryAttempts - 1, 5)));
         trafficRetryTimer = setTimeout(() => {
           trafficRetryTimer = null;

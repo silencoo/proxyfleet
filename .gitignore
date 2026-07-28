@@ -17,6 +17,10 @@ GeoLite2-Country.mmdb
 *.log
 logs/
 
+# Runtime state
+data/
+*.lock
+
 # IDE and editor
 .idea/
 .vscode/
@@ -31,6 +35,7 @@ logs/
 .LSOverride
 
 # Go
+artifacts/
 vendor/
 
 # Test artifacts

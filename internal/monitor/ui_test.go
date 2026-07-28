@@ -147,7 +147,8 @@ func TestEmbeddedWebUIHasScalableNodeOperations(t *testing.T) {
 		`regionHealthyCache = data.region_healthy || {}`,
 		`subscriptionSettingsLoaded && currentSubSnapshot !== _savedSubSnapshot`,
 		`if (isAutoRefresh) startAutoRefresh()`,
-		`trafficRetryAttempts >= 3`,
+		`id="trafficPanel"`,
+		`trafficRetryAttempts++`,
 		`Math.min(60000, 2000 * Math.pow(2`,
 		`function maskNodeURI(uri)`,
 		`if (!node.available) return 1;`,
@@ -168,6 +169,7 @@ func TestEmbeddedWebUIHasScalableNodeOperations(t *testing.T) {
 
 	forbidden := []string{
 		`<textarea id="consoleLogs"`,
+		`panel.hidden = true`,
 	}
 	for _, value := range forbidden {
 		if strings.Contains(html, value) {
