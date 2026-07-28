@@ -118,17 +118,33 @@ type MultiPortConfig struct {
 
 // ManagementConfig controls the monitoring HTTP endpoint.
 type ManagementConfig struct {
-	Enabled          *bool         `yaml:"enabled"`
-	Listen           string        `yaml:"listen"`
-	ProbeTarget      string        `yaml:"probe_target"`
-	ProbeConcurrency int           `yaml:"probe_concurrency"` // 全局批量探测并发数（1-1024，默认 32）
-	ProbeMode        string        `yaml:"probe_mode"`        // all、sample 或 manual
-	ProbeInterval    time.Duration `yaml:"probe_interval"`    // 自动探测间隔，默认 5m
-	ProbeTimeout     time.Duration `yaml:"probe_timeout"`     // 单节点探测超时，默认 10s
-	ProbeBatchSize   int           `yaml:"probe_batch_size"`  // sample 模式每轮节点数，默认 100
-	Password         string        `yaml:"password"`          // WebUI 访问密码，为空则不需要密码
-	TLSCertFile      string        `yaml:"tls_cert_file,omitempty"`
-	TLSKeyFile       string        `yaml:"tls_key_file,omitempty"`
+	Enabled                   *bool         `yaml:"enabled"`
+	Listen                    string        `yaml:"listen"`
+	ProbeTarget               string        `yaml:"probe_target"`
+	ProbeConcurrency          int           `yaml:"probe_concurrency"`            // 全局批量探测并发数（1-1024，默认 32）
+	ProbeMode                 string        `yaml:"probe_mode"`                   // all、sample、adaptive 或 manual
+	ProbeInterval             time.Duration `yaml:"probe_interval"`               // 自动调度周期，默认 5m
+	ProbeTimeout              time.Duration `yaml:"probe_timeout"`                // 单节点探测超时，默认 10s
+	ProbeBatchSize            int           `yaml:"probe_batch_size"`             // sample/adaptive 每轮节点上限，默认 100
+	ProbeHealthyInterval      time.Duration `yaml:"probe_healthy_interval"`       // adaptive 健康节点复检间隔
+	ProbeFailureRetryInterval time.Duration `yaml:"probe_failure_retry_interval"` // adaptive 失败节点首次复检间隔
+	ProbeFailureMaxInterval   time.Duration `yaml:"probe_failure_max_interval"`   // adaptive 失败退避上限
+	ProbePassiveGrace         time.Duration `yaml:"probe_passive_grace"`          // 真实流量成功后的免探测窗口
+	ProbeMaxPerHour           int           `yaml:"probe_max_per_hour"`           // adaptive 每小时主动探测预算，0 表示不限
+	Password                  string        `yaml:"password"`                     // admin 密码，为空则仅允许本机免密管理
+	OperatorPassword          string        `yaml:"operator_password,omitempty"`
+	ViewerPassword            string        `yaml:"viewer_password,omitempty"`
+	HistoryEnabled            *bool         `yaml:"history_enabled,omitempty"`
+	HistoryFile               string        `yaml:"history_file,omitempty"`
+	HistoryRetention          time.Duration `yaml:"history_retention,omitempty"`
+	HistoryInterval           time.Duration `yaml:"history_interval,omitempty"`
+	AlertMinAvailable         int           `yaml:"alert_min_available,omitempty"`
+	AlertMinAvailableRatio    float64       `yaml:"alert_min_available_ratio,omitempty"`
+	AlertCooldown             time.Duration `yaml:"alert_cooldown,omitempty"`
+	AuditFile                 string        `yaml:"audit_file,omitempty"`
+	AuditMaxEntries           int           `yaml:"audit_max_entries,omitempty"`
+	TLSCertFile               string        `yaml:"tls_cert_file,omitempty"`
+	TLSKeyFile                string        `yaml:"tls_key_file,omitempty"`
 }
 
 // SubscriptionRefreshConfig controls subscription auto-refresh and reload settings.
@@ -141,6 +157,9 @@ type SubscriptionRefreshConfig struct {
 	MinAvailableNodes    int           `yaml:"min_available_nodes"`    // 最少可用节点数，低于此值不切换
 	FetchConcurrency     int           `yaml:"fetch_concurrency"`      // 订阅抓取并发数，默认 16，最大 32
 	AllowPrivateNetworks bool          `yaml:"allow_private_networks"` // 显式允许订阅访问回环/私网/链路本地地址
+	MaxRemovedRatio      float64       `yaml:"max_removed_ratio"`      // 删除比例超过阈值时需要显式确认，0 表示默认 50%
+	MinAvailableRatio    float64       `yaml:"min_available_ratio"`    // 候选池可用比例门槛，0 表示仅使用绝对数量
+	QuarantineNewNodes   *bool         `yaml:"quarantine_new_nodes"`   // 新节点必须通过候选池预检后才切换
 }
 
 // NodeSource indicates where a node configuration originated from.
@@ -386,6 +405,9 @@ func (c *Config) normalize() error {
 		c.SubscriptionRefresh.MinAvailableNodes = 1
 	}
 	c.SubscriptionRefresh.FetchConcurrency = NormalizeSubscriptionFetchConcurrency(c.SubscriptionRefresh.FetchConcurrency)
+	if err := c.normalizeSubscriptionSafetyConfig(); err != nil {
+		return err
+	}
 	validatedSubscriptions, err := ValidateSubscriptionURLs(c.Subscriptions)
 	if err != nil {
 		return err
@@ -1076,6 +1098,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		c.SubscriptionRefresh.MinAvailableNodes = 1
 	}
 	c.SubscriptionRefresh.FetchConcurrency = NormalizeSubscriptionFetchConcurrency(c.SubscriptionRefresh.FetchConcurrency)
+	if err := c.normalizeSubscriptionSafetyConfig(); err != nil {
+		return err
+	}
 	validatedSubscriptions, err := ValidateSubscriptionURLs(c.Subscriptions)
 	if err != nil {
 		return err
@@ -1221,10 +1246,10 @@ func (c *Config) normalizePoolConfig() error {
 		mode = "sequential"
 	}
 	switch mode {
-	case "sequential", "random", "balance", "latency":
+	case "sequential", "random", "balance", "latency", "quality":
 		c.Pool.Mode = mode
 	default:
-		return fmt.Errorf("unsupported pool mode %q (use 'sequential', 'random', 'balance', or 'latency')", c.Pool.Mode)
+		return fmt.Errorf("unsupported pool mode %q (use 'sequential', 'random', 'balance', 'latency', or 'quality')", c.Pool.Mode)
 	}
 	if c.Pool.FailureThreshold <= 0 {
 		c.Pool.FailureThreshold = 3
@@ -1279,13 +1304,22 @@ func (c *Config) normalizeGeoIPConfig() {
 }
 
 const (
-	defaultProbeMode      = "all"
-	defaultProbeInterval  = 5 * time.Minute
-	defaultProbeTimeout   = 10 * time.Second
-	defaultProbeBatchSize = 100
-	minimumProbeInterval  = 10 * time.Second
-	minimumProbeTimeout   = 100 * time.Millisecond
-	maximumProbeBatchSize = 1_000_000
+	defaultProbeMode                 = "all"
+	defaultProbeInterval             = 5 * time.Minute
+	defaultProbeTimeout              = 10 * time.Second
+	defaultProbeBatchSize            = 100
+	defaultProbeHealthyInterval      = 30 * time.Minute
+	defaultProbeFailureRetryInterval = time.Minute
+	defaultProbeFailureMaxInterval   = time.Hour
+	defaultProbePassiveGrace         = 10 * time.Minute
+	defaultProbeMaxPerHour           = 600
+	defaultHistoryRetention          = 24 * time.Hour
+	defaultHistoryInterval           = time.Minute
+	defaultAlertCooldown             = 10 * time.Minute
+	defaultAuditMaxEntries           = 1000
+	minimumProbeInterval             = 10 * time.Second
+	minimumProbeTimeout              = 100 * time.Millisecond
+	maximumProbeBatchSize            = 1_000_000
 )
 
 func normalizeProbeMode(value string) (string, error) {
@@ -1294,10 +1328,10 @@ func normalizeProbeMode(value string) (string, error) {
 		mode = defaultProbeMode
 	}
 	switch mode {
-	case "all", "sample", "manual":
+	case "all", "sample", "adaptive", "manual":
 		return mode, nil
 	default:
-		return "", fmt.Errorf("unsupported management probe_mode %q (use 'all', 'sample', or 'manual')", value)
+		return "", fmt.Errorf("unsupported management probe_mode %q (use 'all', 'sample', 'adaptive', or 'manual')", value)
 	}
 }
 
@@ -1324,6 +1358,81 @@ func (c *Config) normalizeManagementProbeConfig() error {
 	}
 	if c.Management.ProbeBatchSize > maximumProbeBatchSize {
 		return fmt.Errorf("management probe_batch_size must not exceed %d", maximumProbeBatchSize)
+	}
+	if c.Management.ProbeHealthyInterval <= 0 {
+		c.Management.ProbeHealthyInterval = defaultProbeHealthyInterval
+	}
+	if c.Management.ProbeFailureRetryInterval <= 0 {
+		c.Management.ProbeFailureRetryInterval = defaultProbeFailureRetryInterval
+	}
+	if c.Management.ProbeFailureMaxInterval <= 0 {
+		c.Management.ProbeFailureMaxInterval = defaultProbeFailureMaxInterval
+	}
+	if c.Management.ProbeFailureMaxInterval < c.Management.ProbeFailureRetryInterval {
+		return errors.New("management probe_failure_max_interval must be greater than or equal to probe_failure_retry_interval")
+	}
+	if c.Management.ProbePassiveGrace <= 0 {
+		c.Management.ProbePassiveGrace = defaultProbePassiveGrace
+	}
+	if c.Management.ProbeMaxPerHour < 0 {
+		return errors.New("management probe_max_per_hour cannot be negative")
+	}
+	if c.Management.ProbeMode == "adaptive" && c.Management.ProbeMaxPerHour == 0 {
+		c.Management.ProbeMaxPerHour = defaultProbeMaxPerHour
+	}
+	if c.Management.HistoryEnabled == nil {
+		enabled := true
+		c.Management.HistoryEnabled = &enabled
+	}
+	if strings.TrimSpace(c.Management.HistoryFile) == "" {
+		c.Management.HistoryFile = "monitor-history.json"
+	}
+	if c.Management.HistoryRetention <= 0 {
+		c.Management.HistoryRetention = defaultHistoryRetention
+	}
+	if c.Management.HistoryInterval <= 0 {
+		c.Management.HistoryInterval = defaultHistoryInterval
+	}
+	if c.Management.HistoryInterval < 10*time.Second {
+		return errors.New("management history_interval must be at least 10s")
+	}
+	if c.Management.AlertMinAvailable < 0 {
+		return errors.New("management alert_min_available cannot be negative")
+	}
+	if c.Management.AlertMinAvailableRatio < 0 || c.Management.AlertMinAvailableRatio > 1 {
+		return errors.New("management alert_min_available_ratio must be between 0 and 1")
+	}
+	if c.Management.AlertCooldown <= 0 {
+		c.Management.AlertCooldown = defaultAlertCooldown
+	}
+	if strings.TrimSpace(c.Management.AuditFile) == "" {
+		c.Management.AuditFile = "audit.log"
+	}
+	if c.Management.AuditMaxEntries <= 0 {
+		c.Management.AuditMaxEntries = defaultAuditMaxEntries
+	}
+	if c.Management.Password != "" && (c.Management.Password == c.Management.OperatorPassword || c.Management.Password == c.Management.ViewerPassword) {
+		return errors.New("management role passwords must be distinct")
+	}
+	if c.Management.OperatorPassword != "" && c.Management.OperatorPassword == c.Management.ViewerPassword {
+		return errors.New("management role passwords must be distinct")
+	}
+	return nil
+}
+
+func (c *Config) normalizeSubscriptionSafetyConfig() error {
+	if c.SubscriptionRefresh.MaxRemovedRatio == 0 {
+		c.SubscriptionRefresh.MaxRemovedRatio = 0.5
+	}
+	if c.SubscriptionRefresh.MaxRemovedRatio < 0 || c.SubscriptionRefresh.MaxRemovedRatio > 1 {
+		return errors.New("subscription_refresh max_removed_ratio must be between 0 and 1")
+	}
+	if c.SubscriptionRefresh.MinAvailableRatio < 0 || c.SubscriptionRefresh.MinAvailableRatio > 1 {
+		return errors.New("subscription_refresh min_available_ratio must be between 0 and 1")
+	}
+	if c.SubscriptionRefresh.QuarantineNewNodes == nil {
+		enabled := true
+		c.SubscriptionRefresh.QuarantineNewNodes = &enabled
 	}
 	return nil
 }
@@ -1437,6 +1546,122 @@ func (c *Config) ProbeBatchSizeOrDefault() int {
 		return maximumProbeBatchSize
 	}
 	return c.Management.ProbeBatchSize
+}
+
+// ProbeHealthyIntervalOrDefault returns the adaptive healthy-node recheck interval.
+func (c *Config) ProbeHealthyIntervalOrDefault() time.Duration {
+	if c == nil || c.Management.ProbeHealthyInterval <= 0 {
+		return defaultProbeHealthyInterval
+	}
+	return c.Management.ProbeHealthyInterval
+}
+
+func (c *Config) ProbeFailureRetryIntervalOrDefault() time.Duration {
+	if c == nil || c.Management.ProbeFailureRetryInterval <= 0 {
+		return defaultProbeFailureRetryInterval
+	}
+	return c.Management.ProbeFailureRetryInterval
+}
+
+func (c *Config) ProbeFailureMaxIntervalOrDefault() time.Duration {
+	if c == nil || c.Management.ProbeFailureMaxInterval <= 0 {
+		return defaultProbeFailureMaxInterval
+	}
+	return c.Management.ProbeFailureMaxInterval
+}
+
+func (c *Config) ProbePassiveGraceOrDefault() time.Duration {
+	if c == nil || c.Management.ProbePassiveGrace <= 0 {
+		return defaultProbePassiveGrace
+	}
+	return c.Management.ProbePassiveGrace
+}
+
+func (c *Config) ProbeMaxPerHourOrDefault() int {
+	if c == nil {
+		return defaultProbeMaxPerHour
+	}
+	if c.Management.ProbeMaxPerHour < 0 {
+		return 0
+	}
+	if c.Management.ProbeMaxPerHour == 0 && c.ProbeModeOrDefault() == "adaptive" {
+		return defaultProbeMaxPerHour
+	}
+	return c.Management.ProbeMaxPerHour
+}
+
+func (c *Config) HistoryEnabledValue() bool {
+	return c == nil || c.Management.HistoryEnabled == nil || *c.Management.HistoryEnabled
+}
+
+func (c *Config) HistoryRetentionOrDefault() time.Duration {
+	if c == nil || c.Management.HistoryRetention <= 0 {
+		return defaultHistoryRetention
+	}
+	return c.Management.HistoryRetention
+}
+
+func (c *Config) HistoryIntervalOrDefault() time.Duration {
+	if c == nil || c.Management.HistoryInterval <= 0 {
+		return defaultHistoryInterval
+	}
+	return c.Management.HistoryInterval
+}
+
+func (c *Config) AlertCooldownOrDefault() time.Duration {
+	if c == nil || c.Management.AlertCooldown <= 0 {
+		return defaultAlertCooldown
+	}
+	return c.Management.AlertCooldown
+}
+
+func (c *Config) AuditMaxEntriesOrDefault() int {
+	if c == nil || c.Management.AuditMaxEntries <= 0 {
+		return defaultAuditMaxEntries
+	}
+	return c.Management.AuditMaxEntries
+}
+
+func (c *Config) ResolveManagementPath(value, fallback string) string {
+	path := strings.TrimSpace(value)
+	if path == "" {
+		path = fallback
+	}
+	if filepath.IsAbs(path) || c == nil || c.filePath == "" {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(filepath.Dir(c.filePath), path)
+}
+
+func (c *Config) SubscriptionMaxRemovedRatioOrDefault() float64 {
+	if c == nil || c.SubscriptionRefresh.MaxRemovedRatio == 0 {
+		return 0.5
+	}
+	return c.SubscriptionRefresh.MaxRemovedRatio
+}
+
+func (c *Config) SubscriptionQuarantineNewNodesValue() bool {
+	return c == nil || c.SubscriptionRefresh.QuarantineNewNodes == nil || *c.SubscriptionRefresh.QuarantineNewNodes
+}
+
+func (c *Config) MinAvailableNodeThreshold(total int) int {
+	if c == nil {
+		return 1
+	}
+	minimum := c.SubscriptionRefresh.MinAvailableNodes
+	if minimum < 0 {
+		minimum = 0
+	}
+	if ratio := c.SubscriptionRefresh.MinAvailableRatio; ratio > 0 && total > 0 {
+		byRatio := int(float64(total) * ratio)
+		if float64(byRatio) < float64(total)*ratio {
+			byRatio++
+		}
+		if byRatio > minimum {
+			minimum = byRatio
+		}
+	}
+	return minimum
 }
 
 // ProbeConcurrencyOrDefault returns the process-wide health probe worker

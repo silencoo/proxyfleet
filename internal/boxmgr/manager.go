@@ -327,7 +327,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	// subscription is not allowed to replace the restart cache unless this
 	// generation reaches the configured availability threshold.
 	startupHealthAccepted := true
-	if cfg.SubscriptionRefresh.MinAvailableNodes > 0 {
+	if cfg.SubscriptionQuarantineNewNodesValue() && cfg.MinAvailableNodeThreshold(len(cfg.Nodes)) > 0 {
 		timeout := cfg.SubscriptionRefresh.HealthCheckTimeout
 		if timeout <= 0 {
 			timeout = defaultHealthCheckTimeout
@@ -513,13 +513,13 @@ func (m *Manager) reloadRuntimeLocked(operationCtx context.Context, newCfg *conf
 
 	// Validate the configured minimum before committing the reload. Active probe
 	// failures also update the shared routing blacklist.
-	minAvailableNodes := newCfg.SubscriptionRefresh.MinAvailableNodes
+	minAvailableNodes := newCfg.MinAvailableNodeThreshold(len(newCfg.Nodes))
 	if m.monitorMgr != nil {
 		healthTimeout := newCfg.SubscriptionRefresh.HealthCheckTimeout
 		if healthTimeout <= 0 {
 			healthTimeout = defaultHealthCheckTimeout
 		}
-		if _, probeConfigured := m.monitorMgr.DestinationForProbe(); probeConfigured && minAvailableNodes > 0 {
+		if _, probeConfigured := m.monitorMgr.DestinationForProbe(); probeConfigured && minAvailableNodes > 0 && newCfg.SubscriptionQuarantineNewNodesValue() {
 			ran, err := m.monitorMgr.ProbeConfiguredNowContext(operationCtx, healthTimeout, minAvailableNodes)
 			if err != nil {
 				return rollbackReplacement(fmt.Errorf("replacement health check: %w", err))
@@ -672,8 +672,8 @@ func (m *Manager) reloadManagementOnlyRuntimeLocked(
 		if healthTimeout <= 0 {
 			healthTimeout = defaultHealthCheckTimeout
 		}
-		minAvailableNodes := newCfg.SubscriptionRefresh.MinAvailableNodes
-		if _, probeConfigured := m.monitorMgr.DestinationForProbe(); probeConfigured && minAvailableNodes > 0 {
+		minAvailableNodes := newCfg.MinAvailableNodeThreshold(len(newCfg.Nodes))
+		if _, probeConfigured := m.monitorMgr.DestinationForProbe(); probeConfigured && minAvailableNodes > 0 && newCfg.SubscriptionQuarantineNewNodesValue() {
 			ran, err := m.monitorMgr.ProbeConfiguredNowContext(operationCtx, healthTimeout, minAvailableNodes)
 			if err != nil {
 				return rollbackCandidate(fmt.Errorf("first runtime health check: %w", err))
@@ -1069,12 +1069,15 @@ func removeRuntimeOutbounds(instance *box.Box, tags []string) {
 }
 
 func (m *Manager) preflightCandidateSet(ctx context.Context, instance *box.Box, tags []string, cfg *config.Config) error {
-	minimum := cfg.SubscriptionRefresh.MinAvailableNodes
+	minimum := cfg.MinAvailableNodeThreshold(len(tags))
 	if minimum <= 0 {
 		return nil
 	}
 	if len(tags) < minimum {
 		return fmt.Errorf("health check rejected candidate: %d nodes built (need >= %d)", len(tags), minimum)
+	}
+	if !cfg.SubscriptionQuarantineNewNodesValue() {
+		return nil
 	}
 	target, configured, err := monitor.ResolveProbeTarget(cfg.Management.ProbeTarget, cfg.SkipCertVerify)
 	if err != nil {
@@ -2310,7 +2313,7 @@ func (m *Manager) applyConfigSettings(cfg *config.Config) {
 	} else if m.drainTimeout == 0 {
 		m.drainTimeout = defaultDrainTimeout
 	}
-	m.minAvailableNodes = cfg.SubscriptionRefresh.MinAvailableNodes
+	m.minAvailableNodes = cfg.MinAvailableNodeThreshold(len(cfg.Nodes))
 }
 
 func (m *Manager) startPeriodicHealthChecks() {

@@ -17,21 +17,37 @@ import (
 
 // Config mirrors user settings needed by the monitoring server.
 type Config struct {
-	Enabled          bool
-	Listen           string
-	ProbeTarget      string
-	Password         string
-	TLSCertFile      string
-	TLSKeyFile       string
-	ProxyUsername    string        // 代理池的用户名（用于导出）
-	ProxyPassword    string        // 代理池的密码（用于导出）
-	ExternalIP       string        // 外部 IP 地址，用于导出时替换 0.0.0.0
-	SkipCertVerify   bool          // 全局跳过 SSL 证书验证
-	ProbeConcurrency int           // 全局批量探测并发数
-	ProbeMode        string        // all、sample 或 manual
-	ProbeInterval    time.Duration // 自动探测间隔
-	ProbeTimeout     time.Duration // 单节点探测超时
-	ProbeBatchSize   int           // sample 模式每轮节点数
+	Enabled                   bool
+	Listen                    string
+	ProbeTarget               string
+	Password                  string
+	OperatorPassword          string
+	ViewerPassword            string
+	TLSCertFile               string
+	TLSKeyFile                string
+	ProxyUsername             string        // 代理池的用户名（用于导出）
+	ProxyPassword             string        // 代理池的密码（用于导出）
+	ExternalIP                string        // 外部 IP 地址，用于导出时替换 0.0.0.0
+	SkipCertVerify            bool          // 全局跳过 SSL 证书验证
+	ProbeConcurrency          int           // 全局批量探测并发数
+	ProbeMode                 string        // all、sample、adaptive 或 manual
+	ProbeInterval             time.Duration // 自动调度周期
+	ProbeTimeout              time.Duration // 单节点探测超时
+	ProbeBatchSize            int           // sample/adaptive 每轮节点上限
+	ProbeHealthyInterval      time.Duration
+	ProbeFailureRetryInterval time.Duration
+	ProbeFailureMaxInterval   time.Duration
+	ProbePassiveGrace         time.Duration
+	ProbeMaxPerHour           int
+	HistoryEnabled            bool
+	HistoryFile               string
+	HistoryRetention          time.Duration
+	HistoryInterval           time.Duration
+	AlertMinAvailable         int
+	AlertMinAvailableRatio    float64
+	AlertCooldown             time.Duration
+	AuditFile                 string
+	AuditMaxEntries           int
 }
 
 // NodeInfo is static metadata about a proxy entry.
@@ -62,39 +78,50 @@ const maxTimelineSize = 20
 // Snapshot is a runtime view of a proxy node.
 type Snapshot struct {
 	NodeInfo
-	FailureCount      int             `json:"failure_count"`
-	SuccessCount      int64           `json:"success_count"`
-	Blacklisted       bool            `json:"blacklisted"`
-	BlacklistedUntil  time.Time       `json:"blacklisted_until"`
-	CoolingDown       bool            `json:"cooling_down"`
-	CooldownUntil     time.Time       `json:"cooldown_until"`
-	ActiveConnections int32           `json:"active_connections"`
-	LastError         string          `json:"last_error,omitempty"`
-	LastFailure       time.Time       `json:"last_failure,omitempty"`
-	LastSuccess       time.Time       `json:"last_success,omitempty"`
-	LastProbeLatency  time.Duration   `json:"last_probe_latency,omitempty"`
-	LastLatencyMs     int64           `json:"last_latency_ms"`
-	Available         bool            `json:"available"`
-	InitialCheckDone  bool            `json:"initial_check_done"`
-	Timeline          []TimelineEvent `json:"timeline,omitempty"`
-	HasDiagnostics    bool            `json:"-"`
+	FailureCount             int             `json:"failure_count"`
+	SuccessCount             int64           `json:"success_count"`
+	Blacklisted              bool            `json:"blacklisted"`
+	BlacklistedUntil         time.Time       `json:"blacklisted_until"`
+	CoolingDown              bool            `json:"cooling_down"`
+	CooldownUntil            time.Time       `json:"cooldown_until"`
+	ActiveConnections        int32           `json:"active_connections"`
+	LastError                string          `json:"last_error,omitempty"`
+	LastFailure              time.Time       `json:"last_failure,omitempty"`
+	LastSuccess              time.Time       `json:"last_success,omitempty"`
+	LastProbeLatency         time.Duration   `json:"last_probe_latency,omitempty"`
+	LastLatencyMs            int64           `json:"last_latency_ms"`
+	QualityScore             float64         `json:"quality_score"`
+	EWMALatencyMs            float64         `json:"ewma_latency_ms"`
+	LastProbeAt              time.Time       `json:"last_probe_at,omitempty"`
+	LastPassiveSuccess       time.Time       `json:"last_passive_success,omitempty"`
+	LastPassiveFailure       time.Time       `json:"last_passive_failure,omitempty"`
+	ConsecutiveProbeFailures int             `json:"consecutive_probe_failures"`
+	Available                bool            `json:"available"`
+	InitialCheckDone         bool            `json:"initial_check_done"`
+	Timeline                 []TimelineEvent `json:"timeline,omitempty"`
+	HasDiagnostics           bool            `json:"-"`
 }
 
 // PersistedHealthState is the restart-safe subset of a node's monitor state.
 // Active connections, callbacks and the short debug timeline are deliberately
 // process-local and are not restored.
 type PersistedHealthState struct {
-	FailureCount       int           `yaml:"failure_count,omitempty"`
-	SuccessCount       int64         `yaml:"success_count,omitempty"`
-	BlacklistedUntil   time.Time     `yaml:"blacklisted_until,omitempty"`
-	CooldownUntil      time.Time     `yaml:"cooldown_until,omitempty"`
-	LastError          string        `yaml:"last_error,omitempty"`
-	LastFailure        time.Time     `yaml:"last_failure,omitempty"`
-	LastSuccess        time.Time     `yaml:"last_success,omitempty"`
-	LastProbeLatency   time.Duration `yaml:"last_probe_latency,omitempty"`
-	Available          bool          `yaml:"available,omitempty"`
-	InitialCheckDone   bool          `yaml:"initial_check_done,omitempty"`
-	DiagnosticsVisible bool          `yaml:"diagnostics_visible,omitempty"`
+	FailureCount             int           `yaml:"failure_count,omitempty"`
+	SuccessCount             int64         `yaml:"success_count,omitempty"`
+	BlacklistedUntil         time.Time     `yaml:"blacklisted_until,omitempty"`
+	CooldownUntil            time.Time     `yaml:"cooldown_until,omitempty"`
+	LastError                string        `yaml:"last_error,omitempty"`
+	LastFailure              time.Time     `yaml:"last_failure,omitempty"`
+	LastSuccess              time.Time     `yaml:"last_success,omitempty"`
+	LastProbeLatency         time.Duration `yaml:"last_probe_latency,omitempty"`
+	LastProbeAt              time.Time     `yaml:"last_probe_at,omitempty"`
+	LastPassiveSuccess       time.Time     `yaml:"last_passive_success,omitempty"`
+	LastPassiveFailure       time.Time     `yaml:"last_passive_failure,omitempty"`
+	ConsecutiveProbeFailures int           `yaml:"consecutive_probe_failures,omitempty"`
+	EWMALatencyMs            float64       `yaml:"ewma_latency_ms,omitempty"`
+	Available                bool          `yaml:"available,omitempty"`
+	InitialCheckDone         bool          `yaml:"initial_check_done,omitempty"`
+	DiagnosticsVisible       bool          `yaml:"diagnostics_visible,omitempty"`
 }
 
 type probeFunc func(ctx context.Context) (time.Duration, error)
@@ -105,33 +132,38 @@ type EntryHandle struct {
 }
 
 type entry struct {
-	info               NodeInfo
-	failure            int
-	success            int64
-	timeline           []TimelineEvent
-	blacklist          bool
-	until              time.Time
-	coolingDown        bool
-	cooldownUntil      time.Time
-	lastError          string
-	lastFail           time.Time
-	lastOK             time.Time
-	lastProbe          time.Duration
-	active             atomic.Int32
-	probe              probeFunc
-	release            releaseFunc
-	blacklistFn        func(time.Duration)
-	initialCheckDone   bool
-	available          bool
-	diagnosticsVisible bool
-	mu                 sync.RWMutex
-	probeMu            sync.Mutex
-	probeGeneration    uint64
-	probeCall          *inFlightProbe
-	probeSlots         chan struct{}
-	probeLifecycleMu   *sync.RWMutex
-	probeStopped       *atomic.Bool
-	probeWG            *sync.WaitGroup
+	info                  NodeInfo
+	failure               int
+	success               int64
+	timeline              []TimelineEvent
+	blacklist             bool
+	until                 time.Time
+	coolingDown           bool
+	cooldownUntil         time.Time
+	lastError             string
+	lastFail              time.Time
+	lastOK                time.Time
+	lastProbe             time.Duration
+	lastProbeAt           time.Time
+	lastPassiveSuccess    time.Time
+	lastPassiveFailure    time.Time
+	consecutiveProbeFails int
+	ewmaLatencyMs         float64
+	active                atomic.Int32
+	probe                 probeFunc
+	release               releaseFunc
+	blacklistFn           func(time.Duration)
+	initialCheckDone      bool
+	available             bool
+	diagnosticsVisible    bool
+	mu                    sync.RWMutex
+	probeMu               sync.Mutex
+	probeGeneration       uint64
+	probeCall             *inFlightProbe
+	probeSlots            chan struct{}
+	probeLifecycleMu      *sync.RWMutex
+	probeStopped          *atomic.Bool
+	probeWG               *sync.WaitGroup
 }
 
 type probeOutcome struct {
@@ -194,6 +226,14 @@ type Manager struct {
 	probeSweepOK     atomic.Int32
 	probeSweepFail   atomic.Int32
 	probeBatchCursor atomic.Uint64
+
+	probeBudgetMu       sync.Mutex
+	probeBudgetWindow   time.Time
+	probeBudgetUsed     int
+	adaptiveEligible    atomic.Int32
+	adaptiveDue         atomic.Int32
+	adaptivePassiveSkip atomic.Int32
+	operations          *OperationsStore
 
 	probeGate           sync.Mutex
 	sweepRunning        bool
@@ -261,6 +301,8 @@ func NewManager(cfg Config) (*Manager, error) {
 		probeSlots:       make(chan struct{}, maxHungProbeCallbacks),
 	}
 	m.probeCond = sync.NewCond(&m.probeGate)
+	m.operations = NewOperationsStore(cfg)
+	m.operations.Start(m)
 	return m, nil
 }
 
@@ -336,7 +378,7 @@ func (m *Manager) automaticProbePolicy(minimum int) (enabled bool, limit int, in
 		interval = defaultAutomaticProbeInterval
 	}
 	timeout = probeTimeout(cfg.ProbeTimeout)
-	if mode == "sample" {
+	if mode == "sample" || mode == "adaptive" {
 		limit = cfg.ProbeBatchSize
 		if limit <= 0 {
 			limit = defaultAutomaticProbeBatch
@@ -589,7 +631,12 @@ func (m *Manager) runProbeSweep(operationCtx context.Context, timeout time.Durat
 	}
 	m.mu.RUnlock()
 
-	if limit > 0 && limit < len(entries) {
+	m.mu.RLock()
+	probeMode := strings.ToLower(strings.TrimSpace(m.cfg.ProbeMode))
+	m.mu.RUnlock()
+	if probeMode == "adaptive" && limit > 0 {
+		entries = m.selectAdaptiveEntries(entries, limit, time.Now())
+	} else if limit > 0 && limit < len(entries) {
 		type taggedEntry struct {
 			tag   string
 			entry *entry
@@ -993,53 +1040,66 @@ func (e *entry) snapshot() Snapshot {
 	}
 
 	return Snapshot{
-		NodeInfo:          e.info,
-		FailureCount:      e.failure,
-		SuccessCount:      e.success,
-		Blacklisted:       e.blacklist,
-		BlacklistedUntil:  e.until,
-		CoolingDown:       e.coolingDown,
-		CooldownUntil:     e.cooldownUntil,
-		ActiveConnections: e.active.Load(),
-		LastError:         e.lastError,
-		LastFailure:       e.lastFail,
-		LastSuccess:       e.lastOK,
-		LastProbeLatency:  e.lastProbe,
-		LastLatencyMs:     latencyMs,
-		Available:         e.available,
-		InitialCheckDone:  e.initialCheckDone,
-		Timeline:          timelineCopy,
-		HasDiagnostics:    e.diagnosticsVisible,
+		NodeInfo:                 e.info,
+		FailureCount:             e.failure,
+		SuccessCount:             e.success,
+		Blacklisted:              e.blacklist,
+		BlacklistedUntil:         e.until,
+		CoolingDown:              e.coolingDown,
+		CooldownUntil:            e.cooldownUntil,
+		ActiveConnections:        e.active.Load(),
+		LastError:                e.lastError,
+		LastFailure:              e.lastFail,
+		LastSuccess:              e.lastOK,
+		LastProbeLatency:         e.lastProbe,
+		LastLatencyMs:            latencyMs,
+		QualityScore:             qualityScoreLocked(e, time.Now()),
+		EWMALatencyMs:            e.ewmaLatencyMs,
+		LastProbeAt:              e.lastProbeAt,
+		LastPassiveSuccess:       e.lastPassiveSuccess,
+		LastPassiveFailure:       e.lastPassiveFailure,
+		ConsecutiveProbeFailures: e.consecutiveProbeFails,
+		Available:                e.available,
+		InitialCheckDone:         e.initialCheckDone,
+		Timeline:                 timelineCopy,
+		HasDiagnostics:           e.diagnosticsVisible,
 	}
 }
 
 func (e *entry) recordFailure(err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	now := time.Now()
 	errStr := SanitizeProbeError(err)
 	e.failure++
 	e.diagnosticsVisible = true
 	e.lastError = errStr
-	e.lastFail = time.Now()
+	e.lastFail = now
+	e.lastPassiveFailure = now
 	e.appendTimelineLocked(false, 0, errStr)
 }
 
 func (e *entry) recordSuccess() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	now := time.Now()
 	e.success++
 	e.diagnosticsVisible = true
-	e.lastOK = time.Now()
+	e.lastOK = now
+	e.lastPassiveSuccess = now
 	e.appendTimelineLocked(true, 0, "")
 }
 
 func (e *entry) recordSuccessWithLatency(latency time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	now := time.Now()
 	e.success++
 	e.diagnosticsVisible = true
-	e.lastOK = time.Now()
+	e.lastOK = now
+	e.lastPassiveSuccess = now
 	e.lastProbe = latency
+	updateEWMALatencyLocked(e, latency)
 	latencyMs := latency.Milliseconds()
 	if latencyMs == 0 && latency > 0 {
 		latencyMs = 1
@@ -1132,14 +1192,18 @@ func (e *entry) markProbeResult(latency time.Duration, err error) {
 	now := time.Now()
 	e.mu.Lock()
 	e.initialCheckDone = true
+	e.lastProbeAt = now
 	if err != nil {
 		e.lastError = SanitizeProbeError(err)
 		e.lastFail = now
+		e.consecutiveProbeFails++
 		e.available = false
 	} else {
 		e.lastError = ""
 		e.lastOK = now
 		e.lastProbe = latency
+		e.consecutiveProbeFails = 0
+		updateEWMALatencyLocked(e, latency)
 		// A successful transport probe confirms the underlying outbound, but it
 		// must not bypass an administrative blacklist or transient cooldown.
 		e.available = !e.blacklist && !e.coolingDown
@@ -1360,17 +1424,22 @@ func (h *EntryHandle) ExportHealthState() PersistedHealthState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return PersistedHealthState{
-		FailureCount:       e.failure,
-		SuccessCount:       e.success,
-		BlacklistedUntil:   e.until,
-		CooldownUntil:      e.cooldownUntil,
-		LastError:          SanitizeProbeError(errors.New(e.lastError)),
-		LastFailure:        e.lastFail,
-		LastSuccess:        e.lastOK,
-		LastProbeLatency:   e.lastProbe,
-		Available:          e.available,
-		InitialCheckDone:   e.initialCheckDone,
-		DiagnosticsVisible: e.diagnosticsVisible,
+		FailureCount:             e.failure,
+		SuccessCount:             e.success,
+		BlacklistedUntil:         e.until,
+		CooldownUntil:            e.cooldownUntil,
+		LastError:                SanitizeProbeError(errors.New(e.lastError)),
+		LastFailure:              e.lastFail,
+		LastSuccess:              e.lastOK,
+		LastProbeLatency:         e.lastProbe,
+		LastProbeAt:              e.lastProbeAt,
+		LastPassiveSuccess:       e.lastPassiveSuccess,
+		LastPassiveFailure:       e.lastPassiveFailure,
+		ConsecutiveProbeFailures: e.consecutiveProbeFails,
+		EWMALatencyMs:            e.ewmaLatencyMs,
+		Available:                e.available,
+		InitialCheckDone:         e.initialCheckDone,
+		DiagnosticsVisible:       e.diagnosticsVisible,
 	}
 }
 
@@ -1387,6 +1456,11 @@ func (h *EntryHandle) RestoreHealthState(state PersistedHealthState) {
 	e.lastFail = state.LastFailure
 	e.lastOK = state.LastSuccess
 	e.lastProbe = state.LastProbeLatency
+	e.lastProbeAt = state.LastProbeAt
+	e.lastPassiveSuccess = state.LastPassiveSuccess
+	e.lastPassiveFailure = state.LastPassiveFailure
+	e.consecutiveProbeFails = state.ConsecutiveProbeFailures
+	e.ewmaLatencyMs = state.EWMALatencyMs
 	e.available = state.Available
 	e.initialCheckDone = state.InitialCheckDone
 	e.diagnosticsVisible = state.DiagnosticsVisible || state.FailureCount > 0 || state.SuccessCount > 0

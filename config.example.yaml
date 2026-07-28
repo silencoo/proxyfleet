@@ -51,7 +51,7 @@ listener:
 # 代理池配置
 # ───────────────────────────────────────────────────────────────
 pool:
-  # 调度模式: sequential（轮询）, random（随机）, balance（连接均衡）, latency（延迟感知均衡）
+  # 调度模式: sequential（轮询）, random（随机）, balance（连接均衡）, latency（延迟感知）, quality（综合质量分）
   mode: sequential
   # 连续失败多少次后加入黑名单
   failure_threshold: 3
@@ -95,12 +95,28 @@ management:
   enabled: true                                      # 是否启用管理面板
   listen: 127.0.0.1:9091                             # 默认仅本机访问
   probe_target: http://cp.cloudflare.com/generate_204  # 健康检查目标
-  probe_mode: sample                                  # all 全量 / sample 分批轮转 / manual 仅手动
-  probe_interval: 5m                                 # 自动探测间隔（至少 10s）
-  probe_timeout: 10s                                 # 单节点超时（至少 100ms）
-  probe_batch_size: 100                              # sample 模式每轮探测节点数
-  probe_concurrency: 32  # 全局批量探测并发数（1-1024）
-  password: ""                                       # WebUI 访问密码，为空则不需要密码
+  probe_mode: adaptive                                # all 全量 / sample 分批 / adaptive 自适应 / manual 手动
+  probe_interval: 5m                                  # 自适应调度检查周期（至少 10s）
+  probe_timeout: 10s                                  # 单节点超时（至少 100ms）
+  probe_batch_size: 100                               # sample/adaptive 单轮上限
+  probe_concurrency: 32                               # 全局批量探测并发数（1-1024）
+  probe_healthy_interval: 30m                         # 健康节点多久需要一次主动复探
+  probe_failure_retry_interval: 1m                    # 失败节点首次重试间隔
+  probe_failure_max_interval: 1h                      # 指数退避上限
+  probe_passive_grace: 10m                            # 有真实流量成功时跳过主动探测
+  probe_max_per_hour: 600                             # 每小时主动探测预算；0 不限
+  password: ""                                        # 管理员密码
+  operator_password: ""                               # 运维：探测/刷新/清理
+  viewer_password: ""                                 # 只读：节点/日志/指标
+  history_enabled: true
+  history_file: monitor-history.json
+  history_retention: 24h
+  history_interval: 1m
+  alert_min_available: 1
+  alert_min_available_ratio: 0
+  alert_cooldown: 10m
+  audit_file: audit.log
+  audit_max_entries: 1000
   # 非回环 listen 必须同时配置强密码和下列原生 TLS 证书，禁止明文远程管理。
   # tls_cert_file: ./certs/management.crt
   # tls_key_file: ./certs/management.key
@@ -145,6 +161,9 @@ geoip:
 #   health_check_timeout: 60s   # 新节点健康检查超时
 #   drain_timeout: 30s          # 节点移出流量池后，旧 outbound 延迟回收时间
 #   min_available_nodes: 1      # 最少可用节点数，低于此值不切换
+#   min_available_ratio: 0      # 候选池可用比例门槛；与绝对数量取较高值
+#   max_removed_ratio: 0.5      # 删除超过旧池 50% 时必须预览并显式确认
+#   quarantine_new_nodes: true  # 候选节点通过预检后才原子切换
 #   fetch_concurrency: 16       # 订阅并发抓取数（默认 16，最大 32）
 #   allow_private_networks: false # 默认拒绝回环、私网、链路本地和元数据地址；仅可信内网订阅需要开启
 

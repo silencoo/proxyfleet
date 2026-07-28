@@ -223,3 +223,24 @@ func TestEmbeddedWebUIExposesInputConcurrencySettings(t *testing.T) {
 		}
 	}
 }
+func TestEmbeddedWebUIExposesP0P1P2Operations(t *testing.T) {
+	data, err := embeddedFS.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatalf("read embedded WebUI: %v", err)
+	}
+	html := string(data)
+	for _, value := range []string{
+		`value="adaptive"`, `value="quality"`, `id="settingProbeMaxPerHour"`,
+		`id="operationsTab"`, `id="operationsHistoryChart"`, `fetch('/api/metrics/history?limit=720')`,
+		`data-min-role="admin"`, `function applyRolePermissions(role)`, `fetch('/api/session')`,
+		`new URLSearchParams({`, `page_size: String(nodeTableState.pageSize)`, `nodePaginationMeta = data.pagination`,
+		`id="settingSubMaxRemovedRatio"`, `fetch('/api/subscription/preview'`, `preview_token: preview.token`,
+	} {
+		if !strings.Contains(html, value) {
+			t.Errorf("embedded WebUI is missing P0/P1/P2 control %q", value)
+		}
+	}
+	if strings.Contains(html, `let nodes = allNodesCache.filter`) {
+		t.Error("dashboard still filters the entire node pool in the browser")
+	}
+}

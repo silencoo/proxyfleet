@@ -25,13 +25,27 @@ management:
   enabled: true
   listen: 127.0.0.1:9091
   probe_target: www.apple.com:80
-  probe_mode: sample
+  probe_mode: adaptive
   probe_interval: 5m
   probe_timeout: 10s
   probe_batch_size: 100
+  probe_healthy_interval: 30m
+  probe_failure_retry_interval: 1m
+  probe_failure_max_interval: 1h
+  probe_passive_grace: 10m
+  probe_max_per_hour: 600
+  history_enabled: true
+  history_file: monitor-history.json
+  history_retention: 24h
+  history_interval: 1m
+  audit_file: audit.log
+  audit_max_entries: 1000
 
 subscription_refresh:
   enabled: true
+  max_removed_ratio: 0.5
+  min_available_ratio: 0
+  quarantine_new_nodes: true
 
 log:
   output: stdout

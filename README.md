@@ -335,14 +335,17 @@ subscription_refresh:
   enabled: true
   interval: 1h
   fetch_concurrency: 16 # default 16, capped at 32
+  max_removed_ratio: 0.5 # require explicit confirmation above 50% removal
+  min_available_ratio: 0 # optional candidate availability ratio; combined with min_available_nodes
+  quarantine_new_nodes: true # preflight candidates before the atomic cutover
   allow_private_networks: false # opt in only for trusted private subscription services
 ```
 
 Supports Base64, plain text, and Clash YAML formats. Subscription URLs are fetched with bounded concurrency, responses are strictly limited to 10 MB, and URL credentials/query data are redacted from errors and logs. Loopback, private, link-local, and metadata destinations (including redirects) are blocked by default; set `allow_private_networks: true` only when a trusted subscription service is intentionally hosted on such a network. Duplicate URLs and nodes are removed by stable identity. Runtime refreshes cache each URL independently so one failed provider can reuse only its own last known-good nodes; after a restart, `nodes_file` is the conservative aggregate fallback until every provider has refreshed successfully. Inline and WebUI-added nodes remain explicit configuration and are never overwritten by a subscription refresh.
 
-When subscriptions are configured, fetched nodes are written to `nodes_file`. A refresh is committed as one transaction across configuration, cache files, and runtime state. Candidate nodes are built and health-checked before cutover; a failed fetch, unsupported node, persistence error, or stale configuration revision rolls back without replacing the active pool. Unchanged nodes and listeners retain their connections, removed outbounds drain for the configured timeout, and dedicated ports are restored from `port-map.yaml`.
+When subscriptions are configured, fetched nodes are written to `nodes_file`. A refresh is committed as one transaction across configuration, cache files, and runtime state. The WebUI first fetches a candidate and displays stable-identity added/removed/unchanged counts; risky removal ratios require a second explicit confirmation and a short-lived one-time preview token. Candidate nodes are built and health-checked before cutover; a failed fetch, unsupported node, availability ratio violation, persistence error, or stale configuration revision rolls back without replacing the active pool. Unchanged nodes and listeners retain their connections, removed outbounds drain for the configured timeout, and dedicated ports are restored from `port-map.yaml`.
 
-When the management password is empty, `management.listen` must use a loopback address. A non-loopback management listener requires both a strong non-empty password and native TLS certificate/key files; the service refuses an insecure remote-management configuration.
+When all management role passwords are empty, `management.listen` must use a loopback address. Optional `operator_password` and `viewer_password` provide scoped operational and read-only access; the primary `password` remains the administrator credential. A non-loopback management listener requires a strong administrator password and native TLS certificate/key files; the service refuses an insecure remote-management configuration. Unsafe management requests are recorded in a bounded JSONL audit trail without credentials or query strings.
 
 ## WebUI Dashboard
 
@@ -350,14 +353,17 @@ Access at `http://your-server:9091` (configurable via the `management` section).
 
 Features:
 
-- **Dashboard**: Real-time node status, traffic charts, region/resident availability, and latency monitoring
-- **Large node sets**: Click-to-sort columns, search, region filters, and configurable 25/50/100/200-row pagination
+- **Dashboard**: Real-time node status, traffic charts, region/resident availability, composite 0–100 quality scores, and latency monitoring
+- **Large node sets**: Server-side search, filters, sorting, and configurable 25/50/100/200-row pagination, so the browser never downloads the entire pool
+- **Adaptive probes**: DIY healthy/retry/backoff/passive-grace intervals, batch concurrency, and a visible hourly traffic/performance budget
+- **Operations**: Bounded metric history, availability alerts, probe budget status, and administrator-only mutation audit
+- **Quality routing**: `pool.mode: quality` selects the best composite health/latency/stability score from a bounded sample
 - **Node Config**: Add/edit/delete inline nodes and manage subscription URLs without exposing credentials in list responses
-- **Diagnostics**: Sortable/searchable connectivity results, stability rankings, and node state export
-- **Console**: Real-time application logs (last 1000 lines, WebSocket streaming) with separate info/warn/error styling
-- **Settings**: Chinese/English switcher, system theme, masked passwords/subscriptions with reveal controls, and persistent configuration editing
+- **Subscription safety**: Candidate diff preview, risky-removal confirmation, availability-ratio preflight, and atomic cutover
+- **Diagnostics / Console**: Searchable diagnostics and clearable in-memory logs; disk logs support scheduled rotation and compression
+- **Settings**: Chinese/English switcher, system theme, masked secrets, viewer/operator/admin passwords, and persistent configuration editing
 
-When `management.password` is empty, authentication is bypassed.
+When all management role passwords are empty, loopback requests run as administrator without a login.
 
 ## Management API
 
@@ -365,13 +371,18 @@ When `management.password` is empty, authentication is bypassed.
 |----------|--------|-------------|
 | `/api/auth` | POST | Login with password |
 | `/api/settings` | GET, PUT | Read/update settings |
-| `/api/nodes` | GET | List all nodes with status |
+| `/api/nodes` | GET | Paginated/filterable node status and pool summary |
 | `/api/nodes/{tag}/probe` | POST | Test node connectivity |
 | `/api/nodes/{tag}/blacklist` | POST | Manually blacklist a node |
 | `/api/nodes/{tag}/release` | POST | Release node from blacklist |
 | `/api/nodes/probe-all` | POST | Probe all nodes (SSE stream) |
 | `/api/export` | GET | Export node configuration |
-| `/api/subscription/config` | GET, PUT | Manage subscription URLs |
+| `/api/subscription/preview` | POST | Fetch candidate and return a safe added/removed diff token |
+| `/api/subscription/config` | GET, PUT | Read or apply previewed subscription settings |
+| `/api/probe/status` | GET | Adaptive probe budget and sweep progress |
+| `/api/metrics/history` | GET | Bounded aggregate metric history |
+| `/api/alerts` | GET | Availability alerts |
+| `/api/audit` | GET | Administrator-only mutation audit |
 | `/api/subscription/status` | GET | Check subscription status |
 | `/api/subscription/refresh` | POST | Trigger manual refresh |
 | `/api/nodes/config` | GET, POST, PUT, DELETE | CRUD for node config |

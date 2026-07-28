@@ -77,6 +77,7 @@
       background: var(--text-muted);
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       font-family: var(--font-ui);
       background: var(--bg-base);
@@ -545,10 +546,11 @@
     </div>
     <div class="nav">
       <button type="button" class="nav-item active" data-tab="dashboard" aria-current="page" onclick="switchTab('dashboard')"><svg class="icon"><use href="#i-dashboard"></use></svg><span>监控看板</span></button>
-      <button type="button" class="nav-item" data-tab="manage" onclick="switchTab('manage')"><svg class="icon"><use href="#i-edit"></use></svg><span>节点配置</span></button>
+      <button type="button" class="nav-item" data-tab="manage" data-min-role="admin" onclick="switchTab('manage')"><svg class="icon"><use href="#i-edit"></use></svg><span>节点配置</span></button>
       <button type="button" class="nav-item" data-tab="debug" onclick="switchTab('debug')"><svg class="icon"><use href="#i-activity"></use></svg><span>诊断分析</span></button>
+      <button type="button" class="nav-item" data-tab="operations" onclick="switchTab('operations')"><svg class="icon"><use href="#i-activity"></use></svg><span>运行中心</span></button>
       <button type="button" class="nav-item" data-tab="logs" onclick="switchTab('logs')"><svg class="icon"><use href="#i-file"></use></svg><span>控制台日志</span></button>
-      <button type="button" class="nav-item" data-tab="settings" onclick="switchTab('settings')"><svg class="icon"><use href="#i-settings"></use></svg><span>系统设置</span></button>
+      <button type="button" class="nav-item" data-tab="settings" data-min-role="admin" onclick="switchTab('settings')"><svg class="icon"><use href="#i-settings"></use></svg><span>系统设置</span></button>
     </div>
   </aside>
 
@@ -572,14 +574,15 @@
         </div>
       </div>
       <div class="header-actions">
+        <span class="badge badge-offline" id="roleBadge" title="当前权限角色">ADMIN</span>
         <button type="button" class="theme-toggle" id="themeToggleBtn" onclick="toggleTheme()" title="切换主题" data-mode="auto">
           <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
           <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
           <svg class="icon-auto" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
           <span class="theme-mode-label" id="themeModeLabel">跟随系统</span>
         </button>
-        <button type="button" class="btn btn-primary" onclick="probeAllNodes()"><svg class="icon"><use href="#i-activity"></use></svg><span>批量探测</span></button>
-        <button type="button" class="btn" id="refreshSubBtn" onclick="refreshSubscription()" style="display:none;"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新订阅</span></button>
+        <button type="button" class="btn btn-primary" data-min-role="operator" onclick="probeAllNodes()"><svg class="icon"><use href="#i-activity"></use></svg><span>批量探测</span></button>
+        <button type="button" class="btn" data-min-role="operator" id="refreshSubBtn" onclick="refreshSubscription()" style="display:none;"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新订阅</span></button>
         <button type="button" class="btn" onclick="exportNodes()"><svg class="icon"><use href="#i-download"></use></svg><span>导出配置</span></button>
         <button type="button" class="btn" onclick="toggleAutoRefresh()" id="autoRefreshBtn"><svg class="icon"><use id="autoRefreshIcon" href="#i-pause"></use></svg><span id="autoRefreshLabel">关闭自动刷新</span></button>
         <button type="button" class="btn" onclick="refresh()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新</span></button>
@@ -770,7 +773,7 @@
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">节点质量分析</div>
-            <button type="button" class="btn btn-sm btn-danger" onclick="clearAllDiagnostics()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空记录</span></button>
+            <button type="button" class="btn btn-sm btn-danger" data-min-role="operator" onclick="clearAllDiagnostics()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空记录</span></button>
           </div>
           <div class="table-toolbar">
             <div class="table-search">
@@ -806,6 +809,28 @@
         </div>
       </div>
 
+      <!-- Operations Tab -->
+      <div id="operationsTab" class="tab-content">
+        <div class="overview-grid">
+          <div class="stat-panel"><div class="stat-title">探测预算</div><div class="stat-value" id="opsProbeBudget">0 / ∞</div><div class="stat-sub" id="opsProbeWindow">当前小时</div></div>
+          <div class="stat-panel"><div class="stat-title">本轮待探测</div><div class="stat-value" id="opsProbeDue">0</div><div class="stat-sub">自适应队列</div></div>
+          <div class="stat-panel"><div class="stat-title">被动健康跳过</div><div class="stat-value" id="opsPassiveSkipped">0</div><div class="stat-sub">节省主动探测</div></div>
+          <div class="stat-panel"><div class="stat-title">活动告警</div><div class="stat-value" id="opsActiveAlerts">0</div><div class="stat-sub">可用性门槛</div></div>
+        </div>
+        <div class="panel" style="margin-bottom:16px;">
+          <div class="panel-header"><div class="panel-title">指标历史（节点与 P95 延迟）</div><button type="button" class="btn btn-sm" onclick="loadOperations()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新</span></button></div>
+          <div class="chart-container" id="operationsHistoryChart" style="height:320px"></div>
+        </div>
+        <div class="panel" style="margin-bottom:16px;">
+          <div class="panel-header"><div class="panel-title">可用性告警</div></div>
+          <div class="table-container"><table><thead><tr><th>状态</th><th>级别</th><th>消息</th><th>更新时间</th></tr></thead><tbody id="operationsAlertsBody"></tbody></table></div>
+        </div>
+        <div class="panel" id="operationsAuditPanel" data-min-role="admin">
+          <div class="panel-header"><div class="panel-title">管理审计</div></div>
+          <div class="table-container"><table><thead><tr><th>时间</th><th>角色</th><th>方法</th><th>路径</th><th>状态</th><th>来源</th></tr></thead><tbody id="operationsAuditBody"></tbody></table></div>
+        </div>
+      </div>
+
       <!-- Logs Tab -->
       <div id="logsTab" class="tab-content">
         <div class="panel">
@@ -813,7 +838,7 @@
             <div class="panel-title">控制台日志 (Console Logs)</div>
             <div style="display:flex; align-items:center; gap:12px;">
               <label style="font-size:13px; color:var(--text-muted); display:flex; align-items:center; gap:6px;"><input type="checkbox" id="autoScrollLogs" checked> 自动滚动</label>
-              <button type="button" class="btn btn-sm btn-danger" onclick="clearConsoleLogs()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空日志</span></button>
+              <button type="button" class="btn btn-sm btn-danger" data-min-role="operator" onclick="clearConsoleLogs()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空日志</span></button>
               <button type="button" class="btn btn-sm" onclick="pollLogs()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新</span></button>
             </div>
           </div>
@@ -870,6 +895,7 @@
                   <select id="settingProbeMode" class="setting-input" onchange="toggleProbePolicySettings()">
                     <option value="all">all - 每轮全量</option>
                     <option value="sample">sample - 分批轮转</option>
+                    <option value="adaptive">adaptive - 自适应预算</option>
                     <option value="manual">manual - 仅手动</option>
                   </select>
                 </div>
@@ -888,8 +914,13 @@
                 </div>
                 <div class="form-group"><label for="settingProbeBatchSize">每轮节点数</label><input type="number" id="settingProbeBatchSize" class="setting-input" min="1" max="1000000" placeholder="100" /></div>
                 <div class="form-group"><label for="settingProbeConcurrency">探测并发数</label><input type="number" id="settingProbeConcurrency" class="setting-input" min="1" max="1024" placeholder="32" /></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeHealthyInterval">健康节点复探间隔</label><input type="text" id="settingProbeHealthyInterval" class="setting-input" placeholder="30m" /><div class="field-help">近期有真实流量成功的节点会继续跳过主动探测。</div></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeFailureRetry">失败初始重试</label><input type="text" id="settingProbeFailureRetry" class="setting-input" placeholder="1m" /></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeFailureMax">失败退避上限</label><input type="text" id="settingProbeFailureMax" class="setting-input" placeholder="1h" /></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbePassiveGrace">被动成功宽限期</label><input type="text" id="settingProbePassiveGrace" class="setting-input" placeholder="10m" /></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeMaxPerHour">每小时探测预算</label><input type="number" id="settingProbeMaxPerHour" class="setting-input" min="0" max="10000000" placeholder="600" /><div class="field-help">0 表示不限；预算耗尽后延迟到下一小时。</div></div>
                 <div class="checkbox-row"><input type="checkbox" id="settingSkipCertVerify" /><label for="settingSkipCertVerify">跳过 SSL 证书验证</label></div>
-                <div class="settings-help">大池建议使用 sample：每轮只探测固定数量，并按节点顺序轮转覆盖全池；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。</div>
+                <div class="settings-help">大池建议使用 adaptive：优先失败或过期节点，复用真实流量的被动健康结果，并受每小时预算约束；sample 仍按顺序轮转；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。</div>
               </div>
             </div>
 
@@ -923,6 +954,7 @@
                     <option value="random">random - 随机</option>
                     <option value="balance">balance - 均衡</option>
                     <option value="latency">latency - 延迟感知</option>
+                    <option value="quality">quality - 综合质量分</option>
                   </select>
                 </div>
                 <div class="form-group"><label for="settingPoolFailure">故障阈值</label><input type="number" id="settingPoolFailure" class="setting-input" min="1" max="100" placeholder="3" /></div>
@@ -944,7 +976,17 @@
               <div class="panel-header"><div class="panel-title">管理面板 (Management)</div></div>
               <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                 <div class="form-group"><label>监听地址</label><input type="text" id="settingMgmtListen" class="setting-input" placeholder="0.0.0.0:8080" /></div>
-                <div class="form-group"><label for="settingMgmtPassword">访问密码</label><div class="sensitive-field"><input type="password" id="settingMgmtPassword" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingMgmtPassword', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div></div>
+                <div class="form-group"><label for="settingMgmtPassword">管理员密码</label><div class="sensitive-field"><input type="password" id="settingMgmtPassword" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingMgmtPassword', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div></div>
+                <div class="form-group"><label for="settingOperatorPassword">运维密码</label><div class="sensitive-field"><input type="password" id="settingOperatorPassword" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingOperatorPassword', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div><div class="field-help">可探测、刷新、清理，但不能修改配置。</div></div>
+                <div class="form-group"><label for="settingViewerPassword">只读密码</label><div class="sensitive-field"><input type="password" id="settingViewerPassword" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingViewerPassword', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div><div class="field-help">只允许查看节点、日志、指标和告警。</div></div>
+                <div class="checkbox-row"><input type="checkbox" id="settingHistoryEnabled" /><label for="settingHistoryEnabled">持久化指标历史</label></div>
+                <div class="form-group"><label for="settingHistoryFile">指标文件</label><input type="text" id="settingHistoryFile" class="setting-input" placeholder="monitor-history.json" /></div>
+                <div class="form-group"><label for="settingHistoryRetention">指标保留时长</label><input type="text" id="settingHistoryRetention" class="setting-input" placeholder="24h" /></div>
+                <div class="form-group"><label for="settingHistoryInterval">指标采样间隔</label><input type="text" id="settingHistoryInterval" class="setting-input" placeholder="1m" /></div>
+                <div class="form-group"><label for="settingAlertMinAvailable">可用节点告警数量</label><input type="number" id="settingAlertMinAvailable" class="setting-input" min="0" placeholder="1" /></div>
+                <div class="form-group"><label for="settingAlertMinRatio">可用节点告警比例</label><input type="number" id="settingAlertMinRatio" class="setting-input" min="0" max="1" step="0.01" placeholder="0.2" /></div>
+                <div class="form-group"><label for="settingAlertCooldown">告警冷却时间</label><input type="text" id="settingAlertCooldown" class="setting-input" placeholder="10m" /></div>
+                <div class="form-group"><label for="settingAuditFile">审计文件</label><input type="text" id="settingAuditFile" class="setting-input" placeholder="audit.log" /></div>
               </div>
             </div>
 
@@ -1012,7 +1054,10 @@
                     <label for="settingSubFetchConcurrency">订阅抓取并发数</label>
                     <input type="number" id="settingSubFetchConcurrency" class="setting-input" min="1" max="32" placeholder="16" />
                   </div>
+                  <div class="form-group"><label for="settingSubMaxRemovedRatio">最大自动删除比例</label><input type="number" id="settingSubMaxRemovedRatio" class="setting-input" min="0.01" max="1" step="0.01" placeholder="0.5" /><div class="field-help">超过比例时保存前必须二次确认。</div></div>
+                  <div class="form-group"><label for="settingSubMinAvailableRatio">候选池最小可用比例</label><input type="number" id="settingSubMinAvailableRatio" class="setting-input" min="0" max="1" step="0.01" placeholder="0" /></div>
                 </div>
+                <div class="checkbox-row" style="margin-top:12px"><input type="checkbox" id="settingSubQuarantine" /><label for="settingSubQuarantine">新节点通过候选池预检后再切换（隔离验证）</label></div>
                 <div class="form-group" style="margin-top: 12px;">
                   <label for="settingSubURLs">订阅链接 (每行一个 URL)</label>
                   <div class="sensitive-field textarea-field">
@@ -1020,7 +1065,7 @@
                     <button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingSubURLs', this)"><svg class="icon"><use href="#i-eye"></use></svg></button>
                   </div>
                 </div>
-                <div style="font-size: 11px; color: var(--success); margin-top: 8px;">订阅配置变更保存后立即生效；默认拒绝回环、私网、链路本地和元数据地址</div>
+                <div style="font-size: 11px; color: var(--success); margin-top: 8px;">保存前会先拉取候选并显示新增/删除差异；默认拒绝回环、私网、链路本地和元数据地址</div>
               </div>
             </div>
 
@@ -1117,6 +1162,12 @@
     let isAutoRefresh = true;
     let autoRefreshInterval = null;
     let allNodesCache = [];
+    let nodePaginationMeta = { page: 1, page_size: 50, total_items: 0, total_pages: 0 };
+    let nodeSummaryCache = {};
+    let topLatencyNodesCache = [];
+    let nodeSearchTimer = null;
+    let nodeRequestGeneration = 0;
+    let currentRole = 'admin';
     let sweepWasActive = false;
     let currentRegionFilter = 'all';
     let isEditMode = false;
@@ -1156,6 +1207,28 @@
 
     const TRANSLATIONS = {
       '监控看板': 'Dashboard',
+      '运行中心': 'Operations',
+      '探测预算': 'Probe budget',
+      '本轮待探测': 'Probe queue',
+      '被动健康跳过': 'Passive skips',
+      '活动告警': 'Active alerts',
+      '指标历史（节点与 P95 延迟）': 'Metric history (nodes and P95 latency)',
+      '可用性告警': 'Availability alerts',
+      '管理审计': 'Management audit',
+      '自适应队列': 'Adaptive queue',
+      '节省主动探测': 'Active probes saved',
+      '可用性门槛': 'Availability threshold',
+      '暂无告警': 'No alerts',
+      '暂无审计记录': 'No audit events',
+      '健康节点': 'Healthy nodes',
+      '异常节点': 'Unavailable nodes',
+      '只读': 'Read only',
+      '高风险订阅变更': 'High-risk subscription change',
+      '确认订阅变更': 'Confirm subscription change',
+      '确认高风险变更': 'Confirm high-risk change',
+      '应用候选池': 'Apply candidate pool',
+      '订阅预览失败': 'Subscription preview failed',
+      '订阅比例必须在 0 到 1 之间': 'Subscription ratios must be between 0 and 1',
       '节点配置': 'Nodes',
       '诊断分析': 'Diagnostics',
       '控制台日志': 'Console logs',
@@ -1268,7 +1341,7 @@
       '每轮节点数': 'Nodes per pass',
       '探测并发数': 'Probe concurrency',
       '跳过 SSL 证书验证': 'Skip SSL certificate verification',
-      '大池建议使用 sample：每轮只探测固定数量，并按节点顺序轮转覆盖全池；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。': 'For large pools, sample probes a bounded rotating batch each pass. Manual disables startup and scheduled probes; Probe all remains available. Restart the process to apply policy changes.',
+      '大池建议使用 adaptive：优先失败或过期节点，复用真实流量的被动健康结果，并受每小时预算约束；sample 仍按顺序轮转；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。': 'For large pools, sample probes a bounded rotating batch each pass. Manual disables startup and scheduled probes; Probe all remains available. Restart the process to apply policy changes.',
       '监听配置 (Listener)': 'Pool listener',
       '监听地址': 'Listen address',
       '监听端口': 'Listen port',
@@ -1320,7 +1393,7 @@
       '刷新间隔': 'Refresh interval',
       '订阅抓取并发数': 'Subscription fetch concurrency',
       '允许访问内网订阅地址（高风险）': 'Allow private-network subscription URLs (high risk)',
-      '订阅配置变更保存后立即生效；默认拒绝回环、私网、链路本地和元数据地址': 'Subscription changes apply immediately; loopback, private, link-local, and metadata destinations are blocked by default.',
+      '保存前会先拉取候选并显示新增/删除差异；默认拒绝回环、私网、链路本地和元数据地址': 'Subscription changes apply immediately; loopback, private, link-local, and metadata destinations are blocked by default.',
       '10 分钟': '10 minutes',
       '30 分钟': '30 minutes',
       '1 小时': '1 hour',
@@ -1586,6 +1659,7 @@
     let successRateChartInst = null;
     let failureChartInst = null;
     let trafficChartInst = null;
+    let operationsHistoryChartInst = null;
     let trafficSource = null;
     let trafficRetryTimer = null;
     let trafficRetryAttempts = 0;
@@ -1602,6 +1676,7 @@
       successRateChartInst && successRateChartInst.resize();
       failureChartInst && failureChartInst.resize();
       trafficChartInst && trafficChartInst.resize();
+      operationsHistoryChartInst && operationsHistoryChartInst.resize();
     });
 
     function showToast(msg, type='success') {
@@ -1690,11 +1765,34 @@
       return response;
     }
 
+    const ROLE_RANK = Object.freeze({ viewer: 1, operator: 2, admin: 3 });
+    function applyRolePermissions(role) {
+      currentRole = ROLE_RANK[role] ? role : 'viewer';
+      const badge = document.getElementById('roleBadge');
+      if (badge) {
+        badge.textContent = currentRole.toUpperCase();
+        badge.className = `badge ${currentRole === 'admin' ? 'badge-healthy' : (currentRole === 'operator' ? 'badge-warning' : 'badge-offline')}`;
+      }
+      document.querySelectorAll('[data-min-role]').forEach(element => {
+        const allowed = (ROLE_RANK[currentRole] || 0) >= (ROLE_RANK[element.dataset.minRole] || 99);
+        element.hidden = !allowed;
+      });
+    }
+
+    async function loadCurrentRole() {
+      const response = await fetch('/api/session');
+      if (!response.ok) return false;
+      const session = await response.json().catch(() => ({}));
+      applyRolePermissions(session.role || 'viewer');
+      return true;
+    }
+
     async function checkAuth() {
       try {
         const res = await fetch('/api/nodes');
         if (res.status === 401) { showLoginOverlay(); return false; }
         if (!res.ok) return false;
+        await loadCurrentRole();
         return true;
       } catch (e) { return false; }
     }
@@ -1706,6 +1804,8 @@
       try {
         const res = await fetch('/api/auth', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password:pwd})});
         if (res.ok) {
+          const payload = await res.json().catch(() => ({}));
+          applyRolePermissions(payload.role || 'viewer');
           document.getElementById('loginOverlay').classList.remove('show');
           refresh();
           if (isAutoRefresh) startAutoRefresh();
@@ -1725,6 +1825,10 @@
         setTimeout(updateDashboardCharts, 100);
       }
       if (name === 'manage') loadConfigNodes();
+      if (name === 'operations') {
+        loadOperations();
+        setTimeout(renderOperationsHistory, 100);
+      }
       if (name === 'debug') {
         loadDebugData();
         setTimeout(updateDebugCharts, 100);
@@ -1778,15 +1882,30 @@
     }
 
     async function refresh() {
+      const requestGeneration = ++nodeRequestGeneration;
+      const params = new URLSearchParams({
+        page: String(nodeTableState.page),
+        page_size: String(nodeTableState.pageSize),
+        region: currentRegionFilter,
+        status: 'all',
+        sort: nodeTableState.sortKey,
+        order: nodeTableState.sortDir,
+      });
+      if (nodeTableState.search) params.set('search', nodeTableState.search);
       try {
-        const res = await fetch('/api/nodes');
+        const res = await fetch(`/api/nodes?${params.toString()}`);
         const data = await readAPIJSON(res, '加载数据失败');
-        allNodesCache = data.nodes || [];
+        if (requestGeneration !== nodeRequestGeneration) return;
+        allNodesCache = Array.isArray(data.nodes) ? data.nodes : [];
+        nodePaginationMeta = data.pagination || { page: 1, page_size: nodeTableState.pageSize, total_items: allNodesCache.length, total_pages: allNodesCache.length ? 1 : 0 };
+        nodeTableState.page = Number(nodePaginationMeta.page) || 1;
+        nodeSummaryCache = data.summary || {};
+        topLatencyNodesCache = Array.isArray(data.top_latency_nodes) ? data.top_latency_nodes : [];
         regionStatsCache = data.region_stats || {};
         regionHealthyCache = data.region_healthy || {};
         updateSweepProgress(data.probe_sweep);
         updateDashboardStats(data);
-        filterByRegion(currentRegionFilter);
+        renderNodes();
         document.getElementById('lastUpdate').textContent = `Sync: ${new Date().toLocaleTimeString()}`;
         fetchSubscriptionStatus();
       } catch(e) { console.error('Failed to refresh dashboard:', e); }
@@ -1810,11 +1929,11 @@
     }
 
     function updateDashboardStats(data) {
-      document.getElementById('totalNodes').textContent = data.total_nodes || allNodesCache.length;
-      const healthyCount = Object.values(regionHealthyCache).reduce((sum, count) => sum + (Number(count) || 0), 0);
-      document.getElementById('healthyNodes').textContent = healthyCount || allNodesCache.filter(n => !n.blacklisted && n.initial_check_done && n.available).length;
-      document.getElementById('activeConnections').textContent = allNodesCache.reduce((s, n) => s + (n.active_connections||0), 0);
-      document.getElementById('blacklistedNodes').textContent = allNodesCache.filter(n => n.blacklisted || (!n.available && n.initial_check_done)).length;
+      const summary = data.summary || nodeSummaryCache || {};
+      document.getElementById('totalNodes').textContent = Number(summary.total_nodes) || 0;
+      document.getElementById('healthyNodes').textContent = Number(summary.healthy_nodes) || 0;
+      document.getElementById('activeConnections').textContent = Number(summary.active_connections) || 0;
+      document.getElementById('blacklistedNodes').textContent = Number(summary.unavailable_nodes) || Number(summary.blacklisted_nodes) || 0;
       
       if(document.getElementById('dashboardTab').classList.contains('active')) {
         updateDashboardCharts();
@@ -1899,7 +2018,7 @@
       }, 'regionChart');
 
       // 2. Latency Chart Data
-      const sorted = allNodesCache.filter(n => n.last_latency_ms > 0 && !n.blacklisted).sort((a,b) => a.last_latency_ms - b.last_latency_ms).slice(0, 10);
+      const sorted = topLatencyNodesCache.length ? topLatencyNodesCache : allNodesCache.filter(n => n.last_latency_ms > 0 && !n.blacklisted).sort((a,b) => a.last_latency_ms - b.last_latency_ms).slice(0, 10);
       const latencyX = sorted.map(getChartNodeDisplayName);
       const latencyY = sorted.map(n => n.last_latency_ms);
 
@@ -2005,31 +2124,33 @@
       if (currentRegionFilter !== region) nodeTableState.page = 1;
       currentRegionFilter = region;
       document.querySelectorAll('.region-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.region === region));
-      renderNodes();
+      refresh();
     }
 
     function setNodeSearch(value) {
       nodeTableState.search = normalizeNodeName(value).trim().toLocaleLowerCase();
       nodeTableState.page = 1;
-      renderNodes();
+      clearTimeout(nodeSearchTimer);
+      nodeSearchTimer = setTimeout(refresh, 300);
     }
 
     function setNodePageSize(value) {
-      nodeTableState.pageSize = Math.max(1, parseInt(value, 10) || 50);
+      nodeTableState.pageSize = Math.max(1, Math.min(500, parseInt(value, 10) || 50));
       nodeTableState.page = 1;
-      renderNodes();
+      refresh();
     }
 
     function changeNodePage(delta) {
-      nodeTableState.page += delta;
-      renderNodes();
+      const pageCount = Math.max(1, Number(nodePaginationMeta.total_pages) || 1);
+      nodeTableState.page = Math.min(pageCount, Math.max(1, nodeTableState.page + delta));
+      refresh();
     }
 
     function sortNodeTable(key) {
       if (nodeTableState.sortKey === key) nodeTableState.sortDir = nodeTableState.sortDir === 'asc' ? 'desc' : 'asc';
       else { nodeTableState.sortKey = key; nodeTableState.sortDir = key === 'name' || key === 'region' ? 'asc' : 'desc'; }
       nodeTableState.page = 1;
-      renderNodes();
+      refresh();
     }
 
     function nodeSortValue(node, key) {
@@ -2047,47 +2168,36 @@
 
     function renderNodes() {
       const tbody = document.getElementById('nodesTableBody');
-      const query = nodeTableState.search;
-      let nodes = allNodesCache.filter(node => currentRegionFilter === 'all' || getNodeRegion(node) === currentRegionFilter);
-      if (query) {
-        nodes = nodes.filter(node => [getNodeDisplayName(node), node.tag, getNodeRegion(node), node.country, node.port]
-          .map(normalizeNodeName).join(' ').toLocaleLowerCase().includes(query));
-      }
-      nodes = sortRows(nodes, nodeTableState, nodeSortValue);
-      const page = pageSlice(nodes, nodeTableState);
-      updatePagination('node', nodes.length, nodeTableState, page.start, page.pageCount);
+      const nodes = allNodesCache;
+      const total = Number(nodePaginationMeta.total_items) || 0;
+      const pageCount = Math.max(1, Number(nodePaginationMeta.total_pages) || 1);
+      const start = (nodeTableState.page - 1) * nodeTableState.pageSize;
+      updatePagination('node', total, nodeTableState, start, pageCount);
       updateSortIndicators('nodes', nodeTableState);
-      if (!page.rows.length) { tbody.innerHTML = ''; document.getElementById('emptyState').style.display='block'; return;}
+      if (!nodes.length) { tbody.innerHTML = ''; document.getElementById('emptyState').style.display='block'; return; }
       document.getElementById('emptyState').style.display='none';
-      tbody.innerHTML = page.rows.map(n => {
-        const ms = n.last_latency_ms || -1;
+      const canOperate = (ROLE_RANK[currentRole] || 0) >= ROLE_RANK.operator;
+      tbody.innerHTML = nodes.map(n => {
+        const ms = Number(n.last_latency_ms) || -1;
+        const score = Math.max(0, Math.min(100, Number(n.quality_score) || 0));
         let badge = '', statusText = '';
         if (n.blacklisted) { badge = 'badge-error'; statusText = tr('拉黑 Blocked'); }
         else if (n.cooling_down) { badge = 'badge-warning'; statusText = tr('冷却 Cooling'); }
         else if (!n.initial_check_done || ms < 0) { badge = 'badge-offline'; statusText = tr('未测试 Unknown'); }
         else if (!n.available) { badge = 'badge-error'; statusText = tr('异常 Error'); }
         else { badge = 'badge-healthy'; statusText = tr('在线 Healthy'); }
-
+        const actions = canOperate ? `
+            <button type="button" class="btn btn-sm" onclick="probeNode(${inlineStringArg(n.tag)})">${iconMarkup('search')}<span>${tr('探测')}</span></button>
+            ${(n.blacklisted || n.cooling_down) ? `<button type="button" class="btn btn-sm btn-primary" onclick="releaseNode(${inlineStringArg(n.tag)})">${iconMarkup('unlock')}<span>${tr(n.cooling_down && !n.blacklisted ? '解除冷却' : '解封')}</span></button>` : `<button type="button" class="btn btn-sm btn-danger" onclick="blacklistNode(${inlineStringArg(n.tag)})">${iconMarkup('ban')}<span>${tr('拉黑')}</span></button>`}` : `<span class="badge badge-offline">${tr('只读')}</span>`;
         return `<tr>
           <td><span class="badge ${badge}">${statusText}</span></td>
           <td><span style="display:inline-flex;align-items:center;gap:6px">${iconMarkup('map')} ${getNodeRegion(n).toUpperCase()}</span></td>
-          <td>
-            <div style="font-weight: 500">${escapeHtml(getNodeDisplayName(n))}</div>
-            <div style="font-size: 11px; color: var(--text-muted)">${escapeHtml(n.tag)}</div>
-          </td>
+          <td><div style="font-weight:500">${escapeHtml(getNodeDisplayName(n))}</div><div style="font-size:11px;color:var(--text-muted)">${escapeHtml(n.tag)}</div></td>
           <td class="tt-mono">${n.port || '-'}</td>
-          <td>
-            <div style="display:flex; align-items:center;">
-              <span class="tt-mono" style="width:40px">${ms>=0 ? ms+'ms' : '-'}</span>
-              <div class="lat-bar"><div class="lat-fill" style="width:${getQualityWidth(ms)}%; background:${getQualityColor(ms)}"></div></div>
-            </div>
-          </td>
+          <td><div style="display:flex;align-items:center;gap:8px"><span class="tt-mono" style="width:48px">${ms>=0 ? ms+'ms' : '-'}</span><div class="lat-bar"><div class="lat-fill" style="width:${score}%;background:${score >= 80 ? 'var(--success)' : (score >= 55 ? 'var(--warning)' : 'var(--error)')}"></div></div><span class="tt-mono" title="综合质量分">${score.toFixed(0)}</span></div></td>
           <td class="tt-mono">${n.active_connections||0}</td>
-          <td class="tt-mono" style="color: ${n.failure_count>0 ? 'var(--error)' : 'inherit'}">${n.failure_count||0}</td>
-          <td>
-            <button type="button" class="btn btn-sm" onclick="probeNode(${inlineStringArg(n.tag)})">${iconMarkup('search')}<span>${tr('探测')}</span></button>
-            ${(n.blacklisted || n.cooling_down) ? `<button type="button" class="btn btn-sm btn-primary" onclick="releaseNode(${inlineStringArg(n.tag)})">${iconMarkup('unlock')}<span>${tr(n.cooling_down && !n.blacklisted ? '解除冷却' : '解封')}</span></button>` : `<button type="button" class="btn btn-sm btn-danger" onclick="blacklistNode(${inlineStringArg(n.tag)})">${iconMarkup('ban')}<span>${tr('拉黑')}</span></button>`}
-          </td>
+          <td class="tt-mono" style="color:${n.failure_count>0 ? 'var(--error)' : 'inherit'}">${n.failure_count||0}</td>
+          <td>${actions}</td>
         </tr>`;
       }).join('');
     }
@@ -2632,6 +2742,21 @@
         const mgmt = d.management || {};
         document.getElementById('settingMgmtListen').value = mgmt.listen || '';
         document.getElementById('settingMgmtPassword').value = mgmt.password || '';
+        document.getElementById('settingOperatorPassword').value = mgmt.operator_password || '';
+        document.getElementById('settingViewerPassword').value = mgmt.viewer_password || '';
+        document.getElementById('settingProbeHealthyInterval').value = formatDurationForInput(mgmt.probe_healthy_interval || '30m');
+        document.getElementById('settingProbeFailureRetry').value = formatDurationForInput(mgmt.probe_failure_retry_interval || '1m');
+        document.getElementById('settingProbeFailureMax').value = formatDurationForInput(mgmt.probe_failure_max_interval || '1h');
+        document.getElementById('settingProbePassiveGrace').value = formatDurationForInput(mgmt.probe_passive_grace || '10m');
+        document.getElementById('settingProbeMaxPerHour').value = Number(mgmt.probe_max_per_hour) || 0;
+        document.getElementById('settingHistoryEnabled').checked = mgmt.history_enabled !== false;
+        document.getElementById('settingHistoryFile').value = mgmt.history_file || 'monitor-history.json';
+        document.getElementById('settingHistoryRetention').value = formatDurationForInput(mgmt.history_retention || '24h');
+        document.getElementById('settingHistoryInterval').value = formatDurationForInput(mgmt.history_interval || '1m');
+        document.getElementById('settingAlertMinAvailable').value = Number(mgmt.alert_min_available) || 0;
+        document.getElementById('settingAlertMinRatio').value = Number(mgmt.alert_min_available_ratio) || 0;
+        document.getElementById('settingAlertCooldown').value = formatDurationForInput(mgmt.alert_cooldown || '10m');
+        document.getElementById('settingAuditFile').value = mgmt.audit_file || 'audit.log';
         // GeoIP
         const geo = d.geoip || {};
         document.getElementById('settingGeoIPEnabled').checked = geo.enabled || false;
@@ -2664,8 +2789,11 @@
           const fetchConcurrency = Number(sd.fetch_concurrency) || 16;
           document.getElementById('settingSubFetchConcurrency').value = fetchConcurrency;
           document.getElementById('settingSubAllowPrivate').checked = sd.allow_private_networks === true;
+          document.getElementById('settingSubMaxRemovedRatio').value = Number(sd.max_removed_ratio) || 0.5;
+          document.getElementById('settingSubMinAvailableRatio').value = Number(sd.min_available_ratio) || 0;
+          document.getElementById('settingSubQuarantine').checked = sd.quarantine_new_nodes !== false;
           document.getElementById('settingSubURLs').value = (sd.subscriptions || []).join('\n');
-          _savedSubSnapshot = JSON.stringify({urls: (sd.subscriptions || []).join('\n'), enabled: sd.enabled || false, interval: sel.value, fetch_concurrency: fetchConcurrency, allow_private_networks: sd.allow_private_networks === true});
+          _savedSubSnapshot = JSON.stringify({urls: (sd.subscriptions || []).join('\n'), enabled: sd.enabled || false, interval: sel.value, fetch_concurrency: fetchConcurrency, allow_private_networks: sd.allow_private_networks === true, max_removed_ratio: Number(sd.max_removed_ratio) || 0.5, min_available_ratio: Number(sd.min_available_ratio) || 0, quarantine_new_nodes: sd.quarantine_new_nodes !== false});
           subscriptionSettingsLoaded = true;
         } catch(e){
           console.error('Failed to load subscription settings:', e);
@@ -2686,6 +2814,19 @@
         probe_interval: document.getElementById('settingProbeInterval').value,
         probe_timeout: document.getElementById('settingProbeTimeout').value,
         probe_batch_size: document.getElementById('settingProbeBatchSize').value,
+        probe_healthy_interval: document.getElementById('settingProbeHealthyInterval').value,
+        probe_failure_retry: document.getElementById('settingProbeFailureRetry').value,
+        probe_failure_max: document.getElementById('settingProbeFailureMax').value,
+        probe_passive_grace: document.getElementById('settingProbePassiveGrace').value,
+        probe_max_per_hour: document.getElementById('settingProbeMaxPerHour').value,
+        history_enabled: document.getElementById('settingHistoryEnabled').checked,
+        history_file: document.getElementById('settingHistoryFile').value,
+        history_retention: document.getElementById('settingHistoryRetention').value,
+        history_interval: document.getElementById('settingHistoryInterval').value,
+        alert_min_available: document.getElementById('settingAlertMinAvailable').value,
+        alert_min_ratio: document.getElementById('settingAlertMinRatio').value,
+        alert_cooldown: document.getElementById('settingAlertCooldown').value,
+        audit_file: document.getElementById('settingAuditFile').value,
         listener_addr: document.getElementById('settingListenerAddr').value,
         listener_port: document.getElementById('settingListenerPort').value,
         listener_user: document.getElementById('settingListenerUser').value,
@@ -2708,6 +2849,8 @@
         sticky_max: document.getElementById('settingStickyMax').value,
         mgmt_listen: document.getElementById('settingMgmtListen').value,
         mgmt_password: document.getElementById('settingMgmtPassword').value,
+        operator_password: document.getElementById('settingOperatorPassword').value,
+        viewer_password: document.getElementById('settingViewerPassword').value,
         geoip_enabled: document.getElementById('settingGeoIPEnabled').checked,
         geoip_db: document.getElementById('settingGeoIPDBPath').value,
         geoip_listen: document.getElementById('settingGeoIPListen').value,
@@ -2818,7 +2961,8 @@
       const automatic = mode !== 'manual';
       document.getElementById('settingProbeInterval').disabled = !automatic;
       document.getElementById('settingProbeTimeout').disabled = !automatic;
-      document.getElementById('settingProbeBatchSize').disabled = mode !== 'sample';
+      document.getElementById('settingProbeBatchSize').disabled = mode !== 'sample' && mode !== 'adaptive';
+      document.querySelectorAll('.adaptive-probe-setting').forEach(element => { element.style.display = mode === 'adaptive' ? '' : 'none'; });
       if (!automatic) {
         clearDurationError('settingProbeInterval', 'settingProbeIntervalError');
         clearDurationError('settingProbeTimeout', 'settingProbeTimeoutError');
@@ -2828,7 +2972,7 @@
     function togglePoolStrategySettings() {
       const retryEnabled = document.getElementById('settingPoolRetry').checked;
       const stickyEnabled = document.getElementById('settingPoolSticky').checked;
-      const latencyEnabled = document.getElementById('settingPoolMode').value === 'latency';
+      const latencyEnabled = ['latency', 'quality'].includes(document.getElementById('settingPoolMode').value);
       document.getElementById('settingPoolRetryAttempts').disabled = !retryEnabled;
       document.getElementById('settingStickyTTL').disabled = !stickyEnabled;
       document.getElementById('settingStickyMax').disabled = !stickyEnabled;
@@ -2850,7 +2994,14 @@
       const subInterval = document.getElementById('settingSubInterval').value;
       const subFetchConcurrency = parseInt(document.getElementById('settingSubFetchConcurrency').value) || 16;
       const subAllowPrivate = document.getElementById('settingSubAllowPrivate').checked;
-      const currentSubSnapshot = JSON.stringify({urls: subURLs.join('\n'), enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate});
+      const subMaxRemovedRatio = Number(document.getElementById('settingSubMaxRemovedRatio').value) || 0.5;
+      const subMinAvailableRatio = Number(document.getElementById('settingSubMinAvailableRatio').value) || 0;
+      const subQuarantine = document.getElementById('settingSubQuarantine').checked;
+      if (subMaxRemovedRatio <= 0 || subMaxRemovedRatio > 1 || subMinAvailableRatio < 0 || subMinAvailableRatio > 1) {
+        showToast(tr('订阅比例必须在 0 到 1 之间'), 'error');
+        return;
+      }
+      const currentSubSnapshot = JSON.stringify({urls: subURLs.join('\n'), enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate, max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio, quarantine_new_nodes: subQuarantine});
 
       const coreChanged = currentCoreSnapshot !== _savedCoreSnapshot;
       const subChanged = subscriptionSettingsLoaded && currentSubSnapshot !== _savedSubSnapshot;
@@ -2858,7 +3009,11 @@
       let coreAuthChanged = false;
       let savedCore = {};
       try { savedCore = JSON.parse(_savedCoreSnapshot || '{}'); } catch (_) {}
-      const managementPasswordChanged = coreChanged && savedCore.mgmt_password !== document.getElementById('settingMgmtPassword').value;
+      const managementPasswordChanged = coreChanged && (
+        savedCore.mgmt_password !== document.getElementById('settingMgmtPassword').value ||
+        savedCore.operator_password !== document.getElementById('settingOperatorPassword').value ||
+        savedCore.viewer_password !== document.getElementById('settingViewerPassword').value
+      );
 
       // Rotating the password invalidates this browser session immediately. Do
       // not start a deterministic partial save by attempting subscriptions
@@ -2920,7 +3075,26 @@
           management: {
             listen: document.getElementById('settingMgmtListen').value,
             password: document.getElementById('settingMgmtPassword').value,
+            operator_password: document.getElementById('settingOperatorPassword').value,
+            viewer_password: document.getElementById('settingViewerPassword').value,
             probe_concurrency: parseInt(document.getElementById('settingProbeConcurrency').value) || 32,
+            probe_mode: document.getElementById('settingProbeMode').value,
+            probe_interval: document.getElementById('settingProbeInterval').value.trim() || '5m',
+            probe_timeout: document.getElementById('settingProbeTimeout').value.trim() || '10s',
+            probe_batch_size: parseInt(document.getElementById('settingProbeBatchSize').value) || 100,
+            probe_healthy_interval: document.getElementById('settingProbeHealthyInterval').value.trim() || '30m',
+            probe_failure_retry_interval: document.getElementById('settingProbeFailureRetry').value.trim() || '1m',
+            probe_failure_max_interval: document.getElementById('settingProbeFailureMax').value.trim() || '1h',
+            probe_passive_grace: document.getElementById('settingProbePassiveGrace').value.trim() || '10m',
+            probe_max_per_hour: parseInt(document.getElementById('settingProbeMaxPerHour').value) || 0,
+            history_enabled: document.getElementById('settingHistoryEnabled').checked,
+            history_file: document.getElementById('settingHistoryFile').value.trim(),
+            history_retention: document.getElementById('settingHistoryRetention').value.trim() || '24h',
+            history_interval: document.getElementById('settingHistoryInterval').value.trim() || '1m',
+            alert_min_available: parseInt(document.getElementById('settingAlertMinAvailable').value) || 0,
+            alert_min_available_ratio: Number(document.getElementById('settingAlertMinRatio').value) || 0,
+            alert_cooldown: document.getElementById('settingAlertCooldown').value.trim() || '10m',
+            audit_file: document.getElementById('settingAuditFile').value.trim(),
           },
           log: {
             output: document.getElementById('settingLogOutput').value,
@@ -2962,12 +3136,34 @@
         _savedCoreSnapshot = currentCoreSnapshot;
       }
 
-      // Save subscription config if changed
+      // Save subscription config through a fetched, one-time preview plan.
       if (subChanged) {
-        showFullscreenLoading(tr('更新订阅中...'), tr('正在拉取订阅并重载节点，请稍候'));
-        const subPayload = { subscriptions: subURLs, enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate };
+        saveBtn.disabled = true; saveLabel.textContent = tr('保存中...'); saveBtn.style.opacity = '0.6';
+        const subPayload = {
+          subscriptions: subURLs, enabled: subEnabled, interval: subInterval,
+          fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate,
+          max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio,
+          quarantine_new_nodes: subQuarantine,
+        };
         try {
-          const sr = await fetch('/api/subscription/config', {method:'PUT', headers:{'Content-Type':'application/json', 'If-Match': subscriptionETag}, body:JSON.stringify(subPayload)});
+          showFullscreenLoading(tr('更新订阅中...'), tr('正在拉取候选订阅并计算节点差异'));
+          const previewResponse = await fetch('/api/subscription/preview', {method:'POST', headers:{'Content-Type':'application/json', 'If-Match': subscriptionETag}, body:JSON.stringify(subPayload)});
+          if (previewResponse.status === 412 || previewResponse.status === 428) {
+            hideFullscreenLoading(); await loadSettingsPage();
+            showToast(tr('设置已被其他操作更新，已重新载入'), 'warning');
+            saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return;
+          }
+          const preview = await readAPIJSON(previewResponse, '订阅预览失败');
+          hideFullscreenLoading();
+          const removedPercent = ((Number(preview.removed_ratio) || 0) * 100).toFixed(1);
+          const previewMessage = `候选节点 ${preview.candidate_total || 0} 个：新增 ${preview.added || 0}、删除 ${preview.removed || 0}、保留 ${preview.unchanged || 0}。删除比例 ${removedPercent}%${preview.risky ? '，已超过安全阈值。' : '。'}确认应用此候选池？`;
+          const confirmed = await requestConfirmation(preview.risky ? tr('高风险订阅变更') : tr('确认订阅变更'), previewMessage, preview.risky ? tr('确认高风险变更') : tr('应用候选池'));
+          if (!confirmed) {
+            saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return;
+          }
+          showFullscreenLoading(tr('更新订阅中...'), tr('正在预检候选池并原子切换节点'));
+          const applyPayload = {...subPayload, preview_token: preview.token, confirm_risky: preview.risky === true};
+          const sr = await fetch('/api/subscription/config', {method:'PUT', headers:{'Content-Type':'application/json', 'If-Match': subscriptionETag}, body:JSON.stringify(applyPayload)});
           hideFullscreenLoading();
           if (sr.status === 412 || sr.status === 428) {
             await loadSettingsPage();
@@ -2977,13 +3173,7 @@
           const sd = await readAPIJSON(sr, '订阅配置保存失败');
           subscriptionETag = sr.headers.get('ETag') || subscriptionETag;
           _savedSubSnapshot = currentSubSnapshot;
-          if (sd.refresh_error) {
-            showToast(tr('订阅已保存，但刷新失败：{error}', {error: sd.refresh_error}), 'error');
-          } else if (sd.node_count !== undefined) {
-            showToast(tr('已保存，获取 {count} 个节点', {count: sd.node_count}));
-          } else {
-            showToast(tr('设置已保存'));
-          }
+          showToast(sd.node_count !== undefined ? tr('已保存，获取 {count} 个节点', {count: sd.node_count}) : tr('设置已保存'));
         } catch(e){ hideFullscreenLoading(); showToast(e.message || tr('订阅配置保存失败'), 'error'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
       } else if (coreChanged && !coreRestartRequired) {
         showToast(tr('已保存并重载成功'));
@@ -3066,6 +3256,75 @@
       }
     }
 
+    let operationsHistoryCache = [];
+
+    async function loadOperations() {
+      try {
+        const [probeResponse, historyResponse, alertsResponse] = await Promise.all([
+          fetch('/api/probe/status'), fetch('/api/metrics/history?limit=720'), fetch('/api/alerts')
+        ]);
+        const [probeData, historyData, alertsData] = await Promise.all([
+          readAPIJSON(probeResponse, '探测状态加载失败'),
+          readAPIJSON(historyResponse, '指标历史加载失败'),
+          readAPIJSON(alertsResponse, '告警加载失败'),
+        ]);
+        const budget = probeData.budget || {};
+        document.getElementById('opsProbeBudget').textContent = `${Number(budget.used) || 0} / ${Number(budget.limit) > 0 ? budget.limit : '∞'}`;
+        document.getElementById('opsProbeWindow').textContent = budget.next_reset ? `Reset ${new Date(budget.next_reset).toLocaleTimeString()}` : (budget.mode || '-');
+        document.getElementById('opsProbeDue').textContent = Number(budget.due) || 0;
+        document.getElementById('opsPassiveSkipped').textContent = Number(budget.passive_skipped) || 0;
+        operationsHistoryCache = Array.isArray(historyData.history) ? historyData.history : [];
+        const alerts = Array.isArray(alertsData.alerts) ? alertsData.alerts : [];
+        document.getElementById('opsActiveAlerts').textContent = alerts.filter(alert => alert.active).length;
+        document.getElementById('operationsAlertsBody').innerHTML = alerts.length ? alerts.map(alert => `<tr>
+          <td><span class="badge ${alert.active ? 'badge-error' : 'badge-healthy'}">${alert.active ? tr('活动') : tr('已恢复')}</span></td>
+          <td>${escapeHtml(alert.severity || '-')}</td><td>${escapeHtml(alert.message || '-')}</td><td>${formatDateTime(alert.updated_at)}</td>
+        </tr>`).join('') : `<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">${tr('暂无告警')}</td></tr>`;
+        if (currentRole === 'admin') {
+          const auditResponse = await fetch('/api/audit?limit=200');
+          const auditData = await readAPIJSON(auditResponse, '审计记录加载失败');
+          const events = Array.isArray(auditData.events) ? auditData.events : [];
+          document.getElementById('operationsAuditBody').innerHTML = events.length ? events.map(event => `<tr>
+            <td>${formatDateTime(event.timestamp)}</td><td>${escapeHtml(event.role || '-')}</td><td class="tt-mono">${escapeHtml(event.method || '-')}</td>
+            <td class="tt-mono">${escapeHtml(event.path || '-')}</td><td>${Number(event.status) || '-'}</td><td>${escapeHtml(event.remote_ip || '-')}</td>
+          </tr>`).join('') : `<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">${tr('暂无审计记录')}</td></tr>`;
+        }
+        renderOperationsHistory();
+      } catch (error) {
+        console.error('Failed to load operations:', error);
+        showToast(error.message || tr('加载数据失败'), 'error');
+      }
+    }
+
+    function formatDateTime(value) {
+      if (!value || value === '0001-01-01T00:00:00Z') return '-';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
+    }
+
+    function renderOperationsHistory() {
+      if (!document.getElementById('operationsTab').classList.contains('active')) return;
+      if (!operationsHistoryChartInst) operationsHistoryChartInst = initEchart('operationsHistoryChart');
+      if (!operationsHistoryChartInst) return;
+      const times = operationsHistoryCache.map(point => new Date(point.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}));
+      setChartOption(operationsHistoryChartInst, {
+        backgroundColor: 'transparent', textStyle: { fontFamily: CHART_FONT_FAMILY },
+        tooltip: { trigger: 'axis', backgroundColor: getCssVar('--bg-panel'), borderColor: getCssVar('--border'), textStyle: { color: getCssVar('--text-main') } },
+        legend: { top: 4, textStyle: { color: getCssVar('--text-muted') } },
+        grid: { left: '4%', right: '5%', bottom: '8%', top: '18%', containLabel: true },
+        xAxis: { type: 'category', boundaryGap: false, data: times, axisLabel: { color: getCssVar('--text-muted') } },
+        yAxis: [
+          { type: 'value', name: tr('节点'), axisLabel: { color: getCssVar('--text-muted') }, splitLine: { lineStyle: { color: getCssVar('--border'), type: 'dashed' } } },
+          { type: 'value', name: 'P95 ms', axisLabel: { color: getCssVar('--text-muted') }, splitLine: { show: false } }
+        ],
+        series: [
+          { name: tr('健康节点'), type: 'line', smooth: true, showSymbol: false, data: operationsHistoryCache.map(point => point.healthy_nodes), lineStyle: { color: getCssVar('--success') } },
+          { name: tr('异常节点'), type: 'line', smooth: true, showSymbol: false, data: operationsHistoryCache.map(point => point.unavailable_nodes), lineStyle: { color: getCssVar('--error') } },
+          { name: 'P95', type: 'line', yAxisIndex: 1, smooth: true, showSymbol: false, data: operationsHistoryCache.map(point => point.p95_latency_ms), lineStyle: { color: getCssVar('--chart-secondary'), type: 'dashed' } }
+        ]
+      }, 'operationsHistoryChart');
+    }
+
     // ─── Theme System: Dark / Light / Auto (follow OS) ───
     const THEME_LABELS = { dark: '深色模式', light: '浅色模式', auto: '跟随系统' };
     const osMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -3078,6 +3337,7 @@
       if (trafficChartInst) { trafficChartInst.dispose(); trafficChartInst = null; }
       if (successRateChartInst) { successRateChartInst.dispose(); successRateChartInst = null; }
       if (failureChartInst) { failureChartInst.dispose(); failureChartInst = null; }
+      if (operationsHistoryChartInst) { operationsHistoryChartInst.dispose(); operationsHistoryChartInst = null; }
 
       const dash = document.getElementById('dashboardTab');
       if (dash && dash.classList.contains('active') && typeof updateDashboardCharts === 'function') {
@@ -3088,6 +3348,8 @@
         if (trafficSource) { trafficSource.close(); trafficSource = null; trafficTime = []; trafficDataUp = []; trafficDataDown = []; }
         if (typeof updateDebugCharts === 'function') updateDebugCharts();
       }
+      const operations = document.getElementById('operationsTab');
+      if (operations && operations.classList.contains('active')) renderOperationsHistory();
     }
 
     function applyTheme(visualTheme, shouldReRender) {

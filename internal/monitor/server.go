@@ -34,6 +34,7 @@ var embeddedFS embed.FS
 // Session represents a user session with expiration.
 type Session struct {
 	Token     string
+	Role      Role
 	CreatedAt time.Time
 	ExpiresAt time.Time
 }
@@ -119,15 +120,31 @@ type settingsUpdateRequest struct {
 		} `json:"sticky"`
 	} `json:"pool,omitempty"`
 	Management *struct {
-		Listen           *string `json:"listen"`
-		Password         *string `json:"password"`
-		ProbeConcurrency *int    `json:"probe_concurrency"`
-		ProbeMode        *string `json:"probe_mode"`
-		ProbeInterval    *string `json:"probe_interval"`
-		ProbeTimeout     *string `json:"probe_timeout"`
-		ProbeBatchSize   *int    `json:"probe_batch_size"`
-		TLSCertFile      *string `json:"tls_cert_file"`
-		TLSKeyFile       *string `json:"tls_key_file"`
+		Listen                    *string  `json:"listen"`
+		Password                  *string  `json:"password"`
+		OperatorPassword          *string  `json:"operator_password"`
+		ViewerPassword            *string  `json:"viewer_password"`
+		ProbeConcurrency          *int     `json:"probe_concurrency"`
+		ProbeMode                 *string  `json:"probe_mode"`
+		ProbeInterval             *string  `json:"probe_interval"`
+		ProbeTimeout              *string  `json:"probe_timeout"`
+		ProbeBatchSize            *int     `json:"probe_batch_size"`
+		ProbeHealthyInterval      *string  `json:"probe_healthy_interval"`
+		ProbeFailureRetryInterval *string  `json:"probe_failure_retry_interval"`
+		ProbeFailureMaxInterval   *string  `json:"probe_failure_max_interval"`
+		ProbePassiveGrace         *string  `json:"probe_passive_grace"`
+		ProbeMaxPerHour           *int     `json:"probe_max_per_hour"`
+		HistoryEnabled            *bool    `json:"history_enabled"`
+		HistoryFile               *string  `json:"history_file"`
+		HistoryRetention          *string  `json:"history_retention"`
+		HistoryInterval           *string  `json:"history_interval"`
+		AlertMinAvailable         *int     `json:"alert_min_available"`
+		AlertMinAvailableRatio    *float64 `json:"alert_min_available_ratio"`
+		AlertCooldown             *string  `json:"alert_cooldown"`
+		AuditFile                 *string  `json:"audit_file"`
+		AuditMaxEntries           *int     `json:"audit_max_entries"`
+		TLSCertFile               *string  `json:"tls_cert_file"`
+		TLSKeyFile                *string  `json:"tls_key_file"`
 	} `json:"management,omitempty"`
 	Log *struct {
 		Output         string `json:"output"`
@@ -368,21 +385,27 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/assets/echarts.min.js", s.handleEChartsAsset)
 	mux.HandleFunc("/api/auth", s.handleAuth)
-	mux.HandleFunc("/api/settings", s.withAuth(s.handleSettings))
-	mux.HandleFunc("/api/nodes", s.withAuth(s.handleNodes))
-	mux.HandleFunc("/api/nodes/config", s.withAuth(s.handleConfigNodes))
-	mux.HandleFunc("/api/nodes/config/", s.withAuth(s.handleConfigNodeItem))
-	mux.HandleFunc("/api/nodes/probe-all", s.withAuth(s.handleProbeAll))
-	mux.HandleFunc("/api/nodes/", s.withAuth(s.handleNodeAction))
-	mux.HandleFunc("/api/debug", s.withAuth(s.handleDebug))
-	mux.HandleFunc("/api/debug/", s.withAuth(s.handleDebugItem))
-	mux.HandleFunc("/api/export", s.withAuth(s.handleExport))
-	mux.HandleFunc("/api/subscription/status", s.withAuth(s.handleSubscriptionStatus))
-	mux.HandleFunc("/api/subscription/refresh", s.withAuth(s.handleSubscriptionRefresh))
-	mux.HandleFunc("/api/subscription/config", s.withAuth(s.handleSubscriptionConfig))
-	mux.HandleFunc("/api/reload", s.withAuth(s.handleReload))
-	mux.HandleFunc("/api/traffic", s.withAuth(s.handleTraffic))
-	mux.HandleFunc("/api/logs", s.withAuth(s.handleLogs))
+	mux.HandleFunc("/api/session", s.withRole(RoleViewer, s.handleSession))
+	mux.HandleFunc("/api/settings", s.withRole(RoleAdmin, s.handleSettings))
+	mux.HandleFunc("/api/nodes", s.withRole(RoleViewer, s.handleNodes))
+	mux.HandleFunc("/api/nodes/config", s.withRole(RoleAdmin, s.handleConfigNodes))
+	mux.HandleFunc("/api/nodes/config/", s.withRole(RoleAdmin, s.handleConfigNodeItem))
+	mux.HandleFunc("/api/nodes/probe-all", s.withRole(RoleOperator, s.handleProbeAll))
+	mux.HandleFunc("/api/nodes/", s.withRole(RoleOperator, s.handleNodeAction))
+	mux.HandleFunc("/api/debug", s.withRole(RoleViewer, s.handleDebug))
+	mux.HandleFunc("/api/debug/", s.withRole(RoleOperator, s.handleDebugItem))
+	mux.HandleFunc("/api/export", s.withRole(RoleViewer, s.handleExport))
+	mux.HandleFunc("/api/subscription/status", s.withRole(RoleViewer, s.handleSubscriptionStatus))
+	mux.HandleFunc("/api/subscription/preview", s.withRole(RoleAdmin, s.handleSubscriptionPreview))
+	mux.HandleFunc("/api/subscription/refresh", s.withRole(RoleOperator, s.handleSubscriptionRefresh))
+	mux.HandleFunc("/api/subscription/config", s.withRole(RoleAdmin, s.handleSubscriptionConfig))
+	mux.HandleFunc("/api/reload", s.withRole(RoleAdmin, s.handleReload))
+	mux.HandleFunc("/api/traffic", s.withRole(RoleViewer, s.handleTraffic))
+	mux.HandleFunc("/api/logs", s.withRole(RoleViewer, s.handleLogs))
+	mux.HandleFunc("/api/probe/status", s.withRole(RoleViewer, s.handleProbeStatus))
+	mux.HandleFunc("/api/metrics/history", s.withRole(RoleViewer, s.handleMetricsHistory))
+	mux.HandleFunc("/api/alerts", s.withRole(RoleViewer, s.handleAlerts))
+	mux.HandleFunc("/api/audit", s.withRole(RoleAdmin, s.handleAudit))
 	s.srv = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           mux,
@@ -445,11 +468,15 @@ func (s *Server) SetConfig(cfg *config.Config) {
 		// process restart whenever the persisted listen address differs.
 		managementRestartRequired := managementRuntimeChanged(s.cfg, ownedCfg.Management)
 		if !managementRestartRequired {
-			passwordChanged = s.cfg.Password != ownedCfg.Management.Password
+			passwordChanged = s.cfg.Password != ownedCfg.Management.Password ||
+				s.cfg.OperatorPassword != ownedCfg.Management.OperatorPassword ||
+				s.cfg.ViewerPassword != ownedCfg.Management.ViewerPassword
 			if passwordChanged {
 				s.authGeneration++
 			}
 			s.cfg.Password = ownedCfg.Management.Password
+			s.cfg.OperatorPassword = ownedCfg.Management.OperatorPassword
+			s.cfg.ViewerPassword = ownedCfg.Management.ViewerPassword
 		}
 		s.cfg.ExternalIP = ownedCfg.ExternalIP
 		s.cfg.ProbeTarget = ownedCfg.Management.ProbeTarget
@@ -491,7 +518,19 @@ func probePolicyRuntimeChanged(runtime Config, candidate *config.Config) bool {
 	return runtime.ProbeMode != candidate.ProbeModeOrDefault() ||
 		runtime.ProbeInterval != candidate.ProbeIntervalOrDefault() ||
 		runtime.ProbeTimeout != candidate.ProbeTimeoutOrDefault() ||
-		runtime.ProbeBatchSize != candidate.ProbeBatchSizeOrDefault()
+		runtime.ProbeBatchSize != candidate.ProbeBatchSizeOrDefault() ||
+		runtime.ProbeHealthyInterval != candidate.ProbeHealthyIntervalOrDefault() ||
+		runtime.ProbeFailureRetryInterval != candidate.ProbeFailureRetryIntervalOrDefault() ||
+		runtime.ProbeFailureMaxInterval != candidate.ProbeFailureMaxIntervalOrDefault() ||
+		runtime.ProbePassiveGrace != candidate.ProbePassiveGraceOrDefault() ||
+		runtime.ProbeMaxPerHour != candidate.ProbeMaxPerHourOrDefault() ||
+		runtime.HistoryEnabled != candidate.HistoryEnabledValue() ||
+		runtime.HistoryRetention != candidate.HistoryRetentionOrDefault() ||
+		runtime.HistoryInterval != candidate.HistoryIntervalOrDefault() ||
+		runtime.AlertMinAvailable != candidate.Management.AlertMinAvailable ||
+		runtime.AlertMinAvailableRatio != candidate.Management.AlertMinAvailableRatio ||
+		runtime.AlertCooldown != candidate.AlertCooldownOrDefault() ||
+		runtime.AuditMaxEntries != candidate.AuditMaxEntriesOrDefault()
 }
 
 func (s *Server) runtimeConfigSnapshot() Config {
@@ -698,32 +737,48 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 		writeJSONMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	// 只返回初始检查通过的可用节点
-	filtered := s.mgr.SnapshotFiltered(true)
+	query, paginated, err := parseNodeQuery(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	allNodes := s.mgr.Snapshot()
-	totalNodes := len(allNodes)
-	for index := range filtered {
-		filtered[index].Region = displayRegion(filtered[index])
+	for index := range allNodes {
+		allNodes[index].Region = displayRegion(allNodes[index])
 	}
 
-	// Calculate region statistics
+	var nodes []Snapshot
+	var pagination NodePagination
+	if paginated {
+		nodes, pagination = queryNodes(allNodes, query)
+	} else {
+		nodes = s.mgr.SnapshotFiltered(true)
+		for index := range nodes {
+			nodes[index].Region = displayRegion(nodes[index])
+		}
+	}
+
 	regionStats := make(map[string]int)
 	regionHealthy := make(map[string]int)
-	for _, snap := range allNodes {
-		region := displayRegion(snap)
+	for _, snapshot := range allNodes {
+		region := displayRegion(snapshot)
 		regionStats[region]++
-		// Count healthy nodes per region
-		if snap.InitialCheckDone && snap.Available && !snap.Blacklisted && !snap.CoolingDown {
+		if snapshot.InitialCheckDone && snapshot.Available && !snapshot.Blacklisted && !snapshot.CoolingDown {
 			regionHealthy[region]++
 		}
 	}
 
 	sweepActive, sweepDone, sweepTotal, sweepOK, sweepFail := s.mgr.ProbeSweepProgress()
+	summary := summarizeNodes(allNodes)
 	payload := map[string]any{
-		"nodes":          filtered,
-		"total_nodes":    totalNodes,
-		"region_stats":   regionStats,
-		"region_healthy": regionHealthy,
+		"nodes":             nodes,
+		"total_nodes":       summary.TotalNodes,
+		"summary":           summary,
+		"region_stats":      regionStats,
+		"region_healthy":    regionHealthy,
+		"top_latency_nodes": topNodes(allNodes, "latency", 10),
+		"top_quality_nodes": topNodes(allNodes, "score", 10),
+		"probe_budget":      s.mgr.ProbeBudgetStatus(),
 		"probe_sweep": map[string]any{
 			"active":    sweepActive,
 			"done":      sweepDone,
@@ -732,11 +787,16 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			"failed":    sweepFail,
 		},
 	}
+	if paginated {
+		payload["pagination"] = pagination
+	}
 	writeJSON(w, payload)
 }
-
 func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
+		if !requireRole(w, r, RoleOperator) {
+			return
+		}
 		cleared := s.mgr.ClearAllDiagnostics()
 		s.persistDiagnosticsState()
 		writeJSON(w, map[string]any{"message": "诊断记录已清空", "cleared": cleared})
@@ -1039,45 +1099,35 @@ func writeStrictJSONError(w http.ResponseWriter, err error) {
 	writeJSONError(w, http.StatusBadRequest, "请求格式错误")
 }
 
-// withAuth 认证中间件，如果配置了密码则需要验证
+// withAuth authenticates the request, attaches its role and audits mutations.
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 无密码模式仅允许可信的本机浏览器/原生客户端请求。
-		if s.managementPassword() == "" {
+		authConfig := s.managementAuthSnapshot()
+		if !authConfig.required() {
 			if !isSafePasswordlessManagementRequest(r) {
 				writeJSONError(w, http.StatusForbidden, "拒绝跨站管理请求")
 				return
 			}
-			next(w, r)
+			s.serveAuthorized(w, r, RoleAdmin, next)
 			return
 		}
 
-		// Bearer authentication is intended for native clients and is not subject
-		// to browser cookie CSRF checks. Evaluate it before cookies so a native
-		// request is not rejected merely because it also carries a stale cookie.
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "" {
-			parts := strings.Fields(authHeader)
-			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && s.validateSession(parts[1]) {
-				next(w, r)
+		if token := bearerToken(r.Header.Get("Authorization")); token != "" {
+			if role, ok := s.validateSessionRole(token); ok {
+				s.serveAuthorized(w, r, role, next)
 				return
 			}
 		}
-
-		// Cookie-authenticated unsafe methods must originate from this exact
-		// management origin. SameSite cookies alone do not stop a sibling origin
-		// (including another localhost port) from submitting a form POST.
-		cookie, err := r.Cookie("session_token")
-		if err == nil && s.validateSession(cookie.Value) {
-			if isUnsafeHTTPMethod(r.Method) && !hasSameManagementOrigin(r) {
-				writeJSONError(w, http.StatusForbidden, "拒绝跨站管理请求")
+		if cookie, err := r.Cookie("session_token"); err == nil {
+			if role, ok := s.validateSessionRole(cookie.Value); ok {
+				if isUnsafeHTTPMethod(r.Method) && !hasSameManagementOrigin(r) {
+					writeJSONError(w, http.StatusForbidden, "拒绝跨站管理请求")
+					return
+				}
+				s.serveAuthorized(w, r, role, next)
 				return
 			}
-			next(w, r)
-			return
 		}
-
-		// 未授权
 		writeJSONError(w, http.StatusUnauthorized, "未授权，请先登录")
 	}
 }
@@ -1188,15 +1238,13 @@ func isLoopbackHostname(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// handleAuth 处理登录认证
+// handleAuth authenticates any configured management role.
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
-	configuredPassword, authGeneration := s.managementAuthSnapshot()
-	// 如果没有配置密码，直接返回成功（不需要token）
-	if configuredPassword == "" {
-		writeJSON(w, map[string]any{"message": "无需密码", "no_password": true})
+	authConfig := s.managementAuthSnapshot()
+	if !authConfig.required() {
+		writeJSON(w, map[string]any{"message": "无需密码", "no_password": true, "role": RoleAdmin})
 		return
 	}
-
 	if r.Method != http.MethodPost {
 		writeJSONMethodNotAllowed(w, http.MethodPost)
 		return
@@ -1213,34 +1261,32 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer releaseAuth()
-
 	var req struct {
 		Password string `json:"password"`
 	}
-
 	if err := decodeStrictJSON(w, r, maxAuthBodyBytes, &req); err != nil {
 		writeStrictJSONError(w, err)
 		return
 	}
-
-	// 使用 constant-time 比较防止时序攻击
-	if !secureCompareStrings(req.Password, configuredPassword) {
-		// 添加随机延迟防止暴力破解
+	role, matched := authConfig.roleForPassword(req.Password)
+	if !matched {
 		time.Sleep(time.Duration(100+mathrand.Intn(200)) * time.Millisecond)
 		writeJSONError(w, http.StatusUnauthorized, "密码错误")
 		return
 	}
-	// Commit the session against the same authentication generation that was
-	// checked above. Holding cfgMu through createSession makes password rotation
-	// either invalidate this session afterwards or reject this stale request;
-	// an old-password request cannot recreate a session after invalidation.
+
 	s.cfgMu.RLock()
-	if s.authGeneration != authGeneration || !secureCompareStrings(s.cfg.Password, configuredPassword) {
+	current := managementAuthConfig{
+		AdminPassword: s.cfg.Password, OperatorPassword: s.cfg.OperatorPassword,
+		ViewerPassword: s.cfg.ViewerPassword, Generation: s.authGeneration,
+	}
+	currentRole, currentMatched := current.roleForPassword(req.Password)
+	if current.Generation != authConfig.Generation || !currentMatched || currentRole != role {
 		s.cfgMu.RUnlock()
 		writeJSONError(w, http.StatusUnauthorized, "认证配置已更新，请重新登录")
 		return
 	}
-	session, err := s.createSession()
+	session, err := s.createSession(role)
 	s.cfgMu.RUnlock()
 	if err != nil {
 		s.logger.Printf("Failed to create session: %v", err)
@@ -1248,22 +1294,12 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.authGuard.reset(r.RemoteAddr)
-
-	// 设置 HttpOnly Cookie
 	http.SetCookie(w, &http.Cookie{
-		Name:     "session_token",
-		Value:    session.Token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   s.managementTLSConfigured(),
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(s.sessionTTL.Seconds()),
+		Name: "session_token", Value: session.Token, Path: "/", HttpOnly: true,
+		Secure: s.managementTLSConfigured(), SameSite: http.SameSiteStrictMode,
+		MaxAge: int(s.sessionTTL.Seconds()),
 	})
-
-	writeJSON(w, map[string]any{
-		"message": "登录成功",
-		"token":   session.Token,
-	})
+	writeJSON(w, map[string]any{"message": "登录成功", "token": session.Token, "role": session.Role})
 }
 
 // handleExport 导出所有可用代理池节点的代理 URI，每行一个。
@@ -1465,9 +1501,9 @@ func applyProbePolicyUpdate(candidate *config.ManagementConfig, mode, interval, 
 		candidate.ProbeMode = strings.ToLower(strings.TrimSpace(*mode))
 	}
 	switch candidate.ProbeMode {
-	case "", "all", "sample", "manual":
+	case "", "all", "sample", "adaptive", "manual":
 	default:
-		return errors.New("探测模式必须为 all、sample 或 manual")
+		return errors.New("探测模式必须为 all、sample、adaptive 或 manual")
 	}
 	if interval != nil {
 		value, err := parsePositiveSettingsDuration(*interval)
@@ -1492,6 +1528,21 @@ func applyProbePolicyUpdate(candidate *config.ManagementConfig, mode, interval, 
 	return nil
 }
 
+func applyManagementDuration(input *string, target *time.Duration, label string, minimum time.Duration, allowZero bool) error {
+	if input == nil {
+		return nil
+	}
+	value, err := time.ParseDuration(strings.TrimSpace(*input))
+	if err != nil || value < 0 || (!allowZero && value == 0) || value < minimum {
+		if allowZero {
+			return fmt.Errorf("%s格式无效或小于 %s", label, minimum)
+		}
+		return fmt.Errorf("%s格式无效或必须至少为 %s", label, minimum)
+	}
+	*target = value
+	return nil
+}
+
 func validateProbeTarget(value string) error {
 	_, ready, err := resolveProbeTarget(value, false)
 	if err == nil && !ready {
@@ -1508,7 +1559,7 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runtimeConfig := s.runtimeConfigSnapshot()
-	previousPassword := runtimeConfig.Password
+	previousAuth := s.managementAuthSnapshot()
 	nodeMgr := s.nodeManager()
 	if nodeMgr == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "节点管理未启用，无法安全应用设置")
@@ -1550,7 +1601,7 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", settingsETag(committedRevision))
 	s.SetConfig(committed)
-	writeSettingsSuccess(w, committed, previousPassword, runtimeConfig, previousLog)
+	writeSettingsSuccess(w, committed, previousAuth, runtimeConfig, previousLog)
 }
 
 func settingsETag(revision uint64) string {
@@ -1633,7 +1684,7 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 			mode = "sequential"
 		}
 		switch mode {
-		case "sequential", "random", "balance", "latency":
+		case "sequential", "random", "balance", "latency", "quality":
 		default:
 			return errors.New("不支持的调度模式")
 		}
@@ -1689,6 +1740,67 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 		}
 		if request.Management.Password != nil {
 			candidate.Management.Password = *request.Management.Password
+		}
+		if request.Management.OperatorPassword != nil {
+			candidate.Management.OperatorPassword = *request.Management.OperatorPassword
+		}
+		if request.Management.ViewerPassword != nil {
+			candidate.Management.ViewerPassword = *request.Management.ViewerPassword
+		}
+		if err := applyManagementDuration(request.Management.ProbeHealthyInterval, &candidate.Management.ProbeHealthyInterval, "健康节点复探间隔", 10*time.Second, false); err != nil {
+			return err
+		}
+		if err := applyManagementDuration(request.Management.ProbeFailureRetryInterval, &candidate.Management.ProbeFailureRetryInterval, "失败重试间隔", time.Second, false); err != nil {
+			return err
+		}
+		if err := applyManagementDuration(request.Management.ProbeFailureMaxInterval, &candidate.Management.ProbeFailureMaxInterval, "失败退避上限", time.Second, false); err != nil {
+			return err
+		}
+		if err := applyManagementDuration(request.Management.ProbePassiveGrace, &candidate.Management.ProbePassiveGrace, "被动成功宽限期", 0, true); err != nil {
+			return err
+		}
+		if request.Management.ProbeMaxPerHour != nil {
+			if *request.Management.ProbeMaxPerHour < 0 || *request.Management.ProbeMaxPerHour > 10_000_000 {
+				return errors.New("每小时探测预算必须在 0 到 10000000 之间")
+			}
+			candidate.Management.ProbeMaxPerHour = *request.Management.ProbeMaxPerHour
+		}
+		if request.Management.HistoryEnabled != nil {
+			enabled := *request.Management.HistoryEnabled
+			candidate.Management.HistoryEnabled = &enabled
+		}
+		if request.Management.HistoryFile != nil {
+			candidate.Management.HistoryFile = strings.TrimSpace(*request.Management.HistoryFile)
+		}
+		if err := applyManagementDuration(request.Management.HistoryRetention, &candidate.Management.HistoryRetention, "指标保留时长", time.Minute, false); err != nil {
+			return err
+		}
+		if err := applyManagementDuration(request.Management.HistoryInterval, &candidate.Management.HistoryInterval, "指标采样间隔", 10*time.Second, false); err != nil {
+			return err
+		}
+		if request.Management.AlertMinAvailable != nil {
+			if *request.Management.AlertMinAvailable < 0 {
+				return errors.New("可用节点告警数量不能为负数")
+			}
+			candidate.Management.AlertMinAvailable = *request.Management.AlertMinAvailable
+		}
+		if request.Management.AlertMinAvailableRatio != nil {
+			if *request.Management.AlertMinAvailableRatio < 0 || *request.Management.AlertMinAvailableRatio > 1 {
+				return errors.New("可用节点告警比例必须在 0 到 1 之间")
+			}
+			candidate.Management.AlertMinAvailableRatio = *request.Management.AlertMinAvailableRatio
+		}
+		if err := applyManagementDuration(request.Management.AlertCooldown, &candidate.Management.AlertCooldown, "告警冷却时间", time.Second, false); err != nil {
+			return err
+		}
+		if request.Management.AuditFile != nil {
+			candidate.Management.AuditFile = strings.TrimSpace(*request.Management.AuditFile)
+		}
+		if request.Management.AuditMaxEntries != nil {
+			if *request.Management.AuditMaxEntries < 1 || *request.Management.AuditMaxEntries > 100_000 {
+				return errors.New("审计记录上限必须在 1 到 100000 之间")
+			}
+			candidate.Management.AuditMaxEntries = *request.Management.AuditMaxEntries
 		}
 		if request.Management.TLSCertFile != nil {
 			candidate.Management.TLSCertFile = strings.TrimSpace(*request.Management.TLSCertFile)
@@ -1768,12 +1880,14 @@ func persistSettingsCandidate(candidate *config.Config) (func() error, error) {
 	return candidate.SaveSettingsTransaction()
 }
 
-func writeSettingsSuccess(w http.ResponseWriter, candidate *config.Config, previousPassword string, runtimeConfig Config, previousLog config.LogConfig) {
+func writeSettingsSuccess(w http.ResponseWriter, candidate *config.Config, previousAuth managementAuthConfig, runtimeConfig Config, previousLog config.LogConfig) {
 	managementRestartRequired := managementRuntimeChanged(runtimeConfig, candidate.Management)
 	probeRestartRequired := probePolicyRuntimeChanged(runtimeConfig, candidate)
 	logRestartRequired := previousLog != candidate.Log
 	needRestart := managementRestartRequired || probeRestartRequired || logRestartRequired
-	passwordChanged := !managementRestartRequired && previousPassword != candidate.Management.Password
+	passwordChanged := !managementRestartRequired && (previousAuth.AdminPassword != candidate.Management.Password ||
+		previousAuth.OperatorPassword != candidate.Management.OperatorPassword ||
+		previousAuth.ViewerPassword != candidate.Management.ViewerPassword)
 	writeJSON(w, map[string]any{
 		"message":          "设置已保存并生效",
 		"external_ip":      candidate.ExternalIP,
@@ -1884,15 +1998,31 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				},
 			}
 			resp["management"] = map[string]any{
-				"listen":            cfg.Management.Listen,
-				"password":          cfg.Management.Password,
-				"probe_concurrency": cfg.ProbeConcurrencyOrDefault(),
-				"probe_mode":        cfg.ProbeModeOrDefault(),
-				"probe_interval":    cfg.ProbeIntervalOrDefault().String(),
-				"probe_timeout":     cfg.ProbeTimeoutOrDefault().String(),
-				"probe_batch_size":  cfg.ProbeBatchSizeOrDefault(),
-				"tls_cert_file":     cfg.Management.TLSCertFile,
-				"tls_key_file":      cfg.Management.TLSKeyFile,
+				"listen":                       cfg.Management.Listen,
+				"password":                     cfg.Management.Password,
+				"operator_password":            cfg.Management.OperatorPassword,
+				"viewer_password":              cfg.Management.ViewerPassword,
+				"probe_concurrency":            cfg.ProbeConcurrencyOrDefault(),
+				"probe_mode":                   cfg.ProbeModeOrDefault(),
+				"probe_interval":               cfg.ProbeIntervalOrDefault().String(),
+				"probe_timeout":                cfg.ProbeTimeoutOrDefault().String(),
+				"probe_batch_size":             cfg.ProbeBatchSizeOrDefault(),
+				"probe_healthy_interval":       cfg.ProbeHealthyIntervalOrDefault().String(),
+				"probe_failure_retry_interval": cfg.ProbeFailureRetryIntervalOrDefault().String(),
+				"probe_failure_max_interval":   cfg.ProbeFailureMaxIntervalOrDefault().String(),
+				"probe_passive_grace":          cfg.ProbePassiveGraceOrDefault().String(),
+				"probe_max_per_hour":           cfg.ProbeMaxPerHourOrDefault(),
+				"history_enabled":              cfg.HistoryEnabledValue(),
+				"history_file":                 cfg.Management.HistoryFile,
+				"history_retention":            cfg.HistoryRetentionOrDefault().String(),
+				"history_interval":             cfg.HistoryIntervalOrDefault().String(),
+				"alert_min_available":          cfg.Management.AlertMinAvailable,
+				"alert_min_available_ratio":    cfg.Management.AlertMinAvailableRatio,
+				"alert_cooldown":               cfg.AlertCooldownOrDefault().String(),
+				"audit_file":                   cfg.Management.AuditFile,
+				"audit_max_entries":            cfg.AuditMaxEntriesOrDefault(),
+				"tls_cert_file":                cfg.Management.TLSCertFile,
+				"tls_key_file":                 cfg.Management.TLSKeyFile,
 			}
 			resp["geoip"] = map[string]any{
 				"enabled":              cfg.GeoIP.Enabled,
@@ -2022,7 +2152,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				mode = "sequential"
 			}
 			switch mode {
-			case "sequential", "random", "balance", "latency":
+			case "sequential", "random", "balance", "latency", "quality":
 				req.Pool.Mode = mode
 			default:
 				writeSettingsBadRequest(w, "不支持的调度模式")
@@ -2245,6 +2375,9 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		var interval string
 		fetchConcurrency := config.NormalizeSubscriptionFetchConcurrency(0)
 		allowPrivateNetworks := false
+		maxRemovedRatio := 0.5
+		minAvailableRatio := 0.0
+		quarantineNewNodes := true
 		s.cfgMu.RLock()
 		cfg := s.cfgSrc.Clone()
 		s.cfgMu.RUnlock()
@@ -2260,6 +2393,9 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			interval = cfg.SubscriptionRefresh.Interval.String()
 			fetchConcurrency = config.NormalizeSubscriptionFetchConcurrency(cfg.SubscriptionRefresh.FetchConcurrency)
 			allowPrivateNetworks = cfg.SubscriptionRefresh.AllowPrivateNetworks
+			maxRemovedRatio = cfg.SubscriptionMaxRemovedRatioOrDefault()
+			minAvailableRatio = cfg.SubscriptionRefresh.MinAvailableRatio
+			quarantineNewNodes = cfg.SubscriptionQuarantineNewNodesValue()
 		}
 		writeJSON(w, map[string]any{
 			"subscriptions":          urls,
@@ -2267,6 +2403,9 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			"interval":               interval,
 			"fetch_concurrency":      fetchConcurrency,
 			"allow_private_networks": allowPrivateNetworks,
+			"max_removed_ratio":      maxRemovedRatio,
+			"min_available_ratio":    minAvailableRatio,
+			"quarantine_new_nodes":   quarantineNewNodes,
 		})
 
 	case http.MethodPut:
@@ -2281,6 +2420,11 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			Interval             string   `json:"interval"` // e.g. "1h", "30m"
 			FetchConcurrency     *int     `json:"fetch_concurrency,omitempty"`
 			AllowPrivateNetworks *bool    `json:"allow_private_networks,omitempty"`
+			MaxRemovedRatio      *float64 `json:"max_removed_ratio,omitempty"`
+			MinAvailableRatio    *float64 `json:"min_available_ratio,omitempty"`
+			QuarantineNewNodes   *bool    `json:"quarantine_new_nodes,omitempty"`
+			PreviewToken         string   `json:"preview_token"`
+			ConfirmRisky         bool     `json:"confirm_risky"`
 		}
 		if err := decodeStrictJSON(w, r, maxSubscriptionConfigBodyBytes, &req); err != nil {
 			writeStrictJSONError(w, err)
@@ -2334,10 +2478,27 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		// The subscription manager owns the config+nodes+runtime transaction.
-		// Nothing is pre-written here, so a failed fetch/reload leaves GET, disk,
-		// and the active BoxManager on the same committed revision.
-		if err := refresher.UpdateConfigAndRefreshAtRevision(cleanURLs, req.Enabled, interval, fetchConcurrency, allowPrivateNetworks, expectedRevision); err != nil {
+		if previewer, ok := refresher.(SubscriptionPreviewer); ok {
+			if strings.TrimSpace(req.PreviewToken) == "" {
+				writeJSONError(w, http.StatusPreconditionRequired, "请先预览订阅变更，再使用预览令牌应用")
+				return
+			}
+			if err := previewer.ApplyPreview(r.Context(), req.PreviewToken, expectedRevision, req.ConfirmRisky); err != nil {
+				if errors.Is(err, ErrSubscriptionConfigRevisionConflict) {
+					writeJSONError(w, http.StatusPreconditionFailed, "订阅设置已被其他操作更新，请重新载入")
+					return
+				}
+				if errors.Is(err, ErrSubscriptionChangeGuard) {
+					writeJSONError(w, http.StatusConflict, "高风险订阅变更需要显式确认")
+					return
+				}
+				writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("订阅更新失败: %v", err))
+				return
+			}
+		} else if err := refresher.UpdateConfigAndRefreshAtRevision(cleanURLs, req.Enabled, interval, fetchConcurrency, allowPrivateNetworks, expectedRevision); err != nil {
+			// Compatibility path for third-party refreshers that have not adopted
+			// preview tokens. The built-in subscription manager always takes the
+			// guarded branch above.
 			if errors.Is(err, ErrSubscriptionConfigRevisionConflict) {
 				writeJSONError(w, http.StatusPreconditionFailed, "订阅设置已被其他操作更新，请重新载入")
 				return
@@ -2345,9 +2506,20 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("订阅更新失败: %v", err))
 			return
 		}
+		responseMaxRemovedRatio := 0.5
+		responseMinAvailableRatio := 0.0
+		responseQuarantineNewNodes := true
 		if committed, committedRevision := nodeMgr.ConfigSnapshot(); committed != nil {
 			s.SetConfig(committed)
 			w.Header().Set("ETag", settingsETag(committedRevision))
+			cleanURLs = append([]string(nil), committed.Subscriptions...)
+			req.Enabled = committed.SubscriptionRefresh.Enabled
+			interval = committed.SubscriptionRefresh.Interval
+			fetchConcurrency = config.NormalizeSubscriptionFetchConcurrency(committed.SubscriptionRefresh.FetchConcurrency)
+			allowPrivateNetworks = committed.SubscriptionRefresh.AllowPrivateNetworks
+			responseMaxRemovedRatio = committed.SubscriptionMaxRemovedRatioOrDefault()
+			responseMinAvailableRatio = committed.SubscriptionRefresh.MinAvailableRatio
+			responseQuarantineNewNodes = committed.SubscriptionQuarantineNewNodesValue()
 		}
 
 		status := refresher.Status()
@@ -2358,6 +2530,9 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			"interval":               interval.String(),
 			"fetch_concurrency":      fetchConcurrency,
 			"allow_private_networks": allowPrivateNetworks,
+			"max_removed_ratio":      responseMaxRemovedRatio,
+			"min_available_ratio":    responseMinAvailableRatio,
+			"quarantine_new_nodes":   responseQuarantineNewNodes,
 			"node_count":             status.NodeCount,
 		})
 
@@ -2651,6 +2826,9 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, map[string]any{"logs": SharedLogBuffer.Content()})
 	case http.MethodDelete:
+		if !requireRole(w, r, RoleOperator) {
+			return
+		}
 		cleared := SharedLogBuffer.Clear()
 		writeJSON(w, map[string]any{"message": "Console 日志已清空", "cleared_bytes": cleared})
 	default:
@@ -2667,12 +2845,14 @@ func (s *Server) managementPassword() string {
 	return password
 }
 
-func (s *Server) managementAuthSnapshot() (string, uint64) {
+func (s *Server) managementAuthSnapshot() managementAuthConfig {
 	s.cfgMu.RLock()
-	password := s.cfg.Password
-	generation := s.authGeneration
+	authConfig := managementAuthConfig{
+		AdminPassword: s.cfg.Password, OperatorPassword: s.cfg.OperatorPassword,
+		ViewerPassword: s.cfg.ViewerPassword, Generation: s.authGeneration,
+	}
 	s.cfgMu.RUnlock()
-	return password, generation
+	return authConfig
 }
 
 func (s *Server) managementTLSConfigured() bool {
@@ -2698,15 +2878,20 @@ func (s *Server) generateSessionToken() (string, error) {
 }
 
 // createSession creates a new session with expiration.
-func (s *Server) createSession() (*Session, error) {
+func (s *Server) createSession(roles ...Role) (*Session, error) {
 	token, err := s.generateSessionToken()
 	if err != nil {
 		return nil, err
 	}
 
+	role := RoleAdmin
+	if len(roles) > 0 {
+		role = roles[0]
+	}
 	now := time.Now()
 	session := &Session{
 		Token:     token,
+		Role:      role,
 		CreatedAt: now,
 		ExpiresAt: now.Add(s.sessionTTL),
 	}
@@ -2732,23 +2917,8 @@ func (s *Server) createSession() (*Session, error) {
 
 // validateSession checks if a session token is valid and not expired.
 func (s *Server) validateSession(token string) bool {
-	s.sessionMu.RLock()
-	session, exists := s.sessions[token]
-	s.sessionMu.RUnlock()
-
-	if !exists {
-		return false
-	}
-
-	// Check if expired
-	if time.Now().After(session.ExpiresAt) {
-		s.sessionMu.Lock()
-		delete(s.sessions, token)
-		s.sessionMu.Unlock()
-		return false
-	}
-
-	return true
+	_, ok := s.validateSessionRole(token)
+	return ok
 }
 
 // cleanupExpiredSessions periodically removes expired sessions.

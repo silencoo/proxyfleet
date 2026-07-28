@@ -36,6 +36,7 @@ const (
 	modeRandom     = "random"
 	modeBalance    = "balance"
 	modeLatency    = "latency"
+	modeQuality    = "quality"
 )
 
 var errPoolClosed = errors.New("proxy pool is closed")
@@ -253,6 +254,8 @@ func normalizeOptions(options Options) Options {
 		options.Mode = modeBalance
 	case modeLatency:
 		options.Mode = modeLatency
+	case modeQuality:
+		options.Mode = modeQuality
 	default:
 		options.Mode = modeSequential
 	}
@@ -684,6 +687,8 @@ func (p *poolOutbound) selectEligibleMemberExcluding(network string, tried map[s
 		selected = p.selectBalancedCandidate(candidates, eligible)
 	case modeLatency:
 		selected = p.selectLatencyCandidate(candidates, eligible)
+	case modeQuality:
+		selected = p.selectQualityCandidate(candidates, eligible)
 	default:
 		for offset := 0; offset < len(candidates); offset++ {
 			idx := int(p.rrCounter.Add(1)-1) % len(candidates)
@@ -756,6 +761,43 @@ func (p *poolOutbound) selectLatencyCandidate(candidates []*memberState, eligibl
 	return best
 }
 
+func (p *poolOutbound) selectQualityCandidate(candidates []*memberState, eligible func(*memberState) bool) *memberState {
+	if len(candidates) == 0 {
+		return nil
+	}
+	sampleSize := p.options.LatencySampleSize
+	if sampleSize < 2 {
+		sampleSize = 2
+	}
+	if sampleSize > len(candidates) {
+		sampleSize = len(candidates)
+	}
+	p.rngMu.Lock()
+	start := p.rng.Intn(len(candidates))
+	p.rngMu.Unlock()
+	var best *memberState
+	bestScore := -1.0
+	for visited, index := 0, start; visited < len(candidates) && sampleSize > 0; visited, index = visited+1, (index+1)%len(candidates) {
+		candidate := candidates[index]
+		if !eligible(candidate) {
+			continue
+		}
+		sampleSize--
+		score := memberQualityScore(candidate)
+		if best == nil || score > bestScore || (score == bestScore && activeConnections(candidate) < activeConnections(best)) {
+			best = candidate
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func memberQualityScore(member *memberState) float64 {
+	if member == nil || member.entry == nil {
+		return 0
+	}
+	return member.entry.QualityScore()
+}
 func betterLatencyCandidate(candidate, current *memberState, tolerance time.Duration) bool {
 	if candidate == nil {
 		return false

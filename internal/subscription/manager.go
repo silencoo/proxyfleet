@@ -68,6 +68,7 @@ type Manager struct {
 	activeBatch   *refreshBatch
 	pendingUpdate *pendingConfigUpdate
 	sourceCache   map[string][]config.NodeConfig
+	previews      map[string]subscriptionPreviewPlan
 
 	// Track nodes.txt content hash to detect modifications
 	lastSubHash      string    // Hash of nodes.txt content after last subscription refresh
@@ -93,6 +94,7 @@ func New(cfg *config.Config, boxMgr boxManager, opts ...Option) *Manager {
 		waiters:       make(map[uint64]chan error),
 		canceled:      make(map[uint64]error),
 		sourceCache:   make(map[string][]config.NodeConfig),
+		previews:      make(map[string]subscriptionPreviewPlan),
 		waitBudgetFn:  refreshWaitBudget,
 	}
 	m.refreshSlot <- struct{}{}
@@ -711,6 +713,12 @@ func (m *Manager) doRefreshContext(refreshCtx context.Context, targetSequence ui
 		if err := m.validatePendingGeneration(refreshCtx, selectedPending); err != nil {
 			return err
 		}
+		if selectedPending == 0 {
+			live, _ := m.boxMgr.ConfigSnapshot()
+			if err := validateAutomaticSubscriptionChange(live, nil); err != nil {
+				return err
+			}
+		}
 		committed, err := m.commitClearedSubscriptions(refreshCtx, baseCfg, targetSequence, selectedPending, selectedExpectedRevision)
 		if err != nil {
 			return err
@@ -744,6 +752,12 @@ func (m *Manager) doRefreshContext(refreshCtx context.Context, targetSequence ui
 		return err
 	}
 	m.logger.Infof("prepared %d subscription nodes", len(plan.nodes))
+	if selectedPending == 0 {
+		live, _ := m.boxMgr.ConfigSnapshot()
+		if err := validateAutomaticSubscriptionChange(live, plan.nodes); err != nil {
+			return err
+		}
+	}
 	if err := m.validatePendingGeneration(refreshCtx, selectedPending); err != nil {
 		return err
 	}
