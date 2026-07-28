@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"easy_proxies/internal/app"
+	"easy_proxies/internal/buildinfo"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
 
@@ -21,8 +23,28 @@ import (
 
 func main() {
 	var configPath string
+	var showVersion bool
+	var showVersionJSON bool
 	flag.StringVar(&configPath, "config", "config.yaml", "path to config file")
+	flag.BoolVar(&showVersion, "version", false, "print build version and capabilities")
+	flag.BoolVar(&showVersionJSON, "version-json", false, "print build information as JSON")
 	flag.Parse()
+	if showVersion || showVersionJSON {
+		info := buildinfo.Current()
+		if showVersionJSON {
+			encoder := json.NewEncoder(os.Stdout)
+			encoder.SetIndent("", "  ")
+			if err := encoder.Encode(info); err != nil {
+				log.Fatalf("encode build info: %v", err)
+			}
+			return
+		}
+		fmt.Printf("%s %s (%s) %s/%s\n", info.Product, info.Version, info.Commit, info.GOOS, info.GOARCH)
+		fmt.Printf("official release capabilities: %t\n", info.OfficialReleaseReady)
+		fmt.Printf("features: %v\n", info.Capabilities)
+		fmt.Printf("protocols: %s\n", strings.Join(info.Protocols, ", "))
+		return
+	}
 
 	resolvedConfigPath, created, err := prepareConfigFile(configPath)
 	if err != nil {

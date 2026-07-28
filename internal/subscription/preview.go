@@ -49,6 +49,7 @@ func (m *Manager) PreviewConfigAtRevision(ctx context.Context, request monitor.S
 	desired.SubscriptionRefresh.AllowPrivateNetworks = request.AllowPrivateNetworks
 	desired.SubscriptionRefresh.MaxRemovedRatio = request.MaxRemovedRatio
 	desired.SubscriptionRefresh.MinAvailableRatio = request.MinAvailableRatio
+	desired.SubscriptionRefresh.NodeFailurePolicy = request.NodeFailurePolicy
 	quarantine := request.QuarantineNewNodes
 	desired.SubscriptionRefresh.QuarantineNewNodes = &quarantine
 
@@ -120,6 +121,9 @@ func (m *Manager) ApplyPreview(ctx context.Context, token string, expectedRevisi
 		return err
 	}
 
+	if plan.clear {
+		m.recordSubscriptionNodeFailures(committed.SubscriptionNodeFailurePolicyOrDefault(), nil)
+	}
 	m.mu.Lock()
 	m.baseCfg = committed.Clone()
 	if plan.clear {
@@ -135,7 +139,13 @@ func (m *Manager) ApplyPreview(ctx context.Context, token string, expectedRevisi
 		for key, nodes := range plan.fetch.cacheUpdates {
 			m.sourceCache[key] = cloneNodes(nodes)
 		}
-		m.lastSubHash = m.computeNodesHash(plan.fetch.nodes)
+		committedSubscriptionNodes := make([]config.NodeConfig, 0, len(committed.Nodes))
+		for _, node := range committed.Nodes {
+			if node.Source == config.NodeSourceSubscription {
+				committedSubscriptionNodes = append(committedSubscriptionNodes, node)
+			}
+		}
+		m.lastSubHash = m.computeNodesHash(committedSubscriptionNodes)
 		if info, statErr := os.Stat(nodesPath); statErr == nil {
 			m.lastNodesModTime = info.ModTime()
 		}

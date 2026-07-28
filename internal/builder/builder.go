@@ -350,6 +350,14 @@ func buildNodeOutboundSafe(tag, rawURI string, skipCertVerify bool) (outbound op
 	return outbound, nil
 }
 
+// ValidateNodeURI verifies that one URI can be converted to a sing-box
+// outbound without starting listeners or making network requests. Returned
+// errors are credential-safe and contain only the caller-independent tag.
+func ValidateNodeURI(rawURI string, skipCertVerify bool) error {
+	_, err := buildNodeOutboundSafe("validation-node", rawURI, skipCertVerify)
+	return err
+}
+
 func recoverNodeBuild(build func() (option.Outbound, error)) (outbound option.Outbound, err error) {
 	defer func() {
 		if recover() != nil {

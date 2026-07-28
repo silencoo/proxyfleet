@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"easy_proxies/internal/buildinfo"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/geoip"
 )
@@ -134,6 +135,7 @@ type settingsUpdateRequest struct {
 		ProbeFailureMaxInterval   *string  `json:"probe_failure_max_interval"`
 		ProbePassiveGrace         *string  `json:"probe_passive_grace"`
 		ProbeMaxPerHour           *int     `json:"probe_max_per_hour"`
+		ProbeMaxPerDay            *int     `json:"probe_max_per_day"`
 		HistoryEnabled            *bool    `json:"history_enabled"`
 		HistoryFile               *string  `json:"history_file"`
 		HistoryRetention          *string  `json:"history_retention"`
@@ -167,15 +169,25 @@ type settingsUpdateRequest struct {
 	} `json:"geoip,omitempty"`
 }
 
+type SubscriptionNodeFailure struct {
+	Tag     string `json:"tag"`
+	NodeKey string `json:"node_key"`
+	Name    string `json:"name,omitempty"`
+	Error   string `json:"error"`
+}
+
 // SubscriptionStatus represents subscription refresh status.
 type SubscriptionStatus struct {
-	LastRefresh   time.Time `json:"last_refresh"`
-	NextRefresh   time.Time `json:"next_refresh"`
-	NodeCount     int       `json:"node_count"`
-	LastError     string    `json:"last_error,omitempty"`
-	RefreshCount  int       `json:"refresh_count"`
-	IsRefreshing  bool      `json:"is_refreshing"`
-	NodesModified bool      `json:"nodes_modified"` // True if nodes.txt was modified since last refresh
+	LastRefresh   time.Time                 `json:"last_refresh"`
+	NextRefresh   time.Time                 `json:"next_refresh"`
+	NodeCount     int                       `json:"node_count"`
+	LastError     string                    `json:"last_error,omitempty"`
+	RefreshCount  int                       `json:"refresh_count"`
+	IsRefreshing  bool                      `json:"is_refreshing"`
+	NodesModified bool                      `json:"nodes_modified"` // True if nodes.txt was modified since last refresh
+	FailurePolicy string                    `json:"failure_policy"`
+	SkippedNodes  int                       `json:"skipped_nodes"`
+	NodeFailures  []SubscriptionNodeFailure `json:"node_failures,omitempty"`
 }
 
 // Server exposes HTTP endpoints for monitoring.
@@ -386,6 +398,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/assets/echarts.min.js", s.handleEChartsAsset)
 	mux.HandleFunc("/api/auth", s.handleAuth)
 	mux.HandleFunc("/api/session", s.withRole(RoleViewer, s.handleSession))
+	mux.HandleFunc("/api/build-info", s.withRole(RoleViewer, s.handleBuildInfo))
 	mux.HandleFunc("/api/settings", s.withRole(RoleAdmin, s.handleSettings))
 	mux.HandleFunc("/api/nodes", s.withRole(RoleViewer, s.handleNodes))
 	mux.HandleFunc("/api/nodes/config", s.withRole(RoleAdmin, s.handleConfigNodes))
@@ -524,6 +537,7 @@ func probePolicyRuntimeChanged(runtime Config, candidate *config.Config) bool {
 		runtime.ProbeFailureMaxInterval != candidate.ProbeFailureMaxIntervalOrDefault() ||
 		runtime.ProbePassiveGrace != candidate.ProbePassiveGraceOrDefault() ||
 		runtime.ProbeMaxPerHour != candidate.ProbeMaxPerHourOrDefault() ||
+		runtime.ProbeMaxPerDay != candidate.ProbeMaxPerDayOrDefault() ||
 		runtime.HistoryEnabled != candidate.HistoryEnabledValue() ||
 		runtime.HistoryRetention != candidate.HistoryRetentionOrDefault() ||
 		runtime.HistoryInterval != candidate.HistoryIntervalOrDefault() ||
@@ -1765,6 +1779,12 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 			}
 			candidate.Management.ProbeMaxPerHour = *request.Management.ProbeMaxPerHour
 		}
+		if request.Management.ProbeMaxPerDay != nil {
+			if *request.Management.ProbeMaxPerDay < 0 || *request.Management.ProbeMaxPerDay > 100_000_000 {
+				return errors.New("每天探测预算必须在 0 到 100000000 之间")
+			}
+			candidate.Management.ProbeMaxPerDay = *request.Management.ProbeMaxPerDay
+		}
 		if request.Management.HistoryEnabled != nil {
 			enabled := *request.Management.HistoryEnabled
 			candidate.Management.HistoryEnabled = &enabled
@@ -2012,6 +2032,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"probe_failure_max_interval":   cfg.ProbeFailureMaxIntervalOrDefault().String(),
 				"probe_passive_grace":          cfg.ProbePassiveGraceOrDefault().String(),
 				"probe_max_per_hour":           cfg.ProbeMaxPerHourOrDefault(),
+				"probe_max_per_day":            cfg.ProbeMaxPerDayOrDefault(),
 				"history_enabled":              cfg.HistoryEnabledValue(),
 				"history_file":                 cfg.Management.HistoryFile,
 				"history_retention":            cfg.HistoryRetentionOrDefault().String(),
@@ -2312,6 +2333,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleBuildInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	writeJSON(w, buildinfo.Current())
+}
+
 // handleSubscriptionStatus returns the current subscription refresh status.
 func (s *Server) handleSubscriptionStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -2338,6 +2367,9 @@ func (s *Server) handleSubscriptionStatus(w http.ResponseWriter, r *http.Request
 		"refresh_count":  status.RefreshCount,
 		"is_refreshing":  status.IsRefreshing,
 		"nodes_modified": status.NodesModified,
+		"failure_policy": status.FailurePolicy,
+		"skipped_nodes":  status.SkippedNodes,
+		"node_failures":  status.NodeFailures,
 	})
 }
 
@@ -2378,6 +2410,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		maxRemovedRatio := 0.5
 		minAvailableRatio := 0.0
 		quarantineNewNodes := true
+		nodeFailurePolicy := "skip"
 		s.cfgMu.RLock()
 		cfg := s.cfgSrc.Clone()
 		s.cfgMu.RUnlock()
@@ -2396,6 +2429,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			maxRemovedRatio = cfg.SubscriptionMaxRemovedRatioOrDefault()
 			minAvailableRatio = cfg.SubscriptionRefresh.MinAvailableRatio
 			quarantineNewNodes = cfg.SubscriptionQuarantineNewNodesValue()
+			nodeFailurePolicy = cfg.SubscriptionNodeFailurePolicyOrDefault()
 		}
 		writeJSON(w, map[string]any{
 			"subscriptions":          urls,
@@ -2406,6 +2440,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			"max_removed_ratio":      maxRemovedRatio,
 			"min_available_ratio":    minAvailableRatio,
 			"quarantine_new_nodes":   quarantineNewNodes,
+			"node_failure_policy":    nodeFailurePolicy,
 		})
 
 	case http.MethodPut:
@@ -2423,6 +2458,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			MaxRemovedRatio      *float64 `json:"max_removed_ratio,omitempty"`
 			MinAvailableRatio    *float64 `json:"min_available_ratio,omitempty"`
 			QuarantineNewNodes   *bool    `json:"quarantine_new_nodes,omitempty"`
+			NodeFailurePolicy    *string  `json:"node_failure_policy,omitempty"`
 			PreviewToken         string   `json:"preview_token"`
 			ConfirmRisky         bool     `json:"confirm_risky"`
 		}
@@ -2509,6 +2545,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		responseMaxRemovedRatio := 0.5
 		responseMinAvailableRatio := 0.0
 		responseQuarantineNewNodes := true
+		responseNodeFailurePolicy := "skip"
 		if committed, committedRevision := nodeMgr.ConfigSnapshot(); committed != nil {
 			s.SetConfig(committed)
 			w.Header().Set("ETag", settingsETag(committedRevision))
@@ -2520,6 +2557,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			responseMaxRemovedRatio = committed.SubscriptionMaxRemovedRatioOrDefault()
 			responseMinAvailableRatio = committed.SubscriptionRefresh.MinAvailableRatio
 			responseQuarantineNewNodes = committed.SubscriptionQuarantineNewNodesValue()
+			responseNodeFailurePolicy = committed.SubscriptionNodeFailurePolicyOrDefault()
 		}
 
 		status := refresher.Status()
@@ -2533,6 +2571,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			"max_removed_ratio":      responseMaxRemovedRatio,
 			"min_available_ratio":    responseMinAvailableRatio,
 			"quarantine_new_nodes":   responseQuarantineNewNodes,
+			"node_failure_policy":    responseNodeFailurePolicy,
 			"node_count":             status.NodeCount,
 		})
 

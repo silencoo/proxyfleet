@@ -335,6 +335,17 @@
     .badge-error { background: var(--error-bg); color: var(--error); border: 1px solid var(--error); }
     .badge-offline { background: var(--bg-hover); color: var(--text-muted); border: 1px solid var(--border); }
 
+    .build-info-grid { padding: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+    .build-info-item { min-width: 0; }
+    .build-info-label { margin-bottom: 5px; color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .build-info-value { color: var(--text-main); font-size: 13px; overflow-wrap: anywhere; }
+    .capability-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .capability-badge { padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); font-size: 11px; font-weight: 600; }
+    .capability-badge.enabled { color: var(--success); border-color: var(--success); background: var(--success-bg); }
+    .capability-badge.disabled { color: var(--text-muted); background: var(--bg-hover); }
+    .build-info-error { display: none; padding: 0 16px 16px; color: var(--error); font-size: 12px; }
+    .build-info-error.show { display: block; }
+
     .tt-mono { font-family: var(--font-mono); font-size: 12px; }
     
     /* Progress Bar */
@@ -850,6 +861,21 @@
       <div id="settingsTab" class="tab-content">
         <div style="max-width: 800px; margin: 0 auto;">
           <div style="font-size: 20px; font-weight: 700; margin-bottom: 24px; color: var(--text-main);">系统设置</div>
+          <div class="panel" id="buildInfoPanel" style="margin-bottom: 16px;">
+            <div class="panel-header">
+              <div class="panel-title">构建信息 (Build Info)</div>
+              <span class="badge badge-offline" id="buildInfoStatus">读取中</span>
+            </div>
+            <div class="build-info-grid">
+              <div class="build-info-item"><div class="build-info-label">版本</div><div class="build-info-value tt-mono" id="buildInfoIdentity">—</div></div>
+              <div class="build-info-item"><div class="build-info-label">目标平台</div><div class="build-info-value tt-mono" id="buildInfoTarget">—</div></div>
+              <div class="build-info-item"><div class="build-info-label">Commit</div><div class="build-info-value tt-mono" id="buildInfoCommit">—</div></div>
+              <div class="build-info-item"><div class="build-info-label">Go</div><div class="build-info-value tt-mono" id="buildInfoGo">—</div></div>
+              <div class="build-info-item" style="grid-column:1/-1"><div class="build-info-label">编译能力</div><div class="capability-list" id="buildInfoCapabilities" aria-live="polite"></div></div>
+              <div class="build-info-item" style="grid-column:1/-1"><div class="build-info-label">可用协议</div><div class="build-info-value tt-mono" id="buildInfoProtocols">—</div></div>
+            </div>
+            <div class="build-info-error" id="buildInfoError" role="alert"></div>
+          </div>
           <form onsubmit="handleSettingsSave(event)">
 
             <div class="panel" style="margin-bottom: 16px;">
@@ -918,9 +944,10 @@
                 <div class="form-group adaptive-probe-setting"><label for="settingProbeFailureRetry">失败初始重试</label><input type="text" id="settingProbeFailureRetry" class="setting-input" placeholder="1m" /></div>
                 <div class="form-group adaptive-probe-setting"><label for="settingProbeFailureMax">失败退避上限</label><input type="text" id="settingProbeFailureMax" class="setting-input" placeholder="1h" /></div>
                 <div class="form-group adaptive-probe-setting"><label for="settingProbePassiveGrace">被动成功宽限期</label><input type="text" id="settingProbePassiveGrace" class="setting-input" placeholder="10m" /></div>
-                <div class="form-group adaptive-probe-setting"><label for="settingProbeMaxPerHour">每小时探测预算</label><input type="number" id="settingProbeMaxPerHour" class="setting-input" min="0" max="10000000" placeholder="600" /><div class="field-help">0 表示不限；预算耗尽后延迟到下一小时。</div></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeMaxPerHour">每小时探测预算</label><input type="number" id="settingProbeMaxPerHour" class="setting-input" min="0" max="10000000" placeholder="600" /><div class="field-help">adaptive 中 0 使用默认值 600；耗尽后等下一小时。</div></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeMaxPerDay">每天探测预算</label><input type="number" id="settingProbeMaxPerDay" class="setting-input" min="0" max="100000000" placeholder="5000" /><div class="field-help">adaptive 中 0 使用默认值 5000；小时与每日限制取更严格者。</div></div>
                 <div class="checkbox-row"><input type="checkbox" id="settingSkipCertVerify" /><label for="settingSkipCertVerify">跳过 SSL 证书验证</label></div>
-                <div class="settings-help">大池建议使用 adaptive：优先失败或过期节点，复用真实流量的被动健康结果，并受每小时预算约束；sample 仍按顺序轮转；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。</div>
+                <div class="settings-help">大池建议使用 adaptive：优先失败或过期节点，复用真实流量的被动健康结果，并同时受每小时与每日预算约束；sample 仍按顺序轮转；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。</div>
               </div>
             </div>
 
@@ -1053,6 +1080,13 @@
                   <div class="form-group">
                     <label for="settingSubFetchConcurrency">订阅抓取并发数</label>
                     <input type="number" id="settingSubFetchConcurrency" class="setting-input" min="1" max="32" placeholder="16" />
+                  </div>
+                  <div class="form-group">
+                    <label for="settingSubNodeFailurePolicy">坏节点处理策略</label>
+                    <select id="settingSubNodeFailurePolicy" class="setting-input">
+                      <option value="skip">skip - 隔离坏节点并继续</option>
+                      <option value="strict">strict - 拒绝整批变更</option>
+                    </select>
                   </div>
                   <div class="form-group"><label for="settingSubMaxRemovedRatio">最大自动删除比例</label><input type="number" id="settingSubMaxRemovedRatio" class="setting-input" min="0.01" max="1" step="0.01" placeholder="0.5" /><div class="field-help">超过比例时保存前必须二次确认。</div></div>
                   <div class="form-group"><label for="settingSubMinAvailableRatio">候选池最小可用比例</label><input type="number" id="settingSubMinAvailableRatio" class="setting-input" min="0" max="1" step="0.01" placeholder="0" /></div>
@@ -1974,11 +2008,36 @@
       }
     }
 
+    function ensureTrafficChart() {
+      if (trafficChartInst) return;
+      const chart = initEchart('trafficChart');
+      if (!chart) return;
+      trafficChartInst = chart;
+      setChartOption(chart, {
+        backgroundColor: 'transparent',
+        textStyle: { fontFamily: CHART_FONT_FAMILY },
+        tooltip: { trigger: 'axis', backgroundColor: getCssVar('--bg-panel'), borderColor: getCssVar('--border'), textStyle: { color: getCssVar('--text-main') },
+          formatter: function(p) {
+            return p[0].axisValue + '<br/>' + p.map(s => s.marker + s.seriesName + ': ' + formatBytes(s.value) + '/s').join('<br/>');
+          }
+        },
+        legend: { top: 'bottom', textStyle: { color: getCssVar('--text-muted') } },
+        grid: { left: '4%', right: '4%', bottom: '15%', top: '15%', containLabel: true },
+        xAxis: { type: 'category', boundaryGap: false, data: trafficTime, axisLine: { lineStyle: { color: getCssVar('--border') } }, axisLabel: { color: getCssVar('--text-muted') } },
+        yAxis: { type: 'value', splitLine: { lineStyle: { color: getCssVar('--border'), type: 'dashed' } }, axisLabel: { color: getCssVar('--text-muted'), formatter: (v) => formatBytes(v) + '/s' } },
+        series: [
+          { name: tr('上行'), type: 'line', smooth: true, symbol: 'none', lineStyle: { width: 2, color: getCssVar('--chart-primary') }, areaStyle: { color: getCssVar('--chart-primary'), opacity: 0.12 }, data: trafficDataUp },
+          { name: tr('下行'), type: 'line', smooth: true, symbol: 'none', lineStyle: { width: 2, type: 'dashed', color: getCssVar('--chart-secondary') }, areaStyle: { color: getCssVar('--chart-secondary'), opacity: 0.08 }, data: trafficDataDown }
+        ]
+      }, 'trafficChart');
+      connectTrafficSSE();
+    }
+
     function updateDashboardCharts() {
       if(!regionChartInst) regionChartInst = initEchart('regionChart');
       if(!latencyChartInst) latencyChartInst = initEchart('latencyChart');
+      ensureTrafficChart();
 
-      if ((!allNodesCache || allNodesCache.length === 0) && Object.keys(regionStatsCache).length === 0) return;
 
       // 1. Region Chart Data
       const regionStats = {};
@@ -2040,29 +2099,6 @@
           }
         }]
       }, 'latencyChart');
-
-      // 3. Traffic Chart
-      if(!trafficChartInst) {
-        trafficChartInst = initEchart('trafficChart');
-        trafficChartInst.setOption({
-          backgroundColor: 'transparent',
-          textStyle: { fontFamily: CHART_FONT_FAMILY },
-          tooltip: { trigger: 'axis', backgroundColor: getCssVar('--bg-panel'), borderColor: getCssVar('--border'), textStyle: { color: getCssVar('--text-main') },
-            formatter: function(p) {
-              return p[0].axisValue + '<br/>' + p.map(s => s.marker + s.seriesName + ': ' + formatBytes(s.value) + '/s').join('<br/>');
-            }
-          },
-          legend: { top: 'bottom', textStyle: { color: getCssVar('--text-muted') } },
-          grid: { left: '4%', right: '4%', bottom: '15%', top: '15%', containLabel: true },
-          xAxis: { type: 'category', boundaryGap: false, data: trafficTime, axisLine: { lineStyle: { color: getCssVar('--border') } }, axisLabel: { color: getCssVar('--text-muted') } },
-          yAxis: { type: 'value', splitLine: { lineStyle: { color: getCssVar('--border'), type: 'dashed' } }, axisLabel: { color: getCssVar('--text-muted'), formatter: (v) => formatBytes(v) + '/s' } },
-          series: [
-            { name: tr('上行'), type: 'line', smooth: true, symbol: 'none', lineStyle: { width: 2, color: getCssVar('--chart-primary') }, areaStyle: { color: getCssVar('--chart-primary'), opacity: 0.12 }, data: trafficDataUp },
-            { name: tr('下行'), type: 'line', smooth: true, symbol: 'none', lineStyle: { width: 2, type: 'dashed', color: getCssVar('--chart-secondary') }, areaStyle: { color: getCssVar('--chart-secondary'), opacity: 0.08 }, data: trafficDataDown }
-          ]
-        });
-        connectTrafficSSE(); // connect SSE on init
-      }
     }
 
     function formatBytes(bytes, decimals = 2) {
@@ -2289,8 +2325,11 @@
         const btn = document.getElementById('refreshSubBtn');
         if(!d.enabled) { btn.style.display='none'; return; }
         btn.style.display='inline-flex';
-        document.getElementById('subscriptionStatus').textContent = `[Sub: ${d.node_count}]`;
-        document.getElementById('subscriptionTrend').textContent = d.is_refreshing ? 'Syncing...' : (d.last_error ? 'ERR' : 'OK');
+        const skipped = Math.max(0, Number(d.skipped_nodes) || 0);
+        document.getElementById('subscriptionStatus').textContent = `[Sub: ${d.node_count}${skipped ? ` · Skip: ${skipped}` : ''}]`;
+        const trend = document.getElementById('subscriptionTrend');
+        trend.textContent = d.is_refreshing ? 'Syncing...' : (d.last_error ? 'ERR' : (skipped ? `SKIP ${skipped}` : 'OK'));
+        trend.title = skipped && Array.isArray(d.node_failures) ? d.node_failures.map(item => `${item.name || item.tag}: ${item.error}`).join('\n') : '';
       } catch(e){ console.error('Failed to load subscription status:', e); }
     }
     
@@ -2684,10 +2723,56 @@
     }
 
     // Settings
+    async function loadBuildInfo() {
+      const status = document.getElementById('buildInfoStatus');
+      const error = document.getElementById('buildInfoError');
+      const capabilities = document.getElementById('buildInfoCapabilities');
+      if (!status || !error || !capabilities) return;
+      status.className = 'badge badge-offline';
+      status.textContent = tr('读取中');
+      error.classList.remove('show');
+      error.textContent = '';
+      capabilities.replaceChildren();
+      try {
+        const response = await fetch('/api/build-info');
+        const info = await readAPIJSON(response, '构建信息加载失败');
+        document.getElementById('buildInfoIdentity').textContent = `${info.product || 'ProxyFleet'} ${info.version || 'dev'}`;
+        document.getElementById('buildInfoTarget').textContent = `${info.goos || 'unknown'}/${info.goarch || 'unknown'}`;
+        document.getElementById('buildInfoCommit').textContent = info.commit || 'unknown';
+        document.getElementById('buildInfoGo').textContent = info.go_version || 'unknown';
+        document.getElementById('buildInfoProtocols').textContent = Array.isArray(info.protocols) && info.protocols.length ? info.protocols.join(', ') : tr('无');
+        const entries = Object.entries(info.capabilities || {}).sort(([left], [right]) => left.localeCompare(right));
+        for (const [name, enabled] of entries) {
+          const badge = document.createElement('span');
+          badge.className = `capability-badge ${enabled ? 'enabled' : 'disabled'}`;
+          badge.textContent = `${name.toUpperCase()} ${enabled ? 'ON' : 'OFF'}`;
+          capabilities.appendChild(badge);
+        }
+        if (info.official_release_ready) {
+          status.className = 'badge badge-healthy';
+          status.textContent = tr('完整发行构建');
+          status.title = tr('官方协议能力均已编译');
+        } else {
+          const missing = Array.isArray(info.missing_features) ? info.missing_features : [];
+          status.className = 'badge badge-warning';
+          status.textContent = tr('功能受限构建');
+          status.title = missing.length ? `${tr('缺少编译能力')}: ${missing.join(', ')}` : tr('部分编译能力不可用');
+          error.textContent = status.title;
+          error.classList.add('show');
+        }
+      } catch (buildInfoError) {
+        status.className = 'badge badge-error';
+        status.textContent = tr('读取失败');
+        error.textContent = buildInfoError.message || tr('构建信息加载失败');
+        error.classList.add('show');
+      }
+    }
+
     async function loadSettingsPage() {
       subscriptionSettingsLoaded = false;
       _savedSubSnapshot = '';
       subscriptionETag = '';
+      loadBuildInfo();
       try {
         const r = await fetch('/api/settings');
         const d = await readAPIJSON(r, '加载数据失败');
@@ -2743,6 +2828,7 @@
         document.getElementById('settingProbeFailureMax').value = formatDurationForInput(mgmt.probe_failure_max_interval || '1h');
         document.getElementById('settingProbePassiveGrace').value = formatDurationForInput(mgmt.probe_passive_grace || '10m');
         document.getElementById('settingProbeMaxPerHour').value = Number(mgmt.probe_max_per_hour) || 0;
+        document.getElementById('settingProbeMaxPerDay').value = Number(mgmt.probe_max_per_day) || 0;
         document.getElementById('settingHistoryEnabled').checked = mgmt.history_enabled !== false;
         document.getElementById('settingHistoryFile').value = mgmt.history_file || 'monitor-history.json';
         document.getElementById('settingHistoryRetention').value = formatDurationForInput(mgmt.history_retention || '24h');
@@ -2786,8 +2872,9 @@
           document.getElementById('settingSubMaxRemovedRatio').value = Number(sd.max_removed_ratio) || 0.5;
           document.getElementById('settingSubMinAvailableRatio').value = Number(sd.min_available_ratio) || 0;
           document.getElementById('settingSubQuarantine').checked = sd.quarantine_new_nodes !== false;
+          document.getElementById('settingSubNodeFailurePolicy').value = sd.node_failure_policy === 'strict' ? 'strict' : 'skip';
           document.getElementById('settingSubURLs').value = (sd.subscriptions || []).join('\n');
-          _savedSubSnapshot = JSON.stringify({urls: (sd.subscriptions || []).join('\n'), enabled: sd.enabled || false, interval: sel.value, fetch_concurrency: fetchConcurrency, allow_private_networks: sd.allow_private_networks === true, max_removed_ratio: Number(sd.max_removed_ratio) || 0.5, min_available_ratio: Number(sd.min_available_ratio) || 0, quarantine_new_nodes: sd.quarantine_new_nodes !== false});
+          _savedSubSnapshot = JSON.stringify({urls: (sd.subscriptions || []).join('\n'), enabled: sd.enabled || false, interval: sel.value, fetch_concurrency: fetchConcurrency, allow_private_networks: sd.allow_private_networks === true, max_removed_ratio: Number(sd.max_removed_ratio) || 0.5, min_available_ratio: Number(sd.min_available_ratio) || 0, quarantine_new_nodes: sd.quarantine_new_nodes !== false, node_failure_policy: sd.node_failure_policy === 'strict' ? 'strict' : 'skip'});
           subscriptionSettingsLoaded = true;
         } catch(e){
           console.error('Failed to load subscription settings:', e);
@@ -2813,6 +2900,7 @@
         probe_failure_max: document.getElementById('settingProbeFailureMax').value,
         probe_passive_grace: document.getElementById('settingProbePassiveGrace').value,
         probe_max_per_hour: document.getElementById('settingProbeMaxPerHour').value,
+        probe_max_per_day: document.getElementById('settingProbeMaxPerDay').value,
         history_enabled: document.getElementById('settingHistoryEnabled').checked,
         history_file: document.getElementById('settingHistoryFile').value,
         history_retention: document.getElementById('settingHistoryRetention').value,
@@ -2991,11 +3079,12 @@
       const subMaxRemovedRatio = Number(document.getElementById('settingSubMaxRemovedRatio').value) || 0.5;
       const subMinAvailableRatio = Number(document.getElementById('settingSubMinAvailableRatio').value) || 0;
       const subQuarantine = document.getElementById('settingSubQuarantine').checked;
+      const subNodeFailurePolicy = document.getElementById('settingSubNodeFailurePolicy').value;
       if (subMaxRemovedRatio <= 0 || subMaxRemovedRatio > 1 || subMinAvailableRatio < 0 || subMinAvailableRatio > 1) {
         showToast(tr('订阅比例必须在 0 到 1 之间'), 'error');
         return;
       }
-      const currentSubSnapshot = JSON.stringify({urls: subURLs.join('\n'), enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate, max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio, quarantine_new_nodes: subQuarantine});
+      const currentSubSnapshot = JSON.stringify({urls: subURLs.join('\n'), enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate, max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio, quarantine_new_nodes: subQuarantine, node_failure_policy: subNodeFailurePolicy});
 
       const coreChanged = currentCoreSnapshot !== _savedCoreSnapshot;
       const subChanged = subscriptionSettingsLoaded && currentSubSnapshot !== _savedSubSnapshot;
@@ -3081,6 +3170,7 @@
             probe_failure_max_interval: document.getElementById('settingProbeFailureMax').value.trim() || '1h',
             probe_passive_grace: document.getElementById('settingProbePassiveGrace').value.trim() || '10m',
             probe_max_per_hour: parseInt(document.getElementById('settingProbeMaxPerHour').value) || 0,
+            probe_max_per_day: parseInt(document.getElementById('settingProbeMaxPerDay').value) || 0,
             history_enabled: document.getElementById('settingHistoryEnabled').checked,
             history_file: document.getElementById('settingHistoryFile').value.trim(),
             history_retention: document.getElementById('settingHistoryRetention').value.trim() || '24h',
@@ -3137,7 +3227,7 @@
           subscriptions: subURLs, enabled: subEnabled, interval: subInterval,
           fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate,
           max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio,
-          quarantine_new_nodes: subQuarantine,
+          quarantine_new_nodes: subQuarantine, node_failure_policy: subNodeFailurePolicy,
         };
         try {
           showFullscreenLoading(tr('更新订阅中...'), tr('正在拉取候选订阅并计算节点差异'));

@@ -130,7 +130,8 @@ type ManagementConfig struct {
 	ProbeFailureRetryInterval time.Duration `yaml:"probe_failure_retry_interval"` // adaptive 失败节点首次复检间隔
 	ProbeFailureMaxInterval   time.Duration `yaml:"probe_failure_max_interval"`   // adaptive 失败退避上限
 	ProbePassiveGrace         time.Duration `yaml:"probe_passive_grace"`          // 真实流量成功后的免探测窗口
-	ProbeMaxPerHour           int           `yaml:"probe_max_per_hour"`           // adaptive 每小时主动探测预算，0 表示不限
+	ProbeMaxPerHour           int           `yaml:"probe_max_per_hour"`           // adaptive 每小时主动探测预算，0 表示使用默认值
+	ProbeMaxPerDay            int           `yaml:"probe_max_per_day"`            // adaptive 每天主动探测预算，0 表示使用默认值
 	Password                  string        `yaml:"password"`                     // admin 密码，为空则仅允许本机免密管理
 	OperatorPassword          string        `yaml:"operator_password,omitempty"`
 	ViewerPassword            string        `yaml:"viewer_password,omitempty"`
@@ -160,6 +161,7 @@ type SubscriptionRefreshConfig struct {
 	MaxRemovedRatio      float64       `yaml:"max_removed_ratio"`      // 删除比例超过阈值时需要显式确认，0 表示默认 50%
 	MinAvailableRatio    float64       `yaml:"min_available_ratio"`    // 候选池可用比例门槛，0 表示仅使用绝对数量
 	QuarantineNewNodes   *bool         `yaml:"quarantine_new_nodes"`   // 新节点必须通过候选池预检后才切换
+	NodeFailurePolicy    string        `yaml:"node_failure_policy"`    // skip 隔离坏节点；strict 拒绝整批提交
 }
 
 // NodeSource indicates where a node configuration originated from.
@@ -1313,6 +1315,7 @@ const (
 	defaultProbeFailureMaxInterval   = time.Hour
 	defaultProbePassiveGrace         = 10 * time.Minute
 	defaultProbeMaxPerHour           = 600
+	defaultProbeMaxPerDay            = 5000
 	defaultHistoryRetention          = 24 * time.Hour
 	defaultHistoryInterval           = time.Minute
 	defaultAlertCooldown             = 10 * time.Minute
@@ -1380,6 +1383,12 @@ func (c *Config) normalizeManagementProbeConfig() error {
 	if c.Management.ProbeMode == "adaptive" && c.Management.ProbeMaxPerHour == 0 {
 		c.Management.ProbeMaxPerHour = defaultProbeMaxPerHour
 	}
+	if c.Management.ProbeMaxPerDay < 0 {
+		return errors.New("management probe_max_per_day cannot be negative")
+	}
+	if c.Management.ProbeMode == "adaptive" && c.Management.ProbeMaxPerDay == 0 {
+		c.Management.ProbeMaxPerDay = defaultProbeMaxPerDay
+	}
 	if c.Management.HistoryEnabled == nil {
 		enabled := true
 		c.Management.HistoryEnabled = &enabled
@@ -1421,6 +1430,16 @@ func (c *Config) normalizeManagementProbeConfig() error {
 }
 
 func (c *Config) normalizeSubscriptionSafetyConfig() error {
+	policy := strings.ToLower(strings.TrimSpace(c.SubscriptionRefresh.NodeFailurePolicy))
+	if policy == "" {
+		policy = "skip"
+	}
+	switch policy {
+	case "skip", "strict":
+		c.SubscriptionRefresh.NodeFailurePolicy = policy
+	default:
+		return fmt.Errorf("subscription_refresh node_failure_policy must be 'skip' or 'strict', got %q", c.SubscriptionRefresh.NodeFailurePolicy)
+	}
 	if c.SubscriptionRefresh.MaxRemovedRatio == 0 {
 		c.SubscriptionRefresh.MaxRemovedRatio = 0.5
 	}
@@ -1590,6 +1609,19 @@ func (c *Config) ProbeMaxPerHourOrDefault() int {
 	return c.Management.ProbeMaxPerHour
 }
 
+func (c *Config) ProbeMaxPerDayOrDefault() int {
+	if c == nil {
+		return defaultProbeMaxPerDay
+	}
+	if c.Management.ProbeMaxPerDay < 0 {
+		return 0
+	}
+	if c.Management.ProbeMaxPerDay == 0 && c.ProbeModeOrDefault() == "adaptive" {
+		return defaultProbeMaxPerDay
+	}
+	return c.Management.ProbeMaxPerDay
+}
+
 func (c *Config) HistoryEnabledValue() bool {
 	return c == nil || c.Management.HistoryEnabled == nil || *c.Management.HistoryEnabled
 }
@@ -1642,6 +1674,13 @@ func (c *Config) SubscriptionMaxRemovedRatioOrDefault() float64 {
 
 func (c *Config) SubscriptionQuarantineNewNodesValue() bool {
 	return c == nil || c.SubscriptionRefresh.QuarantineNewNodes == nil || *c.SubscriptionRefresh.QuarantineNewNodes
+}
+
+func (c *Config) SubscriptionNodeFailurePolicyOrDefault() string {
+	if c == nil || strings.TrimSpace(c.SubscriptionRefresh.NodeFailurePolicy) == "" {
+		return "skip"
+	}
+	return strings.ToLower(strings.TrimSpace(c.SubscriptionRefresh.NodeFailurePolicy))
 }
 
 func (c *Config) MinAvailableNodeThreshold(total int) int {

@@ -232,11 +232,12 @@ func TestEmbeddedWebUIExposesP0P1P2Operations(t *testing.T) {
 	}
 	html := string(data)
 	for _, value := range []string{
-		`value="adaptive"`, `value="quality"`, `id="settingProbeMaxPerHour"`,
+		`value="adaptive"`, `value="quality"`, `id="settingProbeMaxPerHour"`, `id="settingProbeMaxPerDay"`,
 		`id="operationsTab"`, `id="operationsHistoryChart"`, `fetch('/api/metrics/history?limit=720')`,
 		`data-min-role="admin"`, `function applyRolePermissions(role)`, `fetch('/api/session')`,
 		`new URLSearchParams({`, `page_size: String(nodeTableState.pageSize)`, `nodePaginationMeta = data.pagination`,
-		`id="settingSubMaxRemovedRatio"`, `fetch('/api/subscription/preview'`, `preview_token: preview.token`,
+		`id="settingSubMaxRemovedRatio"`, `id="settingSubNodeFailurePolicy"`, `fetch('/api/subscription/preview'`, `preview_token: preview.token`,
+		`id="buildInfoPanel"`, `fetch('/api/build-info')`, `function ensureTrafficChart()`,
 	} {
 		if !strings.Contains(html, value) {
 			t.Errorf("embedded WebUI is missing P0/P1/P2 control %q", value)

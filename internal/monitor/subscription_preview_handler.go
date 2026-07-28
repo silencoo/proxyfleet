@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"easy_proxies/internal/config"
@@ -18,6 +19,7 @@ type subscriptionPreviewHTTPBody struct {
 	MaxRemovedRatio      *float64 `json:"max_removed_ratio,omitempty"`
 	MinAvailableRatio    *float64 `json:"min_available_ratio,omitempty"`
 	QuarantineNewNodes   *bool    `json:"quarantine_new_nodes,omitempty"`
+	NodeFailurePolicy    *string  `json:"node_failure_policy,omitempty"`
 }
 
 func (s *Server) handleSubscriptionPreview(w http.ResponseWriter, r *http.Request) {
@@ -75,12 +77,14 @@ func (s *Server) subscriptionPreviewRequest(body subscriptionPreviewHTTPBody) (S
 	maxRemovedRatio := 0.5
 	minAvailableRatio := 0.0
 	quarantineNewNodes := true
+	nodeFailurePolicy := "skip"
 	if cfg != nil {
 		fetchConcurrency = config.NormalizeSubscriptionFetchConcurrency(cfg.SubscriptionRefresh.FetchConcurrency)
 		allowPrivateNetworks = cfg.SubscriptionRefresh.AllowPrivateNetworks
 		maxRemovedRatio = cfg.SubscriptionMaxRemovedRatioOrDefault()
 		minAvailableRatio = cfg.SubscriptionRefresh.MinAvailableRatio
 		quarantineNewNodes = cfg.SubscriptionQuarantineNewNodesValue()
+		nodeFailurePolicy = cfg.SubscriptionNodeFailurePolicyOrDefault()
 	}
 	if body.FetchConcurrency != nil {
 		if *body.FetchConcurrency < 1 || *body.FetchConcurrency > 32 {
@@ -106,10 +110,17 @@ func (s *Server) subscriptionPreviewRequest(body subscriptionPreviewHTTPBody) (S
 	if body.QuarantineNewNodes != nil {
 		quarantineNewNodes = *body.QuarantineNewNodes
 	}
+	if body.NodeFailurePolicy != nil {
+		nodeFailurePolicy = strings.ToLower(strings.TrimSpace(*body.NodeFailurePolicy))
+		if nodeFailurePolicy != "skip" && nodeFailurePolicy != "strict" {
+			return SubscriptionPreviewRequest{}, errors.New("坏节点处理策略必须为 skip 或 strict")
+		}
+	}
 	return SubscriptionPreviewRequest{
 		Subscriptions: cleanURLs, Enabled: body.Enabled, Interval: interval,
 		FetchConcurrency: fetchConcurrency, AllowPrivateNetworks: allowPrivateNetworks,
 		MaxRemovedRatio: maxRemovedRatio, MinAvailableRatio: minAvailableRatio,
 		QuarantineNewNodes: quarantineNewNodes,
+		NodeFailurePolicy:  nodeFailurePolicy,
 	}, nil
 }

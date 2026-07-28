@@ -14,6 +14,11 @@ type ProbeBudgetStatus struct {
 	Remaining      int       `json:"remaining"`
 	WindowStarted  time.Time `json:"window_started"`
 	NextReset      time.Time `json:"next_reset"`
+	DailyLimit     int       `json:"daily_limit"`
+	DailyUsed      int       `json:"daily_used"`
+	DailyRemaining int       `json:"daily_remaining"`
+	DayStarted     time.Time `json:"day_started"`
+	DailyNextReset time.Time `json:"daily_next_reset"`
 	Eligible       int       `json:"eligible"`
 	Due            int       `json:"due"`
 	PassiveSkipped int       `json:"passive_skipped"`
@@ -32,18 +37,28 @@ func (m *Manager) ProbeBudgetStatus() ProbeBudgetStatus {
 	m.mu.RLock()
 	mode := m.cfg.ProbeMode
 	limit := m.cfg.ProbeMaxPerHour
+	dailyLimit := m.cfg.ProbeMaxPerDay
 	m.mu.RUnlock()
 	now := time.Now()
 	m.probeBudgetMu.Lock()
 	m.resetProbeBudgetLocked(now)
 	window := m.probeBudgetWindow
 	used := m.probeBudgetUsed
+	day := m.probeBudgetDay
+	dailyUsed := m.probeBudgetDailyUsed
 	m.probeBudgetMu.Unlock()
 	remaining := 0
 	if limit > 0 {
 		remaining = limit - used
 		if remaining < 0 {
 			remaining = 0
+		}
+	}
+	dailyRemaining := 0
+	if dailyLimit > 0 {
+		dailyRemaining = dailyLimit - dailyUsed
+		if dailyRemaining < 0 {
+			dailyRemaining = 0
 		}
 	}
 	return ProbeBudgetStatus{
@@ -53,6 +68,11 @@ func (m *Manager) ProbeBudgetStatus() ProbeBudgetStatus {
 		Remaining:      remaining,
 		WindowStarted:  window,
 		NextReset:      window.Add(time.Hour),
+		DailyLimit:     dailyLimit,
+		DailyUsed:      dailyUsed,
+		DailyRemaining: dailyRemaining,
+		DayStarted:     day,
+		DailyNextReset: day.AddDate(0, 0, 1),
 		Eligible:       int(m.adaptiveEligible.Load()),
 		Due:            int(m.adaptiveDue.Load()),
 		PassiveSkipped: int(m.adaptivePassiveSkip.Load()),
@@ -61,9 +81,14 @@ func (m *Manager) ProbeBudgetStatus() ProbeBudgetStatus {
 
 func (m *Manager) resetProbeBudgetLocked(now time.Time) {
 	window := now.Truncate(time.Hour)
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	if m.probeBudgetWindow.IsZero() || !m.probeBudgetWindow.Equal(window) {
 		m.probeBudgetWindow = window
 		m.probeBudgetUsed = 0
+	}
+	if m.probeBudgetDay.IsZero() || !m.probeBudgetDay.Equal(day) {
+		m.probeBudgetDay = day
+		m.probeBudgetDailyUsed = 0
 	}
 }
 
@@ -73,23 +98,30 @@ func (m *Manager) reserveProbeBudget(requested int, now time.Time) int {
 	}
 	m.mu.RLock()
 	limit := m.cfg.ProbeMaxPerHour
+	dailyLimit := m.cfg.ProbeMaxPerDay
 	m.mu.RUnlock()
 	m.probeBudgetMu.Lock()
 	defer m.probeBudgetMu.Unlock()
 	m.resetProbeBudgetLocked(now)
-	if limit <= 0 {
-		m.probeBudgetUsed += requested
-		return requested
+	allowed := requested
+	if limit > 0 {
+		remaining := limit - m.probeBudgetUsed
+		if remaining < allowed {
+			allowed = remaining
+		}
 	}
-	remaining := limit - m.probeBudgetUsed
-	if remaining <= 0 {
+	if dailyLimit > 0 {
+		remaining := dailyLimit - m.probeBudgetDailyUsed
+		if remaining < allowed {
+			allowed = remaining
+		}
+	}
+	if allowed <= 0 {
 		return 0
 	}
-	if requested > remaining {
-		requested = remaining
-	}
-	m.probeBudgetUsed += requested
-	return requested
+	m.probeBudgetUsed += allowed
+	m.probeBudgetDailyUsed += allowed
+	return allowed
 }
 
 func (m *Manager) selectAdaptiveEntries(entries []*entry, limit int, now time.Time) []*entry {

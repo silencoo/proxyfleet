@@ -1,0 +1,124 @@
+name: Release Windows executable
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION_FILE: go.mod
+  BUILD_TAGS: with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api
+
+jobs:
+  test-build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          fi
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${tag}" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      - name: Run full test suite
+        run: go test ./...
+
+      - name: Verify full-tag build compiles
+        run: go test -tags "${BUILD_TAGS}" ./...
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install WebUI browser test dependencies
+        run: npm ci
+
+      - name: Run Chromium WebUI regression tests
+        run: npx playwright install --with-deps chromium && npm run test:e2e
+
+      - name: Build and inspect official capabilities
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          commit="$(git rev-parse HEAD)"
+          built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ldflags="-s -w -X easy_proxies/internal/buildinfo.Version=${{ steps.release.outputs.tag }} -X easy_proxies/internal/buildinfo.Commit=${commit} -X easy_proxies/internal/buildinfo.BuiltAt=${built_at}"
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -tags "${BUILD_TAGS}" -ldflags "${ldflags}" -o dist/proxyfleet-verify ./cmd/easy_proxies
+          dist/proxyfleet-verify -version-json | tee dist/build-info.json
+          jq -e '
+            .official_release_ready == true and
+            .capabilities.quic == true and
+            .capabilities.clash_api == true and
+            .capabilities.grpc == true and
+            .capabilities.wireguard == true
+          ' dist/build-info.json >/dev/null
+
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath -tags "${BUILD_TAGS}" -ldflags "${ldflags}" -o dist/easy_proxies.exe ./cmd/easy_proxies
+          sha256="$(sha256sum dist/easy_proxies.exe | awk '{print $1}')"
+          echo "sha256=${sha256}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "### ProxyFleet ${{ steps.release.outputs.tag }}"
+            echo "- Asset: easy_proxies.exe"
+            echo "- Platform: windows/amd64"
+            echo "- SHA256: \`${sha256}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_SHA256: ${{ steps.build.outputs.sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<EOF
+          Official ProxyFleet Windows amd64 build.
+
+          - Full QUIC, gRPC, WireGuard, gVisor, uTLS and Clash API capabilities
+          - SHA256: \`${RELEASE_SHA256}\`
+          - The only uploaded release asset is \`easy_proxies.exe\`
+          EOF
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" dist/easy_proxies.exe --clobber
+            gh release edit "${RELEASE_TAG}" --title "ProxyFleet ${RELEASE_TAG}" --notes-file release-notes.md --latest
+          else
+            gh release create "${RELEASE_TAG}" dist/easy_proxies.exe --verify-tag --title "ProxyFleet ${RELEASE_TAG}" --notes-file release-notes.md --generate-notes --latest
+          fi

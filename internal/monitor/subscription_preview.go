@@ -17,6 +17,7 @@ type SubscriptionPreviewRequest struct {
 	MaxRemovedRatio      float64
 	MinAvailableRatio    float64
 	QuarantineNewNodes   bool
+	NodeFailurePolicy    string
 }
 
 type SubscriptionPreview struct {

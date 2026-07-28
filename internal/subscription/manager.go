@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"easy_proxies/internal/builder"
+	"easy_proxies/internal/buildinfo"
 	"easy_proxies/internal/commitguard"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
@@ -489,6 +492,7 @@ func (m *Manager) pendingManualTarget() (uint64, bool) {
 func (m *Manager) Status() monitor.SubscriptionStatus {
 	m.mu.RLock()
 	status := m.status
+	status.NodeFailures = append([]monitor.SubscriptionNodeFailure(nil), m.status.NodeFailures...)
 	m.mu.RUnlock()
 
 	// Check if nodes have been modified since last refresh
@@ -723,6 +727,7 @@ func (m *Manager) doRefreshContext(refreshCtx context.Context, targetSequence ui
 		if err != nil {
 			return err
 		}
+		m.recordSubscriptionNodeFailures(committed.SubscriptionNodeFailurePolicyOrDefault(), nil)
 		m.mu.Lock()
 		m.baseCfg = committed.Clone()
 		if m.pendingUpdate != nil && m.pendingUpdate.sequence == selectedPending {
@@ -766,7 +771,13 @@ func (m *Manager) doRefreshContext(refreshCtx context.Context, targetSequence ui
 		return err
 	}
 
-	newHash := m.computeNodesHash(plan.nodes)
+	committedSubscriptionNodes := make([]config.NodeConfig, 0, len(newCfg.Nodes))
+	for _, node := range newCfg.Nodes {
+		if node.Source == config.NodeSourceSubscription {
+			committedSubscriptionNodes = append(committedSubscriptionNodes, node)
+		}
+	}
+	newHash := m.computeNodesHash(committedSubscriptionNodes)
 	m.mu.Lock()
 	m.baseCfg = newCfg.Clone()
 	if selectedPending != 0 && m.pendingUpdate != nil && m.pendingUpdate.sequence == selectedPending {
@@ -799,12 +810,148 @@ func (m *Manager) doRefreshContext(refreshCtx context.Context, targetSequence ui
 }
 
 const maxConfigCommitAttempts = 4
+const maxSubscriptionNodeIsolations = 64
 
-// commitRefreshPlan rebases the fetched nodes onto the latest committed
+type candidateNodeTaggedError interface {
+	CandidateNodeTag() string
+}
+
+func (m *Manager) commitRefreshPlan(ctx context.Context, desired *config.Config, subscriptionNodes []config.NodeConfig, targetSequence, pendingGeneration uint64, expectedRevision *uint64) (*config.Config, string, error) {
+	policy := desired.SubscriptionNodeFailurePolicyOrDefault()
+	workingNodes, failures, err := filterSubscriptionNodesForBuild(subscriptionNodes, desired.SkipCertVerify, policy)
+	if err != nil {
+		m.recordSubscriptionNodeFailures(policy, failures)
+		return nil, "", err
+	}
+	if len(workingNodes) == 0 && len(subscriptionNodes) > 0 {
+		m.recordSubscriptionNodeFailures(policy, failures)
+		return nil, "", errors.New("all fetched subscription nodes were isolated by build capability checks")
+	}
+
+	for isolated := 0; ; isolated++ {
+		committed, nodesPath, commitErr := m.commitRefreshPlanOnce(ctx, desired, workingNodes, targetSequence, pendingGeneration, expectedRevision)
+		if commitErr == nil {
+			m.recordSubscriptionNodeFailures(policy, failures)
+			return committed, nodesPath, nil
+		}
+		failedNode, failure, ok := subscriptionNodeFailure(commitErr, workingNodes)
+		if !ok || policy == "strict" {
+			m.recordSubscriptionNodeFailures(policy, failures)
+			return nil, "", commitErr
+		}
+		failures = append(failures, failure)
+		m.logger.Warnf("isolating subscription node tag=%s after candidate build failure: %s", failure.Tag, failure.Error)
+		if isolated >= maxSubscriptionNodeIsolations-1 {
+			m.recordSubscriptionNodeFailures(policy, failures)
+			return nil, "", fmt.Errorf("commit subscription refresh: more than %d candidate nodes failed to build", maxSubscriptionNodeIsolations)
+		}
+		remaining := make([]config.NodeConfig, 0, len(workingNodes)-1)
+		for index := range workingNodes {
+			if index != failedNode {
+				remaining = append(remaining, workingNodes[index])
+			}
+		}
+		workingNodes = remaining
+		if len(workingNodes) == 0 {
+			m.recordSubscriptionNodeFailures(policy, failures)
+			return nil, "", errors.New("all fetched subscription nodes failed candidate construction")
+		}
+	}
+}
+
+func filterSubscriptionNodesForBuild(nodes []config.NodeConfig, skipCertVerify bool, policy string) ([]config.NodeConfig, []monitor.SubscriptionNodeFailure, error) {
+	capabilities := buildinfo.Current().Capabilities
+	accepted := make([]config.NodeConfig, 0, len(nodes))
+	failures := make([]monitor.SubscriptionNodeFailure, 0)
+	for index := range nodes {
+		required := requiredBuildCapability(nodes[index].URI)
+		failureReason := ""
+		if required != "" && !capabilities[required] {
+			failureReason = fmt.Sprintf("requires disabled build capability %s", required)
+		} else if buildErr := builder.ValidateNodeURI(nodes[index].URI, skipCertVerify); buildErr != nil {
+			failureReason = monitor.SanitizeProbeError(buildErr)
+		}
+		if failureReason == "" {
+			accepted = append(accepted, nodes[index])
+			continue
+		}
+		nodeKey := nodes[index].NodeKey()
+		failure := monitor.SubscriptionNodeFailure{
+			Tag:     "node-" + nodeKey,
+			NodeKey: nodeKey,
+			Name:    strings.TrimSpace(nodes[index].Name),
+			Error:   failureReason,
+		}
+		failures = append(failures, failure)
+		if policy == "strict" {
+			return nil, failures, fmt.Errorf("subscription node %s %s", failure.Tag, failure.Error)
+		}
+	}
+	return accepted, failures, nil
+}
+
+func requiredBuildCapability(rawURI string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURI))
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "hy2", "hysteria2", "tuic":
+		return "quic"
+	case "wireguard", "wg":
+		return "wireguard"
+	}
+	query := parsed.Query()
+	if strings.EqualFold(query.Get("type"), "grpc") || strings.EqualFold(query.Get("transport"), "grpc") {
+		return "grpc"
+	}
+	return ""
+}
+
+func subscriptionNodeFailure(err error, nodes []config.NodeConfig) (int, monitor.SubscriptionNodeFailure, bool) {
+	var tagged candidateNodeTaggedError
+	if !errors.As(err, &tagged) {
+		return -1, monitor.SubscriptionNodeFailure{}, false
+	}
+	tag := strings.TrimSpace(tagged.CandidateNodeTag())
+	for index := range nodes {
+		nodeKey := nodes[index].NodeKey()
+		baseTag := "node-" + nodeKey
+		if tag != baseTag && !strings.HasPrefix(tag, baseTag+"-") {
+			continue
+		}
+		return index, monitor.SubscriptionNodeFailure{
+			Tag:     tag,
+			NodeKey: nodeKey,
+			Name:    strings.TrimSpace(nodes[index].Name),
+			Error:   monitor.SanitizeProbeError(err),
+		}, true
+	}
+	return -1, monitor.SubscriptionNodeFailure{}, false
+}
+
+func (m *Manager) recordSubscriptionNodeFailures(policy string, failures []monitor.SubscriptionNodeFailure) {
+	const detailLimit = 50
+	details := failures
+	if len(details) > detailLimit {
+		details = details[:detailLimit]
+	}
+	m.mu.Lock()
+	m.status.FailurePolicy = policy
+	if policy == "strict" {
+		m.status.SkippedNodes = 0
+	} else {
+		m.status.SkippedNodes = len(failures)
+	}
+	m.status.NodeFailures = append([]monitor.SubscriptionNodeFailure(nil), details...)
+	m.mu.Unlock()
+}
+
+// commitRefreshPlanOnce rebases the fetched nodes onto the latest committed
 // configuration. This is deliberately done after the network fetch so a
 // settings update or inline-node CRUD operation that completes while a slow
 // provider is responding is not overwritten by a stale snapshot.
-func (m *Manager) commitRefreshPlan(ctx context.Context, desired *config.Config, subscriptionNodes []config.NodeConfig, targetSequence, pendingGeneration uint64, expectedRevision *uint64) (*config.Config, string, error) {
+func (m *Manager) commitRefreshPlanOnce(ctx context.Context, desired *config.Config, subscriptionNodes []config.NodeConfig, targetSequence, pendingGeneration uint64, expectedRevision *uint64) (*config.Config, string, error) {
 	guardedCtx := commitguard.With(ctx, m.acquireCommitBarrier(ctx, targetSequence, pendingGeneration))
 	for attempt := 0; attempt < maxConfigCommitAttempts; attempt++ {
 		if err := m.validatePendingGeneration(ctx, pendingGeneration); err != nil {

@@ -41,6 +41,9 @@ vendor/
 # Test artifacts
 coverage.out
 coverage.html
+node_modules/
+playwright-report/
+test-results/
 
 # Qodo
 .qodo/

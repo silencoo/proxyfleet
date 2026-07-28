@@ -39,6 +39,7 @@ type Config struct {
 	ProbeFailureMaxInterval   time.Duration
 	ProbePassiveGrace         time.Duration
 	ProbeMaxPerHour           int
+	ProbeMaxPerDay            int
 	HistoryEnabled            bool
 	HistoryFile               string
 	HistoryRetention          time.Duration
@@ -227,13 +228,15 @@ type Manager struct {
 	probeSweepFail   atomic.Int32
 	probeBatchCursor atomic.Uint64
 
-	probeBudgetMu       sync.Mutex
-	probeBudgetWindow   time.Time
-	probeBudgetUsed     int
-	adaptiveEligible    atomic.Int32
-	adaptiveDue         atomic.Int32
-	adaptivePassiveSkip atomic.Int32
-	operations          *OperationsStore
+	probeBudgetMu        sync.Mutex
+	probeBudgetWindow    time.Time
+	probeBudgetUsed      int
+	probeBudgetDay       time.Time
+	probeBudgetDailyUsed int
+	adaptiveEligible     atomic.Int32
+	adaptiveDue          atomic.Int32
+	adaptivePassiveSkip  atomic.Int32
+	operations           *OperationsStore
 
 	probeGate           sync.Mutex
 	sweepRunning        bool

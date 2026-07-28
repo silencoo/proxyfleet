@@ -54,6 +54,27 @@ var (
 	activeManager   *Manager
 )
 
+// CandidateNodeBuildError identifies one stable, non-secret node tag that
+// prevented a transactional runtime candidate from being created. Callers may
+// isolate subscription-owned nodes and retry without parsing error strings.
+type CandidateNodeBuildError struct {
+	Tag string
+	Err error
+}
+
+func (e *CandidateNodeBuildError) Error() string {
+	return fmt.Sprintf("create candidate outbound %s: %v", e.Tag, e.Err)
+}
+
+func (e *CandidateNodeBuildError) Unwrap() error { return e.Err }
+
+func (e *CandidateNodeBuildError) CandidateNodeTag() string {
+	if e == nil {
+		return ""
+	}
+	return e.Tag
+}
+
 // Logger defines logging interface for the manager.
 type Logger interface {
 	Infof(format string, args ...any)
@@ -828,7 +849,7 @@ func (m *Manager) reloadNodesInPlace(
 		}
 		if err := createRuntimeOutbound(runtimeCtx, instance, desiredBase[tag]); err != nil {
 			rollbackAddedBase()
-			return fmt.Errorf("create candidate outbound %s: %w", tag, err)
+			return &CandidateNodeBuildError{Tag: tag, Err: err}
 		}
 		createdBaseTags = append(createdBaseTags, tag)
 	}

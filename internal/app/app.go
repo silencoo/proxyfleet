@@ -45,6 +45,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		ProbeFailureMaxInterval:   cfg.ProbeFailureMaxIntervalOrDefault(),
 		ProbePassiveGrace:         cfg.ProbePassiveGraceOrDefault(),
 		ProbeMaxPerHour:           cfg.ProbeMaxPerHourOrDefault(),
+		ProbeMaxPerDay:            cfg.ProbeMaxPerDayOrDefault(),
 		HistoryEnabled:            cfg.HistoryEnabledValue(),
 		HistoryFile:               cfg.ResolveManagementPath(cfg.Management.HistoryFile, "monitor-history.json"),
 		HistoryRetention:          cfg.HistoryRetentionOrDefault(),
