@@ -7,8 +7,31 @@ import (
 	"strings"
 	"testing"
 
+	"easy_proxies/internal/config"
+
 	"github.com/sagernet/sing-box/option"
 )
+
+func TestBuildPoolInboundAddsNamedProfileCredentials(t *testing.T) {
+	cfg := &config.Config{
+		Listener: config.ListenerConfig{Address: "127.0.0.1", Port: 2323, Username: "fleet", Password: "secret"},
+		Profiles: []config.ProfileConfig{{Name: "hk-fast"}, {Name: "quality"}},
+	}
+	inbound, err := buildPoolInbound(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mixed := inbound.Options.(*option.HTTPMixedInboundOptions)
+	if len(mixed.Users) != 3 {
+		t.Fatalf("inbound users = %d, want 3", len(mixed.Users))
+	}
+	want := []string{"fleet", "fleet@hk-fast", "fleet@quality"}
+	for index, user := range mixed.Users {
+		if user.Username != want[index] || user.Password != "secret" {
+			t.Fatalf("user %d = %#v, want username %q", index, user, want[index])
+		}
+	}
+}
 
 func TestBuildNodeOutboundRejectsPortsOutsideUint16Range(t *testing.T) {
 	vmessPayload := base64.StdEncoding.EncodeToString([]byte(`{"v":"2","ps":"bad","add":"example.com","port":"65536","id":"b831381d-6324-4d53-ad4f-8cda48b30811","aid":"0","net":"tcp"}`))

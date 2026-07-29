@@ -61,9 +61,11 @@ func Build(cfg *config.Config) (option.Options, error) {
 		nodesByTag[tag] = node
 		baseOutbounds = append(baseOutbounds, outbound)
 		meta := poolout.MemberMeta{
-			Name: node.Name,
-			URI:  node.URI,
-			Mode: cfg.Mode,
+			Name:     node.Name,
+			URI:      node.URI,
+			Mode:     cfg.Mode,
+			Protocol: nodeProtocol(node.URI),
+			Source:   string(node.Source),
 		}
 		// For multi-port and hybrid modes, use per-node port
 		if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
@@ -171,6 +173,14 @@ func Build(cfg *config.Config) (option.Options, error) {
 	// listeners are dispatched by inbound tag inside the pool. This keeps the
 	// route graph immutable, which lets reload add/remove nodes and listeners
 	// through sing-box's runtime managers without rebuilding the whole Box.
+	profileOptions := make([]poolout.ProfileOptions, len(cfg.Profiles))
+	for index, profile := range cfg.Profiles {
+		profileOptions[index] = poolout.ProfileOptions{
+			Name: profile.Name, Regions: append([]string(nil), profile.Regions...),
+			NameRegex: profile.NameRegex, Protocols: append([]string(nil), profile.Protocols...),
+			Sources: append([]string(nil), profile.Sources...), MinQuality: profile.MinQuality,
+		}
+	}
 	poolOptions := poolout.Options{
 		Mode:              cfg.Pool.Mode,
 		Members:           memberTags,
@@ -187,6 +197,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 			MaxEntries: cfg.Pool.Sticky.MaxEntries,
 		},
 		Metadata:         metadata,
+		Profiles:         profileOptions,
 		FailOpen:         cfg.Pool.FailOpen,
 		DedicatedMembers: dedicatedMembers,
 	}
@@ -237,10 +248,17 @@ func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {
 		},
 	}
 	if cfg.Listener.Username != "" {
-		inboundOptions.Users = []auth.User{{
+		inboundOptions.Users = make([]auth.User, 0, len(cfg.Profiles)+1)
+		inboundOptions.Users = append(inboundOptions.Users, auth.User{
 			Username: cfg.Listener.Username,
 			Password: cfg.Listener.Password,
-		}}
+		})
+		for _, profile := range cfg.Profiles {
+			inboundOptions.Users = append(inboundOptions.Users, auth.User{
+				Username: cfg.Listener.Username + "@" + profile.Name,
+				Password: cfg.Listener.Password,
+			})
+		}
 	}
 	inbound := option.Inbound{
 		Type:    C.TypeMixed,
@@ -248,6 +266,19 @@ func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {
 		Options: inboundOptions,
 	}
 	return inbound, nil
+}
+
+func nodeProtocol(rawURI string) string {
+	rawURI = strings.TrimSpace(rawURI)
+	separator := strings.IndexByte(rawURI, ':')
+	if separator <= 0 {
+		return ""
+	}
+	protocol := strings.ToLower(rawURI[:separator])
+	if protocol == "hy2" {
+		return "hysteria2"
+	}
+	return protocol
 }
 
 func buildNodeOutbound(tag, rawURI string, skipCertVerify bool) (option.Outbound, error) {

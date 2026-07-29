@@ -276,8 +276,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.baseCtx = ctx
 	cfg := m.cfg
 	m.mu.Unlock()
-	if err := pool.ConfigureHealthPersistence(cfg.HealthStatePath()); err != nil {
-		return fmt.Errorf("load pool health state: %w", err)
+	if err := pool.ConfigureRuntimeState(cfg.RuntimeStatePath(), cfg.HealthStatePath()); err != nil {
+		return fmt.Errorf("load pool runtime state: %w", err)
 	}
 	if len(cfg.Nodes) == 0 {
 		if !cfg.ManagementEnabled() {
@@ -1773,14 +1773,21 @@ func (m *Manager) closeDetachedComponents() error {
 	if state.currentBox != nil {
 		boxErr = state.currentBox.Close()
 	}
-	if persistErr := pool.PersistHealthStateNow(); persistErr != nil {
-		m.logger.Warnf("failed to persist pool health state during shutdown: %v", persistErr)
+	if state.ownsRuntime {
+		if persistErr := pool.PersistHealthStateNow(); persistErr != nil {
+			m.logger.Warnf("failed to persist pool runtime state during shutdown: %v", persistErr)
+		}
 	}
 	// Closing shared state makes any late, context-ignoring callback a no-op.
 	// Reset only after Box.Close succeeds so no live listener is detached from
 	// the registry merely because a cooperative wait exceeded its soft bound.
 	if state.ownsRuntime && boxErr == nil {
 		pool.ResetSharedStateStore()
+	}
+	if state.ownsRuntime {
+		if closeErr := pool.CloseRuntimeState(); closeErr != nil {
+			m.logger.Warnf("failed to close pool runtime state: %v", closeErr)
+		}
 	}
 	var lookupErr error
 	if state.geoLookup != nil {
@@ -1866,8 +1873,8 @@ func (m *Manager) updateHealthPersistence(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
-	if err := pool.ConfigureHealthPersistence(cfg.HealthStatePath()); err != nil {
-		m.logger.Warnf("failed to configure pool health persistence: %v", err)
+	if err := pool.ConfigureRuntimeState(cfg.RuntimeStatePath(), cfg.HealthStatePath()); err != nil {
+		m.logger.Warnf("failed to configure pool runtime state: %v", err)
 		return
 	}
 	if err := pool.PersistHealthStateNow(); err != nil {

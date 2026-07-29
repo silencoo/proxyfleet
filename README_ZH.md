@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="internal/monitor/assets/proxyfleet-logo.png" alt="ProxyFleet 黑白抖动雪人 Logo" width="180" />
+  <img src="webui/public/assets/proxyfleet-logo.png" alt="ProxyFleet 黑白抖动雪人 Logo" width="180" />
 </p>
 
 <h1 align="center">ProxyFleet</h1>
@@ -19,12 +19,12 @@ WebUI 和首次启动体验已经明显分化。上游更新会经过评估后�
 
 | 方向 | 本 Fork 的增强 |
 |------|----------------|
-| 首次启动 | 原生二进制无需提前准备 `config.yaml`；自动生成仅监听本机的安全默认配置，在终端显示绝对路径，并以零节点 WebUI 启动 |
+| 首次启动 | 原生二进制无需提前准备 `config.yaml`；自动生成仅监听本机的安全默认配置，并仅一次输出密码学随机管理员密码和修改提醒 |
 | 代理入口 | `pool`、`multi-port`、`hybrid` 三种模式，可同时满足自动轮换和指定节点出口 |
 | 在线更新 | 节点级 diff 保持未变化监听器和现有连接，删除的出站会先排空，不会在每次订阅刷新时整体中断 |
-| 稳定身份 | 订阅改名、重排和重启不会改变节点独立端口；端口、节点认证、健康状态和黑名单均可持久化 |
+| 稳定身份 | 订阅改名、重排和重启不会改变节点独立端口；强配置保留在 YAML，健康、黑名单和目标延迟等弱状态持久化到 SQLite |
 | 订阅安全 | 有界并发、私网目标保护、按来源缓存回退、稳定身份去重、候选测活、原子持久化和失败回滚 |
-| WebUI | 内置中英文黑白界面、正式 SVG 图标、排序、搜索、地域筛选、分页、诊断、分色日志和敏感字段遮罩 |
+| WebUI | Vite/TypeScript 模块编译进单个 EXE，提供中英文黑白界面、Named Profiles、访问命令生成、诊断、日志和敏感字段遮罩 |
 | 运行保障 | 健康检查批次串行化、严格探测超时、瞬时故障冷却、代理重试/会话保持、日志轮转和事务化配置写入 |
 | 地域观察 | 按真实出口 IP 进行 GeoIP 路由，并通过节点名补充 JP/KR/US/HK/TW/SG/住宅节点分组展示 |
 
@@ -57,9 +57,10 @@ go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvis
 首次启动时程序会：
 
 1. 当前工作目录缺少 `config.yaml` 时自动创建默认配置。
-2. 在终端明确显示实际使用的配置文件绝对路径。
-3. 以仅管理模式启动内置 WebUI：`http://127.0.0.1:9091`。
-4. 在订阅刷新或节点编辑产生可用节点后，自动启动代理运行时，无需重启进程。
+2. 生成 32 位密码学随机管理员密码，写入新配置，并在终端**仅显示一次**且提醒尽快修改。
+3. 在终端明确显示实际使用的配置文件绝对路径。
+4. 以仅管理模式启动内置 WebUI：`http://127.0.0.1:9091`。
+5. 在订阅刷新或节点编辑产生可用节点后，自动启动代理运行时，无需重启进程。
 
 进入 WebUI 的**系统设置**，填写订阅地址并保存、刷新。节点通过校验后，
 默认统一入口为 `127.0.0.1:2323`：
@@ -164,7 +165,11 @@ dns:
 
 多端口模式会把节点规范化 URI 的哈希与端口持久化到配置目录下的 `port-map.yaml`。订阅改名、重排或进程重启不会改变已有节点端口；节点删除后，端口默认保留 24 小时再允许其他节点复用。可通过 `multi_port.port_map_file` 和 `multi_port.port_reuse_delay` 调整。
 
-Pool 支持 `sequential`、`random`、`balance` 和有界采样的 `latency` 调度。短暂网络故障会进入独立冷却，不会立即累加长期拉黑计数；统一入口可以在拨号失败时切换其他节点重试，并可选启用有容量和 TTL 的会话保持。每节点独立端口始终只使用对应节点。
+Pool 支持 `sequential`、`random`、`balance`、`latency` 和 `quality` 调度。真实流量成功时会被动记录目标域名连接延迟 EWMA，不产生额外请求；延迟调度优先使用该目标数据，再回退到全局探测结果。短暂网络故障会进入独立冷却，不会立即累加长期拉黑计数；统一入口可以在拨号失败时切换其他节点重试，并可选启用有容量和 TTL 的会话保持。每节点独立端口始终只使用对应节点。
+
+健康、黑名单/冷却、监控计数以及每节点有界的目标延迟写入配置目录的 `runtime-state.db`。SQLite 使用 WAL 与事务快照；数据库为空时会将旧 `health-state.yaml` 导入一次。可用 `pool.runtime_state_file` 调整路径。
+
+Named Profiles 可按地域、协议、来源、节点名称正则和最低质量预计算子池。连接时使用同一密码，用户名写成 `base@profile`；不带后缀仍使用全局池。该功能需要统一入口认证，适用于 `pool`/`hybrid` 模式，WebUI 的访问助手可一键生成和复制 HTTP/SOCKS5 URI 与 curl 命令。
 
 ## 节点来源行为
 
@@ -209,11 +214,13 @@ Shadowsocks 支持 SIP002、旧式整段 Base64 和明文兼容形式，但不�
 - 中文与英文可在系统设置即时切换，界面以黑白配色和 SVG 图标为主。
 - 控制台按 info、warn、error 分色；密码和订阅地址默认遮罩，可通过眼睛按钮临时查看。
 - 节点列表默认不返回代理凭据；编辑单个节点时才通过受保护接口读取完整配置。
+- 系统设置可维护 Named Profiles，并通过访问助手生成可完整复制的代理 URI/curl 命令。
 
 ## 管理 API（核心）
 
 - `POST /api/auth`
 - `GET|PUT /api/settings`
+- `GET /api/access`（管理员访问助手）
 - `GET /api/nodes`
 - `POST /api/nodes/{tag}/probe`
 - `POST /api/nodes/{tag}/release`
@@ -241,14 +248,19 @@ Shadowsocks 支持 SIP002、旧式整段 Base64 和明文兼容形式，但不�
 ## 开发验证
 
 ```bash
+npm ci
+npm run check:webui
+npm run build:webui
+npm run test:e2e
 go test ./...
 go vet ./...
 
+# webui/dist 会嵌入 EXE；CI 会校验它与 TypeScript/CSS 源码一致。
 # 验证生产/完整协议构建
 go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
 ```
 
 ## 许可证
 
-MIT License
+MIT License。依赖归属声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)，也可通过 `easy_proxies -third-party-notices` 从单个 EXE 直接查看。
 

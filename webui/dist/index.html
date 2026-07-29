@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ProxyFleet - 监控中心</title>
+  <link rel="icon" type="image/png" href="/assets/proxyfleet-logo.png" />
+
+  <script src="/assets/echarts.min.js"></script>
+  <script>
+    // Set theme before first paint to prevent FOUC
+    (function(){
+      var mode = localStorage.getItem('themeMode');
+      if (!mode) {
+        var legacy = localStorage.getItem('theme');
+        mode = legacy || 'auto';
+      }
+      var visual = mode === 'auto'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : mode;
+      document.documentElement.setAttribute('data-theme', visual);
+    })();
+  </script>
+  <script type="module" crossorigin src="/assets/index-t6parGyI.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-CEqxiuXT.css">
+</head>
+<body>
+
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="i-network" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="7" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="m8.3 7 7.3-.1M7.5 8.2l3.2 7.5m5.8-6.5-3.2 6.5"/></symbol>
+    <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h8"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.2 6.2L4 8m2 7a7 7 0 0 0 11.8 2.8L20 16"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 21h16"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.7 2.5 18a2 2 0 0 0 1.8 3h15.4a2 2 0 0 0 1.8-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 7.5-2"/></symbol>
+    <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m3 0-1 14H7L6 7"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M4 3h13l3 3v15H4Z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><path d="M12 21s7-5.2 7-12a7 7 0 1 0-14 0c0 6.8 7 12 7 12Z"/><circle cx="12" cy="9" r="2"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 4.2A10.8 10.8 0 0 1 12 4c6.5 0 10 8 10 8a16.8 16.8 0 0 1-2.1 3.2M6.6 6.6C3.5 8.5 2 12 2 12s3.5 8 10 8a9.8 9.8 0 0 0 5.4-1.6"/></symbol>
+    <symbol id="i-sort" viewBox="0 0 24 24"><path d="m8 7 4-4 4 4M12 3v18m4-4-4 4-4-4"/></symbol>
+    <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  </svg>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-logo" src="/assets/proxyfleet-logo.png" alt="" width="36" height="36" />
+      ProxyFleet
+    </div>
+    <div class="nav">
+      <button type="button" class="nav-item active" data-tab="dashboard" aria-current="page" onclick="switchTab('dashboard')"><svg class="icon"><use href="#i-dashboard"></use></svg><span>监控看板</span></button>
+      <button type="button" class="nav-item" data-tab="manage" data-min-role="admin" onclick="switchTab('manage')"><svg class="icon"><use href="#i-edit"></use></svg><span>节点配置</span></button>
+      <button type="button" class="nav-item" data-tab="debug" onclick="switchTab('debug')"><svg class="icon"><use href="#i-activity"></use></svg><span>诊断分析</span></button>
+      <button type="button" class="nav-item" data-tab="operations" onclick="switchTab('operations')"><svg class="icon"><use href="#i-activity"></use></svg><span>运行中心</span></button>
+      <button type="button" class="nav-item" data-tab="logs" onclick="switchTab('logs')"><svg class="icon"><use href="#i-file"></use></svg><span>控制台日志</span></button>
+      <button type="button" class="nav-item" data-tab="settings" data-min-role="admin" onclick="switchTab('settings')"><svg class="icon"><use href="#i-settings"></use></svg><span>系统设置</span></button>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main">
+    <div class="progress-wrapper" id="probeProgress">
+      <div class="progress-bar"><div class="progress-fill" id="probeProgressFill"></div></div>
+      <div class="progress-float">
+        <span style="color:var(--text-main)">探测中: <span id="probeStats">0/0</span></span>
+        <span style="color:var(--success)">成功: <span id="probeSuccess">0</span></span>
+        <span style="color:var(--error)">失败: <span id="probeFail">0</span></span>
+      </div>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <div class="status-indicator">
+          <div class="status-dot"></div>
+          <span id="lastUpdate">系统在线</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span class="badge badge-offline" id="roleBadge" title="当前权限角色">ADMIN</span>
+        <button type="button" class="theme-toggle" id="themeToggleBtn" onclick="toggleTheme()" title="切换主题" data-mode="auto">
+          <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+          <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+          <svg class="icon-auto" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+          <span class="theme-mode-label" id="themeModeLabel">跟随系统</span>
+        </button>
+        <button type="button" class="btn btn-primary" data-min-role="operator" onclick="probeAllNodes()"><svg class="icon"><use href="#i-activity"></use></svg><span>批量探测</span></button>
+        <button type="button" class="btn" data-min-role="operator" id="refreshSubBtn" onclick="refreshSubscription()" style="display:none;"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新订阅</span></button>
+        <button type="button" class="btn" onclick="exportNodes()"><svg class="icon"><use href="#i-download"></use></svg><span>导出配置</span></button>
+        <button type="button" class="btn" onclick="toggleAutoRefresh()" id="autoRefreshBtn"><svg class="icon"><use id="autoRefreshIcon" href="#i-pause"></use></svg><span id="autoRefreshLabel">关闭自动刷新</span></button>
+        <button type="button" class="btn" onclick="refresh()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新</span></button>
+      </div>
+    </header>
+
+    <div class="content">
+      <!-- Dashboard Tab -->
+      <div id="dashboardTab" class="tab-content active">
+        <div class="overview-grid">
+          <div class="stat-panel">
+            <div class="stat-title">总节点数</div>
+            <div class="stat-value" id="totalNodes">0</div>
+            <div class="stat-sub"><span id="subscriptionStatus"></span> <span id="subscriptionTrend"></span></div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">健康在线</div>
+            <div class="stat-value" style="color: var(--success);" id="healthyNodes">0</div>
+            <div class="stat-sub">活跃且就绪</div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">活跃连接数</div>
+            <div class="stat-value" style="color: var(--primary);" id="activeConnections">0</div>
+            <div class="stat-sub">当前建立会话</div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">异常/拉黑</div>
+            <div class="stat-value" style="color: var(--error);" id="blacklistedNodes">0</div>
+            <div class="stat-sub">不可用节点</div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">↑ 上行速率</div>
+            <div class="stat-value" style="color: var(--chart-primary); font-size: 22px;" id="liveUpSpeed">0 B/s</div>
+            <div class="stat-sub" style="color: var(--text-muted);">实时上传</div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">↓ 下行速率</div>
+            <div class="stat-value" style="color: var(--chart-secondary); font-size: 22px;" id="liveDownSpeed">0 B/s</div>
+            <div class="stat-sub" style="color: var(--text-muted);">实时下载</div>
+          </div>
+        </div>
+
+        <div class="charts-grid">
+          <div class="chart-panel">
+            <div class="chart-title">地域连通率 (Region Availability)</div>
+            <div class="chart-container" id="regionChart"></div>
+          </div>
+          <div class="chart-panel">
+            <div class="chart-title">最优节点延迟 (Top Fastest Nodes)</div>
+            <div class="chart-container" id="latencyChart"></div>
+          </div>
+          <div class="chart-panel" id="trafficPanel">
+            <div class="chart-title">实时流量带宽 (Real-time Traffic)</div>
+            <div class="chart-container" id="trafficChart"></div>
+          </div>
+        </div>
+
+        <div class="region-filters" id="regionFilter">
+          <span style="color: var(--text-muted); font-size: 12px; margin-top: 4px;">过滤:</span>
+          <button type="button" class="region-btn active" data-region="all" onclick="filterByRegion('all')">全部</button>
+          <button type="button" class="region-btn" data-region="jp" onclick="filterByRegion('jp')">JP</button>
+          <button type="button" class="region-btn" data-region="kr" onclick="filterByRegion('kr')">KR</button>
+          <button type="button" class="region-btn" data-region="us" onclick="filterByRegion('us')">US</button>
+          <button type="button" class="region-btn" data-region="hk" onclick="filterByRegion('hk')">HK</button>
+          <button type="button" class="region-btn" data-region="tw" onclick="filterByRegion('tw')">TW</button>
+          <button type="button" class="region-btn" data-region="sg" onclick="filterByRegion('sg')">SG</button>
+          <button type="button" class="region-btn" data-region="resident" onclick="filterByRegion('resident')">Resident</button>
+          <button type="button" class="region-btn" data-region="other" onclick="filterByRegion('other')">其他</button>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">节点监控列表</div>
+          </div>
+          <div class="table-toolbar">
+            <div class="table-search">
+              <svg class="icon"><use href="#i-search"></use></svg>
+              <input id="nodeSearch" class="setting-input" type="search" placeholder="搜索名称、标签、地域或端口" oninput="setNodeSearch(this.value)" />
+            </div>
+            <label class="table-page-size">每页
+              <select id="nodePageSize" class="setting-input" onchange="setNodePageSize(this.value)">
+                <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option>
+              </select>
+            </label>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="status" onclick="sortNodeTable('status')">状态<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="region" onclick="sortNodeTable('region')">地域<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="name" onclick="sortNodeTable('name')">名称 (Name/Tag)<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="port" onclick="sortNodeTable('port')">端口<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="latency" onclick="sortNodeTable('latency')">延迟 / 质量<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="connections" onclick="sortNodeTable('connections')">连接<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="failures" onclick="sortNodeTable('failures')">失败<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="nodesTableBody">
+                <!-- Data rendered by JS -->
+              </tbody>
+            </table>
+            <div id="emptyState" style="display:none; text-align:center; padding: 40px; color: var(--text-muted);">暂无数据</div>
+          </div>
+          <div class="pagination" id="nodePagination">
+            <span id="nodePageInfo">0 / 0</span>
+            <button type="button" class="btn btn-sm" id="nodePrevPage" onclick="changeNodePage(-1)" aria-label="上一页"><svg class="icon"><use href="#i-chevron-left"></use></svg></button>
+            <button type="button" class="btn btn-sm" id="nodeNextPage" onclick="changeNodePage(1)" aria-label="下一页"><svg class="icon"><use href="#i-chevron-right"></use></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Manage Tab -->
+      <div id="manageTab" class="tab-content">
+        <div style="display:flex; justify-content:space-between; margin-bottom: 20px;">
+          <div>
+            <h2 style="font-size: 18px; margin-bottom: 4px;">配置管理</h2>
+            <p style="color: var(--text-muted); font-size: 12px;">修改配置后点击上方重载按钮生效</p>
+          </div>
+          <div style="display:flex; gap: 10px;">
+            <button type="button" class="btn btn-primary" onclick="showAddNodeModal()"><svg class="icon"><use href="#i-plus"></use></svg><span>添加节点</span></button>
+            <button type="button" class="btn btn-warning" onclick="triggerReload()" id="reloadBtn"><svg class="icon"><use href="#i-refresh"></use></svg><span>重载核心</span></button>
+          </div>
+        </div>
+
+        <div id="subscriptionWarning" style="display:none; background: var(--warning-bg); border: 1px solid var(--warning); padding: 12px; border-radius: 6px; color: var(--warning); margin-bottom: 16px; font-size: 12px;">
+          <svg class="icon" style="vertical-align:middle; margin-right:6px;"><use href="#i-alert"></use></svg><span>警告：当前使用订阅模式。手动修改配置将在下次订阅刷新时被覆盖。</span>
+        </div>
+
+        <div class="panel">
+          <div class="table-toolbar">
+            <div class="table-search">
+              <svg class="icon"><use href="#i-search"></use></svg>
+              <input id="configNodeSearch" class="setting-input" type="search" placeholder="搜索节点名称、URI、端口或来源" oninput="setConfigNodeSearch(this.value)" />
+            </div>
+            <div class="table-toolbar-actions">
+              <label class="table-page-size">每页
+                <select id="configNodePageSize" class="setting-input" onchange="setConfigNodePageSize(this.value)">
+                  <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option>
+                </select>
+              </label>
+              <button type="button" class="btn btn-sm icon-only" id="configNodesRevealAll" onclick="toggleAllConfigNodeURIs()" aria-label="显示全部 URI" title="显示全部 URI" aria-pressed="false"><svg class="icon"><use href="#i-eye"></use></svg></button>
+            </div>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead><tr><th>名称</th><th>URI</th><th>端口</th><th>来源</th><th>操作</th></tr></thead>
+              <tbody id="configNodesTableBody"></tbody>
+            </table>
+          </div>
+          <div class="pagination">
+            <span id="configNodePageInfo">0 / 0</span>
+            <button type="button" class="btn btn-sm" id="configNodePrevPage" onclick="changeConfigNodePage(-1)" aria-label="上一页"><svg class="icon"><use href="#i-chevron-left"></use></svg></button>
+            <button type="button" class="btn btn-sm" id="configNodeNextPage" onclick="changeConfigNodePage(1)" aria-label="下一页"><svg class="icon"><use href="#i-chevron-right"></use></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Debug Tab -->
+      <div id="debugTab" class="tab-content">
+        <div class="overview-grid">
+          <div class="stat-panel">
+            <div class="stat-title">总调用次数</div>
+            <div class="stat-value" id="debugTotalCalls">0</div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">总成功次数</div>
+            <div class="stat-value" style="color: var(--success);" id="debugTotalSuccess">0</div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">全局成功率</div>
+            <div class="stat-value" style="color: var(--primary);" id="debugSuccessRate">0%</div>
+          </div>
+        </div>
+
+        <div class="charts-grid">
+          <div class="chart-panel">
+            <div class="chart-title">全局质量分数 (Overall Health Score)</div>
+            <div class="chart-container" id="successRateChart"></div>
+          </div>
+          <div class="chart-panel">
+            <div class="chart-title">稳定性掉线排行 (Top Unstable Nodes)</div>
+            <div class="chart-container" id="failureChart"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">节点质量分析</div>
+            <button type="button" class="btn btn-sm btn-danger" data-min-role="operator" onclick="clearAllDiagnostics()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空记录</span></button>
+          </div>
+          <div class="table-toolbar">
+            <div class="table-search">
+              <svg class="icon"><use href="#i-search"></use></svg>
+              <input id="debugNodeSearch" class="setting-input" type="search" placeholder="搜索诊断节点" oninput="setDebugNodeSearch(this.value)" />
+            </div>
+            <label class="table-page-size">每页
+              <select id="debugNodePageSize" class="setting-input" onchange="setDebugNodePageSize(this.value)">
+                <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option>
+              </select>
+            </label>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th><button type="button" class="sort-button" data-sort-table="debug" data-sort-key="name" onclick="sortDebugTable('name')">节点<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="debug" data-sort-key="successRate" onclick="sortDebugTable('successRate')">成功率<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="debug" data-sort-key="calls" onclick="sortDebugTable('calls')">成功 / 失败<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="debug" data-sort-key="connections" onclick="sortDebugTable('connections')">连接<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th>最近调用时间线</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="debugNodesTableBody"></tbody>
+            </table>
+          </div>
+          <div class="pagination">
+            <span id="debugNodePageInfo">0 / 0</span>
+            <button type="button" class="btn btn-sm" id="debugNodePrevPage" onclick="changeDebugNodePage(-1)" aria-label="上一页"><svg class="icon"><use href="#i-chevron-left"></use></svg></button>
+            <button type="button" class="btn btn-sm" id="debugNodeNextPage" onclick="changeDebugNodePage(1)" aria-label="下一页"><svg class="icon"><use href="#i-chevron-right"></use></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Operations Tab -->
+      <div id="operationsTab" class="tab-content">
+        <div class="overview-grid">
+          <div class="stat-panel"><div class="stat-title">探测预算</div><div class="stat-value" id="opsProbeBudget">0 / ∞</div><div class="stat-sub" id="opsProbeWindow">当前小时</div></div>
+          <div class="stat-panel"><div class="stat-title">本轮待探测</div><div class="stat-value" id="opsProbeDue">0</div><div class="stat-sub">自适应队列</div></div>
+          <div class="stat-panel"><div class="stat-title">被动健康跳过</div><div class="stat-value" id="opsPassiveSkipped">0</div><div class="stat-sub">节省主动探测</div></div>
+          <div class="stat-panel"><div class="stat-title">活动告警</div><div class="stat-value" id="opsActiveAlerts">0</div><div class="stat-sub">可用性门槛</div></div>
+        </div>
+        <div class="panel" style="margin-bottom:16px;">
+          <div class="panel-header"><div class="panel-title">指标历史（节点与 P95 延迟）</div><button type="button" class="btn btn-sm" onclick="loadOperations()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新</span></button></div>
+          <div class="chart-container" id="operationsHistoryChart" style="height:320px"></div>
+        </div>
+        <div class="panel" style="margin-bottom:16px;">
+          <div class="panel-header"><div class="panel-title">可用性告警</div></div>
+          <div class="table-container"><table><thead><tr><th>状态</th><th>级别</th><th>消息</th><th>更新时间</th></tr></thead><tbody id="operationsAlertsBody"></tbody></table></div>
+        </div>
+        <div class="panel" id="operationsAuditPanel" data-min-role="admin">
+          <div class="panel-header"><div class="panel-title">管理审计</div></div>
+          <div class="table-container"><table><thead><tr><th>时间</th><th>角色</th><th>方法</th><th>路径</th><th>状态</th><th>来源</th></tr></thead><tbody id="operationsAuditBody"></tbody></table></div>
+        </div>
+      </div>
+
+      <!-- Logs Tab -->
+      <div id="logsTab" class="tab-content">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">控制台日志 (Console Logs)</div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <label style="font-size:13px; color:var(--text-muted); display:flex; align-items:center; gap:6px;"><input type="checkbox" id="autoScrollLogs" checked> 自动滚动</label>
+              <button type="button" class="btn btn-sm btn-danger" data-min-role="operator" onclick="clearConsoleLogs()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空日志</span></button>
+              <button type="button" class="btn btn-sm" onclick="pollLogs()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新</span></button>
+            </div>
+          </div>
+          <div id="consoleLogs" class="console-logs" role="log" aria-live="off" aria-label="控制台日志"></div>
+        </div>
+      </div>
+
+      <!-- Settings Tab -->
+      <div id="settingsTab" class="tab-content">
+        <div style="max-width: 800px; margin: 0 auto;">
+          <div style="font-size: 20px; font-weight: 700; margin-bottom: 24px; color: var(--text-main);">系统设置</div>
+          <div class="panel" id="buildInfoPanel" style="margin-bottom: 16px;">
+            <div class="panel-header">
+              <div class="panel-title">构建信息 (Build Info)</div>
+              <span class="badge badge-offline" id="buildInfoStatus">读取中</span>
+            </div>
+            <div class="build-info-grid">
+              <div class="build-info-item"><div class="build-info-label">版本</div><div class="build-info-value tt-mono" id="buildInfoIdentity">—</div></div>
+              <div class="build-info-item"><div class="build-info-label">目标平台</div><div class="build-info-value tt-mono" id="buildInfoTarget">—</div></div>
+              <div class="build-info-item"><div class="build-info-label">Commit</div><div class="build-info-value tt-mono" id="buildInfoCommit">—</div></div>
+              <div class="build-info-item"><div class="build-info-label">Go</div><div class="build-info-value tt-mono" id="buildInfoGo">—</div></div>
+              <div class="build-info-item" style="grid-column:1/-1"><div class="build-info-label">编译能力</div><div class="capability-list" id="buildInfoCapabilities" aria-live="polite"></div></div>
+              <div class="build-info-item" style="grid-column:1/-1"><div class="build-info-label">可用协议</div><div class="build-info-value tt-mono" id="buildInfoProtocols">—</div></div>
+            </div>
+            <div class="build-info-error" id="buildInfoError" role="alert"></div>
+          </div>
+          <form onsubmit="handleSettingsSave(event)">
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">界面偏好</div></div>
+              <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div class="form-group">
+                  <label for="settingLanguage">界面语言</label>
+                  <select id="settingLanguage" class="setting-input" onchange="setLanguage(this.value)">
+                    <option value="zh-CN">简体中文</option>
+                    <option value="en">English</option>
+                  </select>
+                </div>
+                <div class="form-group" style="justify-content:flex-end;">
+                  <div style="font-size: 11px; color: var(--text-muted);">语言设置保存在当前浏览器并立即生效</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">基础配置</div></div>
+              <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div class="form-group">
+                  <label>运行模式 (Mode)</label>
+                  <select id="settingMode" class="setting-input">
+                    <option value="pool">pool - 单端口负载池</option>
+                    <option value="multi-port">multi-port - 多端口模式</option>
+                    <option value="hybrid">hybrid - 混合模式</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>外部 IP (External IP)</label>
+                  <input type="text" id="settingExternalIP" class="setting-input" placeholder="0.0.0.0" />
+                </div>
+
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">探测策略 (Probe)</div></div>
+              <div class="settings-grid">
+                <div class="form-group">
+                  <label for="settingProbeMode">自动探测模式</label>
+                  <select id="settingProbeMode" class="setting-input" onchange="toggleProbePolicySettings()">
+                    <option value="all">all - 每轮全量</option>
+                    <option value="sample">sample - 分批轮转</option>
+                    <option value="adaptive">adaptive - 自适应预算</option>
+                    <option value="manual">manual - 仅手动</option>
+                  </select>
+                </div>
+                <div class="form-group"><label for="settingProbeTarget">探测目标 (Probe Target)</label><input type="text" id="settingProbeTarget" class="setting-input" placeholder="www.apple.com:80" /></div>
+                <div class="form-group">
+                  <label for="settingProbeInterval">自动探测间隔</label>
+                  <input type="text" id="settingProbeInterval" class="setting-input" placeholder="5m" aria-describedby="settingProbeIntervalHelp settingProbeIntervalError" oninput="clearDurationError('settingProbeInterval', 'settingProbeIntervalError')" onblur="normalizeDurationInput('settingProbeInterval')" />
+                  <div class="field-help" id="settingProbeIntervalHelp">单位支持 ms / s / m / h，可组合填写，例如 30s、5m、1h30m；最短 10s。</div>
+                  <div class="field-error" id="settingProbeIntervalError" role="alert"></div>
+                </div>
+                <div class="form-group">
+                  <label for="settingProbeTimeout">单节点超时</label>
+                  <input type="text" id="settingProbeTimeout" class="setting-input" placeholder="10s" aria-describedby="settingProbeTimeoutHelp settingProbeTimeoutError" oninput="clearDurationError('settingProbeTimeout', 'settingProbeTimeoutError')" onblur="normalizeDurationInput('settingProbeTimeout')" />
+                  <div class="field-help" id="settingProbeTimeoutHelp">例如 500ms 或 10s；最短 100ms。</div>
+                  <div class="field-error" id="settingProbeTimeoutError" role="alert"></div>
+                </div>
+                <div class="form-group"><label for="settingProbeBatchSize">每轮节点数</label><input type="number" id="settingProbeBatchSize" class="setting-input" min="1" max="1000000" placeholder="100" /></div>
+                <div class="form-group"><label for="settingProbeConcurrency">探测并发数</label><input type="number" id="settingProbeConcurrency" class="setting-input" min="1" max="1024" placeholder="32" /></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeHealthyInterval">健康节点复探间隔</label><input type="text" id="settingProbeHealthyInterval" class="setting-input" placeholder="30m" /><div class="field-help">近期有真实流量成功的节点会继续跳过主动探测。</div></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeFailureRetry">失败初始重试</label><input type="text" id="settingProbeFailureRetry" class="setting-input" placeholder="1m" /></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeFailureMax">失败退避上限</label><input type="text" id="settingProbeFailureMax" class="setting-input" placeholder="1h" /></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbePassiveGrace">被动成功宽限期</label><input type="text" id="settingProbePassiveGrace" class="setting-input" placeholder="10m" /></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeMaxPerHour">每小时探测预算</label><input type="number" id="settingProbeMaxPerHour" class="setting-input" min="0" max="10000000" placeholder="600" /><div class="field-help">adaptive 中 0 使用默认值 600；耗尽后等下一小时。</div></div>
+                <div class="form-group adaptive-probe-setting"><label for="settingProbeMaxPerDay">每天探测预算</label><input type="number" id="settingProbeMaxPerDay" class="setting-input" min="0" max="100000000" placeholder="5000" /><div class="field-help">adaptive 中 0 使用默认值 5000；小时与每日限制取更严格者。</div></div>
+                <div class="checkbox-row"><input type="checkbox" id="settingSkipCertVerify" /><label for="settingSkipCertVerify">跳过 SSL 证书验证</label></div>
+                <div class="settings-help">大池建议使用 adaptive：优先失败或过期节点，复用真实流量的被动健康结果，并同时受每小时与每日预算约束；sample 仍按顺序轮转；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。</div>
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">监听配置 (Listener)</div></div>
+              <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div class="form-group"><label>监听地址</label><input type="text" id="settingListenerAddr" class="setting-input" placeholder="0.0.0.0" /></div>
+                <div class="form-group"><label>监听端口</label><input type="number" id="settingListenerPort" class="setting-input" min="1" max="65535" placeholder="7890" /></div>
+                <div class="form-group"><label>用户名 (可选)</label><input type="text" id="settingListenerUser" class="setting-input" /></div>
+                <div class="form-group"><label for="settingListenerPass">密码 (可选)</label><div class="sensitive-field"><input type="password" id="settingListenerPass" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingListenerPass', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div></div>
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">多端口配置 (Multi-Port)</div></div>
+              <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div class="form-group"><label>监听地址</label><input type="text" id="settingMPAddr" class="setting-input" placeholder="0.0.0.0" /></div>
+                <div class="form-group"><label>起始端口</label><input type="number" id="settingMPBasePort" class="setting-input" min="1" max="65535" placeholder="10000" /></div>
+                <div class="form-group"><label>用户名 (可选)</label><input type="text" id="settingMPUser" class="setting-input" /></div>
+                <div class="form-group"><label for="settingMPPass">密码 (可选)</label><div class="sensitive-field"><input type="password" id="settingMPPass" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingMPPass', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div></div>
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">节点池配置 (Pool)</div></div>
+              <div class="settings-grid">
+                <div class="form-group">
+                  <label for="settingPoolMode">调度模式</label>
+                  <select id="settingPoolMode" class="setting-input" onchange="togglePoolStrategySettings()">
+                    <option value="sequential">sequential - 轮询</option>
+                    <option value="random">random - 随机</option>
+                    <option value="balance">balance - 均衡</option>
+                    <option value="latency">latency - 延迟感知</option>
+                    <option value="quality">quality - 综合质量分</option>
+                  </select>
+                </div>
+                <div class="form-group"><label for="settingPoolFailure">故障阈值</label><input type="number" id="settingPoolFailure" class="setting-input" min="1" max="100" placeholder="3" /></div>
+                <div class="form-group"><label for="settingPoolBlacklist">黑名单时长</label><input type="text" id="settingPoolBlacklist" class="setting-input" placeholder="24h" /></div>
+                <div class="form-group"><label for="settingPoolCooldown">临时故障冷却</label><input type="text" id="settingPoolCooldown" class="setting-input" placeholder="1m" /></div>
+                <div class="form-group"><label for="settingPoolRetryAttempts">最大连接尝试次数</label><input type="number" id="settingPoolRetryAttempts" class="setting-input" min="1" max="10" placeholder="3" /></div>
+                <div class="form-group"><label for="settingLatencySamples">延迟模式采样节点数</label><input type="number" id="settingLatencySamples" class="setting-input" min="1" max="32" placeholder="4" /></div>
+                <div class="form-group"><label for="settingLatencyTolerance">延迟均衡容差</label><input type="text" id="settingLatencyTolerance" class="setting-input" placeholder="50ms" /></div>
+                <div class="form-group"><label for="settingStickyTTL">会话保持 TTL</label><input type="text" id="settingStickyTTL" class="setting-input" placeholder="30m" /></div>
+                <div class="form-group"><label for="settingStickyMax">会话保持最大条目</label><input type="number" id="settingStickyMax" class="setting-input" min="1" max="1000000" placeholder="4096" /></div>
+                <div class="checkbox-row"><input type="checkbox" id="settingPoolRetry" onchange="togglePoolStrategySettings()" /><label for="settingPoolRetry">连接失败时切换节点重试</label></div>
+                <div class="checkbox-row"><input type="checkbox" id="settingPoolSticky" onchange="togglePoolStrategySettings()" /><label for="settingPoolSticky">启用有界会话保持</label></div>
+                <div class="checkbox-row"><input type="checkbox" id="settingPoolFailOpen" /><label for="settingPoolFailOpen">全部节点不可用时尝试恢复</label></div>
+                <div class="settings-help">重试和会话保持只应用于统一池入口；每节点独立端口始终固定到对应节点。延迟模式在小样本内选择低延迟节点，并在容差内优先分配给当前连接较少的节点。</div>
+              </div>
+            </div>
+
+            <div id="profileSettingsMount"></div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">管理面板 (Management)</div></div>
+              <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div class="form-group"><label>监听地址</label><input type="text" id="settingMgmtListen" class="setting-input" placeholder="0.0.0.0:8080" /></div>
+                <div class="form-group"><label for="settingMgmtPassword">管理员密码</label><div class="sensitive-field"><input type="password" id="settingMgmtPassword" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingMgmtPassword', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div></div>
+                <div class="form-group"><label for="settingOperatorPassword">运维密码</label><div class="sensitive-field"><input type="password" id="settingOperatorPassword" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingOperatorPassword', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div><div class="field-help">可探测、刷新、清理，但不能修改配置。</div></div>
+                <div class="form-group"><label for="settingViewerPassword">只读密码</label><div class="sensitive-field"><input type="password" id="settingViewerPassword" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingViewerPassword', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div><div class="field-help">只允许查看节点、日志、指标和告警。</div></div>
+                <div class="checkbox-row"><input type="checkbox" id="settingHistoryEnabled" /><label for="settingHistoryEnabled">持久化指标历史</label></div>
+                <div class="form-group"><label for="settingHistoryFile">指标文件</label><input type="text" id="settingHistoryFile" class="setting-input" placeholder="monitor-history.json" /></div>
+                <div class="form-group"><label for="settingHistoryRetention">指标保留时长</label><input type="text" id="settingHistoryRetention" class="setting-input" placeholder="24h" /></div>
+                <div class="form-group"><label for="settingHistoryInterval">指标采样间隔</label><input type="text" id="settingHistoryInterval" class="setting-input" placeholder="1m" /></div>
+                <div class="form-group"><label for="settingAlertMinAvailable">可用节点告警数量</label><input type="number" id="settingAlertMinAvailable" class="setting-input" min="0" placeholder="1" /></div>
+                <div class="form-group"><label for="settingAlertMinRatio">可用节点告警比例</label><input type="number" id="settingAlertMinRatio" class="setting-input" min="0" max="1" step="0.01" placeholder="0.2" /></div>
+                <div class="form-group"><label for="settingAlertCooldown">告警冷却时间</label><input type="text" id="settingAlertCooldown" class="setting-input" placeholder="10m" /></div>
+                <div class="form-group"><label for="settingAuditFile">审计文件</label><input type="text" id="settingAuditFile" class="setting-input" placeholder="audit.log" /></div>
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">GeoIP 地域路由</div></div>
+              <div style="padding: 16px;">
+                <div class="checkbox-grid">
+                  <div class="checkbox-row"><input type="checkbox" id="settingGeoIPEnabled" /><label for="settingGeoIPEnabled">启用 GeoIP 地域路由</label></div>
+                  <div class="checkbox-row"><input type="checkbox" id="settingGeoIPAutoUpdate" /><label for="settingGeoIPAutoUpdate">自动更新数据库</label></div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                  <div class="form-group"><label>数据库路径</label><input type="text" id="settingGeoIPDBPath" class="setting-input" placeholder="./GeoLite2-Country.mmdb" /></div>
+                  <div class="form-group"><label>路由监听地址</label><input type="text" id="settingGeoIPListen" class="setting-input" /></div>
+                  <div class="form-group"><label>路由端口</label><input type="number" id="settingGeoIPPort" class="setting-input" min="1" max="65535" placeholder="1221" /></div>
+                  <div class="form-group"><label>更新间隔</label><input type="text" id="settingGeoIPUpdateInterval" class="setting-input" placeholder="24h" /></div>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted); margin-top: 8px;">首次启用会自动下载 GeoIP 数据库（约 9MB），需重载核心生效</div>
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">日志配置</div></div>
+              <div style="padding: 16px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                  <div class="form-group">
+                    <label>日志输出</label>
+                    <select id="settingLogOutput" class="setting-input" onchange="toggleLogFileSettings()">
+                      <option value="stdout">仅控制台 (stdout)</option>
+                      <option value="file">控制台 + 文件 (stdout + file)</option>
+                    </select>
+                  </div>
+                </div>
+                <div id="logFileSettings" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px;">
+                  <div class="form-group"><label>单文件最大 MB</label><input type="number" id="settingLogMaxSize" class="setting-input" min="1" max="1024" placeholder="50" /></div>
+                  <div class="form-group"><label>保留旧日志个数</label><input type="number" id="settingLogMaxBackups" class="setting-input" min="0" max="100" placeholder="3" /></div>
+                  <div class="form-group"><label>保留天数</label><input type="number" id="settingLogMaxAge" class="setting-input" min="0" max="365" placeholder="7" /></div>
+                  <div class="form-group"><label for="settingLogRotateInterval">定时打包间隔</label><input type="text" id="settingLogRotateInterval" class="setting-input" placeholder="0 / 24h" /></div>
+                  <div class="form-group" style="justify-content:flex-end;">
+                    <label>&nbsp;</label>
+                    <div class="checkbox-row"><input type="checkbox" id="settingLogCompress" /><label for="settingLogCompress">压缩旧日志</label></div>
+                  </div>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted); margin-top: 8px;">日志设置需重启服务生效</div>
+              </div>
+            </div>
+
+            <div class="panel" style="margin-bottom: 16px;">
+              <div class="panel-header"><div class="panel-title">订阅配置</div></div>
+              <div style="padding: 16px;">
+                <div class="checkbox-grid">
+                  <div class="checkbox-row"><input type="checkbox" id="settingSubEnabled" /><label for="settingSubEnabled">启用订阅自动刷新</label></div>
+                  <div class="checkbox-row"><input type="checkbox" id="settingSubAllowPrivate" /><label for="settingSubAllowPrivate">允许访问内网订阅地址（高风险）</label></div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                  <div class="form-group">
+                    <label>刷新间隔</label>
+                    <select id="settingSubInterval" class="setting-input">
+                      <option value="10m">10 分钟</option><option value="30m">30 分钟</option>
+                      <option value="1h">1 小时</option><option value="3h">3 小时</option>
+                      <option value="6h">6 小时</option><option value="12h">12 小时</option>
+                      <option value="24h">24 小时</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="settingSubFetchConcurrency">订阅抓取并发数</label>
+                    <input type="number" id="settingSubFetchConcurrency" class="setting-input" min="1" max="32" placeholder="16" />
+                  </div>
+                  <div class="form-group">
+                    <label for="settingSubNodeFailurePolicy">坏节点处理策略</label>
+                    <select id="settingSubNodeFailurePolicy" class="setting-input">
+                      <option value="skip">skip - 隔离坏节点并继续</option>
+                      <option value="strict">strict - 拒绝整批变更</option>
+                    </select>
+                  </div>
+                  <div class="form-group"><label for="settingSubMaxRemovedRatio">最大自动删除比例</label><input type="number" id="settingSubMaxRemovedRatio" class="setting-input" min="0.01" max="1" step="0.01" placeholder="0.5" /><div class="field-help">超过比例时保存前必须二次确认。</div></div>
+                  <div class="form-group"><label for="settingSubMinAvailableRatio">候选池最小可用比例</label><input type="number" id="settingSubMinAvailableRatio" class="setting-input" min="0" max="1" step="0.01" placeholder="0" /></div>
+                </div>
+                <div class="checkbox-row" style="margin-top:12px"><input type="checkbox" id="settingSubQuarantine" /><label for="settingSubQuarantine">新节点通过候选池预检后再切换（隔离验证）</label></div>
+                <div class="form-group" style="margin-top: 12px;">
+                  <label for="settingSubURLs">订阅链接 (每行一个 URL)</label>
+                  <div class="sensitive-field textarea-field">
+                    <textarea id="settingSubURLs" rows="4" class="setting-input sensitive-textarea masked" placeholder="https://example.com/subscribe?token=xxx" spellcheck="false" style="resize:vertical; font-size:12px;"></textarea>
+                    <button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingSubURLs', this)"><svg class="icon"><use href="#i-eye"></use></svg></button>
+                  </div>
+                </div>
+                <div style="font-size: 11px; color: var(--success); margin-top: 8px;">保存前会先拉取候选并显示新增/删除差异；默认拒绝回环、私网、链路本地和元数据地址</div>
+              </div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 12px; padding: 8px 0 24px;">
+              <button type="submit" class="btn btn-primary" style="padding: 10px 32px; font-size: 14px;"><svg class="icon"><use href="#i-save"></use></svg><span id="settingsSaveLabel">保存配置</span></button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Modals -->
+  <!-- Auth Modal -->
+  <div class="modal-overlay" id="loginOverlay">
+    <div class="modal">
+      <div class="modal-header">身份验证</div>
+      <form onsubmit="handleLogin(event)">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="password">系统密码</label>
+            <div class="sensitive-field"><input type="password" id="password" required placeholder="请输入密码..." /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('password', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div>
+          </div>
+          <div id="loginError" style="color: var(--error); font-size: 12px; display: none;"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary">验证授权</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <!-- Node Edit Modal -->
+  <div class="modal-overlay" id="nodeModalOverlay">
+    <div class="modal">
+      <div class="modal-header" id="nodeModalTitle">节点配置</div>
+      <form onsubmit="handleNodeSubmit(event)">
+        <div class="modal-body">
+          <div class="form-group">
+            <label>节点名称 Name</label>
+            <input type="text" id="nodeName" placeholder="HK-01" />
+          </div>
+          <div class="form-group">
+            <label>节点 URI</label>
+            <input type="text" id="nodeUri" required placeholder="vless://... 或 anytls://..." />
+          </div>
+          <div class="form-group">
+            <label>映射端口 (可选)</label>
+            <input type="number" id="nodePort" placeholder="0" />
+          </div>
+          <input type="hidden" id="nodeEditName" />
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn" onclick="document.getElementById('nodeModalOverlay').classList.remove('show')">取消</button>
+          <button type="submit" class="btn btn-primary" id="nodeSubmitBtn">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Shared destructive-action confirmation -->
+  <div class="modal-overlay" id="confirmOverlay">
+    <div class="modal" id="confirmDialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage" tabindex="-1">
+      <div class="modal-header" id="confirmTitle">确认操作</div>
+      <div class="modal-body"><p class="confirm-copy" id="confirmMessage"></p></div>
+      <div class="modal-footer">
+        <button type="button" class="btn" id="confirmCancel" onclick="resolveConfirmation(false)">取消</button>
+        <button type="button" class="btn btn-danger" id="confirmAccept" onclick="resolveConfirmation(true)">确认删除</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- Full-screen Loading Overlay -->
+  <div id="fullscreenLoading" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.5); backdrop-filter:blur(4px); display:none; align-items:center; justify-content:center;">
+    <div style="background:var(--bg-panel); border:1px solid var(--border); border-radius:12px; padding:32px 48px; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+      <div style="margin-bottom:16px;">
+        <svg width="40" height="40" viewBox="0 0 40 40" style="animation:spin 1s linear infinite;">
+          <circle cx="20" cy="20" r="16" fill="none" stroke="var(--border)" stroke-width="3"/>
+          <circle cx="20" cy="20" r="16" fill="none" stroke="var(--primary)" stroke-width="3" stroke-dasharray="80" stroke-dashoffset="60" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div id="fullscreenLoadingText" style="font-size:15px; font-weight:600; color:var(--text-main);">处理中...</div>
+      <div id="fullscreenLoadingSubtext" style="font-size:12px; color:var(--text-muted); margin-top:6px;"></div>
+    </div>
+  </div>
+
+  <script src="/assets/legacy.js"></script>
+
+</body>
+</html>

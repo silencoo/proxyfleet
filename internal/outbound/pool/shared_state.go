@@ -230,6 +230,10 @@ func (s *sharedMemberState) recordFailure(cause error, threshold int, blacklistD
 }
 
 func (s *sharedMemberState) recordSuccess() {
+	s.recordSuccessWithLatency(0)
+}
+
+func (s *sharedMemberState) recordSuccessWithLatency(latency time.Duration) {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 	if s.closed.Load() {
@@ -251,7 +255,11 @@ func (s *sharedMemberState) recordSuccess() {
 	}
 
 	if entry := s.entry.Load(); entry != nil {
-		entry.RecordSuccess()
+		if latency > 0 {
+			entry.RecordSuccessWithLatency(latency)
+		} else {
+			entry.RecordSuccess()
+		}
 		if hadCooldown {
 			entry.ClearCooldown()
 		}

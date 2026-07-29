@@ -30,6 +30,20 @@ func TestEnsureDefaultFileCreatesLoadableManagementOnlyConfig(t *testing.T) {
 	if !cfg.ManagementEnabled() {
 		t.Fatal("generated config must enable management")
 	}
+	if len(cfg.Management.Password) != 32 {
+		t.Fatalf("generated management password length = %d, want 32", len(cfg.Management.Password))
+	}
+	secondPath := filepath.Join(t.TempDir(), "config.yaml")
+	if _, err := EnsureDefaultFile(secondPath); err != nil {
+		t.Fatalf("create second default config: %v", err)
+	}
+	secondCfg, err := Load(secondPath)
+	if err != nil {
+		t.Fatalf("load second generated config: %v", err)
+	}
+	if secondCfg.Management.Password == cfg.Management.Password {
+		t.Fatal("independent first-run configurations reused the same random password")
+	}
 	if cfg.Management.Listen != "127.0.0.1:9091" {
 		t.Fatalf("management listen = %q, want loopback default", cfg.Management.Listen)
 	}

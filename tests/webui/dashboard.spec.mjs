@@ -51,7 +51,9 @@ async function mockAPI(page) {
         probe_interval: '5m0s',
         probe_timeout: '10s',
         probe_batch_size: 100,
-        listener: {}, multi_port: {}, pool: {}, geoip: {}, log: {},
+        listener: { host: '127.0.0.1', port: 23230, username: 'fleet', password: 'secret-pass' },
+        multi_port: {}, pool: {}, geoip: {}, log: {},
+        profiles: [{ name: 'hk-fast', regions: ['hk'], name_regex: '', protocols: ['vless'], sources: [], min_quality: 80 }],
         management: {
           probe_healthy_interval: '30m0s',
           probe_failure_retry_interval: '1m0s',
@@ -60,6 +62,14 @@ async function mockAPI(page) {
           probe_max_per_hour: 600,
           probe_max_per_day: 5000
         }
+      };
+    } else if (path === '/api/access') {
+      body = {
+        mode: 'pool', host: '127.0.0.1', port: 23230,
+        username: 'fleet', password: 'secret-pass',
+        http_uri: 'http://fleet:secret-pass@127.0.0.1:23230',
+        socks5_uri: 'socks5://fleet:secret-pass@127.0.0.1:23230',
+        profiles: [{ name: 'hk-fast', regions: ['hk'], name_regex: '', protocols: ['vless'], sources: [], min_quality: 80 }]
       };
     } else if (path === '/api/subscription/config') {
       headers = { ETag: '"config-1"' };
@@ -86,7 +96,7 @@ test('keeps all three dashboard charts visible with an empty pool and no traffic
   page.on('console', message => {
     if (message.type() === 'error' && !message.text().includes('Failed to load resource')) consoleErrors.push(message.text());
   });
-  await page.goto('/assets/index.html');
+  await page.goto('/');
 
   const brandLogo = page.locator('.brand-logo');
   await expect(brandLogo).toBeVisible();
@@ -105,7 +115,7 @@ test('keeps all three dashboard charts visible with an empty pool and no traffic
 });
 
 test('shows release capabilities and the new cost/safety controls', async ({ page }) => {
-  await page.goto('/assets/index.html');
+  await page.goto('/');
   await page.locator('.nav-item[data-tab="settings"]').click();
 
   await expect(page.locator('#buildInfoIdentity')).toHaveText('ProxyFleet v3.2.0-test');
@@ -113,4 +123,23 @@ test('shows release capabilities and the new cost/safety controls', async ({ pag
   await expect(page.locator('#buildInfoCapabilities')).toContainText('QUIC ON');
   await expect(page.locator('#settingProbeMaxPerDay')).toHaveValue('5000');
   await expect(page.locator('#settingSubNodeFailurePolicy')).toHaveValue('skip');
+});
+
+
+test('edits named profiles and generates profile-aware proxy commands', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.nav-item[data-tab="settings"]').click();
+
+  const mount = page.locator('#profileSettingsMount');
+  await expect(mount.getByText('Named Profiles')).toBeVisible();
+  await expect(mount.locator('[data-profile-row]')).toHaveCount(1);
+  await expect(mount.locator('[data-field="name"]')).toHaveValue('hk-fast');
+  await expect(mount.locator('[data-access-status]')).toHaveText('就绪');
+
+  await mount.locator('[data-access-profile]').selectOption('hk-fast');
+  await expect(mount.locator('[data-access-uri]')).toHaveValue('http://fleet%40hk-fast:secret-pass@127.0.0.1:23230');
+  await expect(mount.locator('[data-access-curl]')).toHaveValue(/curl --proxy/);
+
+  await mount.locator('[data-add-profile]').click();
+  await expect(mount.locator('[data-profile-row]')).toHaveCount(2);
 });

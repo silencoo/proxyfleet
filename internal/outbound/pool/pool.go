@@ -54,6 +54,7 @@ type Options struct {
 	LatencyTolerance  time.Duration
 	Sticky            StickyOptions
 	Metadata          map[string]MemberMeta
+	Profiles          []ProfileOptions
 	// FailOpen retries blacklisted nodes when the entire shared pool is down.
 	// It is opt-in because silently reviving known-bad nodes is unsafe for
 	// crawlers that require predictable failure handling.
@@ -84,6 +85,8 @@ type MemberMeta struct {
 	Name          string
 	URI           string
 	Mode          string
+	Protocol      string
+	Source        string
 	ListenAddress string
 	Port          uint16
 	Username      string
@@ -96,6 +99,16 @@ type MemberMeta struct {
 // Register wires the pool outbound into the registry.
 func Register(registry *outbound.Registry) {
 	outbound.Register[Options](registry, Type, newPool)
+}
+
+// ProfileOptions configures a named view of the shared pool.
+type ProfileOptions struct {
+	Name       string
+	Regions    []string
+	NameRegex  string
+	Protocols  []string
+	Sources    []string
+	MinQuality float64
 }
 
 type memberState struct {
@@ -158,6 +171,7 @@ type poolOutbound struct {
 	rngMu       sync.Mutex // protects rng for random mode
 	monitor     *monitor.Manager
 	sticky      *stickyCache
+	profiles    map[string]*compiledProfile
 	closed      atomic.Bool
 	initialized atomic.Bool
 }
@@ -172,6 +186,10 @@ func newPool(ctx context.Context, _ adapter.Router, logger singlog.ContextLogger
 	}
 	monitorMgr := monitor.FromContext(ctx)
 	normalized := normalizeOptions(options)
+	profiles, err := compileProfiles(normalized.Profiles, normalized.Metadata)
+	if err != nil {
+		return nil, err
+	}
 	p := &poolOutbound{
 		// Members are resolved from the already-populated runtime manager. Do not
 		// expose them as manager dependencies: replacement pools otherwise leave
@@ -185,6 +203,7 @@ func newPool(ctx context.Context, _ adapter.Router, logger singlog.ContextLogger
 		mode:        normalized.Mode,
 		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
 		monitor:     monitorMgr,
+		profiles:    profiles,
 		memberByTag: make(map[string]*memberState, len(normalized.Members)),
 		eligibleTCP: newMemberSet(len(normalized.Members)),
 		eligibleUDP: newMemberSet(len(normalized.Members)),
@@ -387,9 +406,10 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 		tried = make(map[string]struct{}, maxAttempts)
 	}
 	stickyKey := p.stickyKeyFromContext(ctx)
+	targetKey := destinationLatencyKey(destination)
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		member, err := p.pickMemberExcluding(ctx, network, tried, stickyKey)
+		member, err := p.pickMemberExcludingForTarget(ctx, network, tried, stickyKey, targetKey)
 		if err != nil {
 			if lastErr != nil {
 				return nil, fmt.Errorf("proxy dial failed after %d attempt(s): %w", attempt-1, lastErr)
@@ -399,6 +419,7 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 		if !p.admitDial(member) {
 			return nil, errPoolClosed
 		}
+		dialStarted := time.Now()
 		conn, err := member.outbound.DialContext(ctx, network, destination)
 		if err == nil {
 			if p.closed.Load() {
@@ -406,7 +427,7 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 				p.decActive(member)
 				return nil, errPoolClosed
 			}
-			p.recordSuccess(member)
+			p.recordSuccess(member, targetKey, time.Since(dialStarted))
 			return p.wrapConn(conn, member), nil
 		}
 		p.decActive(member)
@@ -438,9 +459,10 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 		tried = make(map[string]struct{}, maxAttempts)
 	}
 	stickyKey := p.stickyKeyFromContext(ctx)
+	targetKey := destinationLatencyKey(destination)
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		member, err := p.pickMemberExcluding(ctx, N.NetworkUDP, tried, stickyKey)
+		member, err := p.pickMemberExcludingForTarget(ctx, N.NetworkUDP, tried, stickyKey, targetKey)
 		if err != nil {
 			if lastErr != nil {
 				return nil, fmt.Errorf("proxy packet dial failed after %d attempt(s): %w", attempt-1, lastErr)
@@ -450,6 +472,7 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 		if !p.admitDial(member) {
 			return nil, errPoolClosed
 		}
+		dialStarted := time.Now()
 		conn, err := member.outbound.ListenPacket(ctx, destination)
 		if err == nil {
 			if p.closed.Load() {
@@ -457,7 +480,7 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 				p.decActive(member)
 				return nil, errPoolClosed
 			}
-			p.recordSuccess(member)
+			p.recordSuccess(member, targetKey, time.Since(dialStarted))
 			return p.wrapPacketConn(conn, member), nil
 		}
 		p.decActive(member)
@@ -484,6 +507,10 @@ func (p *poolOutbound) pickMember(ctx context.Context, network string) (*memberS
 }
 
 func (p *poolOutbound) pickMemberExcluding(ctx context.Context, network string, tried map[string]struct{}, stickyKey string) (*memberState, error) {
+	return p.pickMemberExcludingForTarget(ctx, network, tried, stickyKey, "")
+}
+
+func (p *poolOutbound) pickMemberExcludingForTarget(ctx context.Context, network string, tried map[string]struct{}, stickyKey, targetKey string) (*memberState, error) {
 	if !p.initialized.Load() {
 		p.mu.Lock()
 		if err := p.initializeMembersLocked(); err != nil {
@@ -501,24 +528,25 @@ func (p *poolOutbound) pickMemberExcluding(ctx context.Context, network string, 
 			return nil, E.New("dedicated proxy member not found: ", dedicatedTag)
 		}
 	}
+	profile := p.profileFromContext(ctx)
 	if stickyKey != "" && p.sticky != nil {
 		if tag, ok := p.sticky.get(stickyKey, time.Now()); ok {
 			member := p.memberByTag[tag]
 			_, wasTried := tried[tag]
-			if !wasTried && p.memberEligible(member, network) {
+			if !wasTried && p.memberEligibleForProfile(member, network, profile) {
 				return member, nil
 			}
 			p.sticky.delete(stickyKey)
 		}
 	}
-	if member := p.selectHealthyMemberExcluding(network, tried); member != nil {
+	if member := p.selectHealthyMemberExcludingForTarget(network, tried, targetKey, profile); member != nil {
 		if stickyKey != "" && p.sticky != nil {
 			p.sticky.set(stickyKey, member.tag, time.Now())
 		}
 		return member, nil
 	}
 	if p.releaseIfAllBlacklisted() {
-		if member := p.selectHealthyMemberExcluding(network, tried); member != nil {
+		if member := p.selectHealthyMemberExcludingForTarget(network, tried, targetKey, profile); member != nil {
 			if stickyKey != "" && p.sticky != nil {
 				p.sticky.set(stickyKey, member.tag, time.Now())
 			}
@@ -533,11 +561,15 @@ func (p *poolOutbound) selectHealthyMember(network string) *memberState {
 }
 
 func (p *poolOutbound) selectHealthyMemberExcluding(network string, tried map[string]struct{}) *memberState {
+	return p.selectHealthyMemberExcludingForTarget(network, tried, "", nil)
+}
+
+func (p *poolOutbound) selectHealthyMemberExcludingForTarget(network string, tried map[string]struct{}, targetKey string, profile *compiledProfile) *memberState {
 	// The event-maintained index is authoritative in steady state. The atomic
 	// check closes the tiny transition window between setting shared blacklist
 	// state and delivering its removal callback, without scanning the pool.
 	for attempt := 0; attempt < 2; attempt++ {
-		member := p.selectEligibleMemberExcluding(network, tried)
+		member := p.selectEligibleMemberExcludingForTarget(network, tried, targetKey, profile)
 		if member == nil {
 			return nil
 		}
@@ -586,6 +618,10 @@ func (p *poolOutbound) stickyKeyFromContext(ctx context.Context) string {
 }
 
 func (p *poolOutbound) memberEligible(member *memberState, network string) bool {
+	return p.memberEligibleForProfile(member, network, nil)
+}
+
+func (p *poolOutbound) memberEligibleForProfile(member *memberState, network string, profile *compiledProfile) bool {
 	if member == nil || !supportsMemberNetwork(member, network) {
 		return false
 	}
@@ -599,7 +635,7 @@ func (p *poolOutbound) memberEligible(member *memberState, network string) bool 
 	}
 	_, ok := set.index[member]
 	p.eligibleMu.RUnlock()
-	return ok
+	return ok && profileAllowsMember(profile, member)
 }
 
 func supportsMemberNetwork(member *memberState, network string) bool {
@@ -654,6 +690,10 @@ func (p *poolOutbound) selectEligibleMember(network string) *memberState {
 }
 
 func (p *poolOutbound) selectEligibleMemberExcluding(network string, tried map[string]struct{}) *memberState {
+	return p.selectEligibleMemberExcludingForTarget(network, tried, "", nil)
+}
+
+func (p *poolOutbound) selectEligibleMemberExcludingForTarget(network string, tried map[string]struct{}, targetKey string, profile *compiledProfile) *memberState {
 	p.eligibleMu.RLock()
 	candidates := p.eligibleTCP.items
 	if network == N.NetworkUDP {
@@ -668,7 +708,7 @@ func (p *poolOutbound) selectEligibleMemberExcluding(network string, tried map[s
 			return false
 		}
 		_, excluded := tried[member.tag]
-		return !excluded
+		return !excluded && profileAllowsMember(profile, member)
 	}
 	var selected *memberState
 	switch p.mode {
@@ -686,7 +726,7 @@ func (p *poolOutbound) selectEligibleMemberExcluding(network string, tried map[s
 	case modeBalance:
 		selected = p.selectBalancedCandidate(candidates, eligible)
 	case modeLatency:
-		selected = p.selectLatencyCandidate(candidates, eligible)
+		selected = p.selectLatencyCandidateForTarget(candidates, eligible, targetKey)
 	case modeQuality:
 		selected = p.selectQualityCandidate(candidates, eligible)
 	default:
@@ -733,6 +773,10 @@ func (p *poolOutbound) selectBalancedCandidate(candidates []*memberState, eligib
 // fastest node. Candidates within the configured latency tolerance are
 // balanced by active connection count.
 func (p *poolOutbound) selectLatencyCandidate(candidates []*memberState, eligible func(*memberState) bool) *memberState {
+	return p.selectLatencyCandidateForTarget(candidates, eligible, "")
+}
+
+func (p *poolOutbound) selectLatencyCandidateForTarget(candidates []*memberState, eligible func(*memberState) bool, targetKey string) *memberState {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -754,7 +798,7 @@ func (p *poolOutbound) selectLatencyCandidate(candidates []*memberState, eligibl
 			continue
 		}
 		sampleSize--
-		if betterLatencyCandidate(candidate, best, p.options.LatencyTolerance) {
+		if betterLatencyCandidateForTarget(candidate, best, p.options.LatencyTolerance, targetKey) {
 			best = candidate
 		}
 	}
@@ -799,14 +843,18 @@ func memberQualityScore(member *memberState) float64 {
 	return member.entry.QualityScore()
 }
 func betterLatencyCandidate(candidate, current *memberState, tolerance time.Duration) bool {
+	return betterLatencyCandidateForTarget(candidate, current, tolerance, "")
+}
+
+func betterLatencyCandidateForTarget(candidate, current *memberState, tolerance time.Duration, targetKey string) bool {
 	if candidate == nil {
 		return false
 	}
 	if current == nil {
 		return true
 	}
-	candidateLatency := memberLatency(candidate)
-	currentLatency := memberLatency(current)
+	candidateLatency := memberLatencyForTarget(candidate, targetKey)
+	currentLatency := memberLatencyForTarget(current, targetKey)
 	if candidateLatency <= 0 && currentLatency > 0 {
 		return false
 	}
@@ -828,6 +876,15 @@ func betterLatencyCandidate(candidate, current *memberState, tolerance time.Dura
 }
 
 func memberLatency(member *memberState) time.Duration {
+	return memberLatencyForTarget(member, "")
+}
+
+func memberLatencyForTarget(member *memberState, targetKey string) time.Duration {
+	if member != nil && targetKey != "" {
+		if latency := domainLatency(member.tag, targetKey); latency > 0 {
+			return latency
+		}
+	}
 	if member == nil || member.entry == nil {
 		return 0
 	}
@@ -889,14 +946,17 @@ func (p *poolOutbound) recordProbeFailure(member *memberState, cause error) {
 	}
 }
 
-func (p *poolOutbound) recordSuccess(member *memberState) {
+func (p *poolOutbound) recordSuccess(member *memberState, targetKey string, latency time.Duration) {
 	p.healthMu.RLock()
 	defer p.healthMu.RUnlock()
 	if p.closed.Load() {
 		return
 	}
 	if member.shared != nil {
-		member.shared.recordSuccess()
+		member.shared.recordSuccessWithLatency(latency)
+	}
+	if member != nil && targetKey != "" && latency > 0 {
+		recordDomainLatency(member.tag, targetKey, latency)
 	}
 }
 

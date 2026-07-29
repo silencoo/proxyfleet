@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const host = '127.0.0.1';
 const port = 4173;
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(scriptDir, '../../internal/monitor');
+const root = path.resolve(scriptDir, '../../webui/dist');
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
@@ -18,7 +18,7 @@ const contentTypes = new Map([
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url || '/', `http://${host}:${port}`);
-    const requestPath = url.pathname === '/' ? '/assets/index.html' : decodeURIComponent(url.pathname);
+    const requestPath = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname);
     const target = path.resolve(root, `.${requestPath}`);
     const relative = path.relative(root, target);
     if (relative.startsWith('..') || path.isAbsolute(relative)) {

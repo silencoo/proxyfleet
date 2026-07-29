@@ -204,11 +204,7 @@ func TestProbePolicyDurationValidation(t *testing.T) {
 }
 
 func TestEmbeddedWebUIExposesRequestedManagementControls(t *testing.T) {
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	html := string(data)
+	html := readWebUIBundle(t)
 	for _, required := range []string{
 		`id="configNodesRevealAll"`,
 		`function toggleConfigNodeURI(id)`,

@@ -25,10 +25,16 @@ func main() {
 	var configPath string
 	var showVersion bool
 	var showVersionJSON bool
+	var showThirdPartyNotices bool
 	flag.StringVar(&configPath, "config", "config.yaml", "path to config file")
 	flag.BoolVar(&showVersion, "version", false, "print build version and capabilities")
 	flag.BoolVar(&showVersionJSON, "version-json", false, "print build information as JSON")
+	flag.BoolVar(&showThirdPartyNotices, "third-party-notices", false, "print third-party license notices")
 	flag.Parse()
+	if showThirdPartyNotices {
+		fmt.Print(buildinfo.ThirdPartyNotices)
+		return
+	}
 	if showVersion || showVersionJSON {
 		info := buildinfo.Current()
 		if showVersionJSON {
@@ -46,12 +52,14 @@ func main() {
 		return
 	}
 
-	resolvedConfigPath, created, err := prepareConfigFile(configPath)
+	resolvedConfigPath, bootstrap, err := prepareConfigFile(configPath)
 	if err != nil {
 		log.Fatalf("prepare config: %v", err)
 	}
-	if created {
+	if bootstrap.Created {
 		log.Printf("Created default config file: %s", resolvedConfigPath)
+		log.Printf("🔐 Generated one-time management password: %s", bootstrap.ManagementPassword)
+		log.Printf("⚠️  Change the generated management password after your first login. It will not be printed again.")
 	}
 	log.Printf("Using config file: %s", resolvedConfigPath)
 	configPath = resolvedConfigPath
@@ -84,16 +92,16 @@ func main() {
 	}
 }
 
-func prepareConfigFile(path string) (string, bool, error) {
+func prepareConfigFile(path string) (string, config.BootstrapResult, error) {
 	resolvedPath, err := filepath.Abs(path)
 	if err != nil {
-		return "", false, fmt.Errorf("resolve config path: %w", err)
+		return "", config.BootstrapResult{}, fmt.Errorf("resolve config path: %w", err)
 	}
-	created, err := config.EnsureDefaultFile(resolvedPath)
+	result, err := config.EnsureDefaultFileWithResult(resolvedPath)
 	if err != nil {
-		return "", false, err
+		return "", config.BootstrapResult{}, err
 	}
-	return resolvedPath, created, nil
+	return resolvedPath, result, nil
 }
 
 func setupLogging(cfg *config.Config) func() {

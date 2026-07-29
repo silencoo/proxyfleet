@@ -14,6 +14,13 @@ func (c *Config) Clone() *Config {
 	clone := *c
 	clone.Nodes = append([]NodeConfig(nil), c.Nodes...)
 	clone.Subscriptions = append([]string(nil), c.Subscriptions...)
+	clone.Profiles = make([]ProfileConfig, len(c.Profiles))
+	for index := range c.Profiles {
+		clone.Profiles[index] = c.Profiles[index]
+		clone.Profiles[index].Regions = append([]string(nil), c.Profiles[index].Regions...)
+		clone.Profiles[index].Protocols = append([]string(nil), c.Profiles[index].Protocols...)
+		clone.Profiles[index].Sources = append([]string(nil), c.Profiles[index].Sources...)
+	}
 	clone.Pool.RetryEnabled = cloneBool(c.Pool.RetryEnabled)
 	clone.Management.Enabled = cloneBool(c.Management.Enabled)
 	clone.filePath = c.filePath

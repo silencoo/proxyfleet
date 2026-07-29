@@ -1,11 +1,36 @@
 package monitor
 
 import (
+	iofs "io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"easy_proxies/webui"
 )
+
+func readWebUIBundle(t testing.TB) string {
+	t.Helper()
+	names := []string{"index.html", "assets/legacy.js"}
+	for _, pattern := range []string{"assets/index-*.js", "assets/index-*.css"} {
+		matches, err := iofs.Glob(webui.Files(), pattern)
+		if err != nil {
+			t.Fatalf("glob WebUI bundle: %v", err)
+		}
+		names = append(names, matches...)
+	}
+	var bundle strings.Builder
+	for _, name := range names {
+		data, err := webui.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read WebUI asset %s: %v", name, err)
+		}
+		bundle.Write(data)
+		bundle.WriteByte('\n')
+	}
+	return bundle.String()
+}
 
 func TestIndexForbidsEmbedding(t *testing.T) {
 	server := &Server{}
@@ -24,11 +49,7 @@ func TestIndexForbidsEmbedding(t *testing.T) {
 }
 
 func TestEmbeddedWebUIUsesBundledECharts(t *testing.T) {
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		t.Fatalf("read embedded WebUI: %v", err)
-	}
-	html := string(data)
+	html := readWebUIBundle(t)
 	if !strings.Contains(html, `<script src="/assets/echarts.min.js"></script>`) {
 		t.Fatal("embedded WebUI does not load the bundled ECharts asset")
 	}
@@ -51,11 +72,7 @@ func TestEmbeddedWebUIUsesBundledECharts(t *testing.T) {
 }
 
 func TestEmbeddedWebUIUsesProxyFleetLogo(t *testing.T) {
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		t.Fatalf("read embedded WebUI: %v", err)
-	}
-	html := string(data)
+	html := readWebUIBundle(t)
 	for _, value := range []string{
 		`<link rel="icon" type="image/png" href="/assets/proxyfleet-logo.png" />`,
 		`<img class="brand-logo" src="/assets/proxyfleet-logo.png" alt="" width="36" height="36" />`,
@@ -66,7 +83,7 @@ func TestEmbeddedWebUIUsesProxyFleetLogo(t *testing.T) {
 		}
 	}
 
-	logo, err := embeddedFS.ReadFile("assets/proxyfleet-logo.png")
+	logo, err := webui.ReadFile("assets/proxyfleet-logo.png")
 	if err != nil {
 		t.Fatalf("read embedded ProxyFleet logo: %v", err)
 	}
@@ -89,20 +106,16 @@ func TestEmbeddedWebUIUsesProxyFleetLogo(t *testing.T) {
 }
 
 func TestEmbeddedWebUIUsesReadableLocalFontStack(t *testing.T) {
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		t.Fatalf("read embedded WebUI: %v", err)
-	}
-	html := string(data)
+	html := readWebUIBundle(t)
 
 	required := []string{
 		`--font-ui: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei UI"`,
 		`--font-mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono"`,
 		`font-size: 14px;`,
-		`line-height: 1.5;`,
-		`text-rendering: optimizeLegibility;`,
-		`button, input, select, textarea { font-family: var(--font-ui); }`,
-		`.sensitive-textarea { font-family: var(--font-mono); }`,
+		`line-height:1.5`,
+		`text-rendering:optimizeLegibility`,
+		`button,input,select,textarea{font-family:var(--font-ui)}`,
+		`.sensitive-textarea{font-family:var(--font-mono)}`,
 		`const CHART_FONT_FAMILY = '"Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei UI"`,
 	}
 	for _, value := range required {
@@ -115,11 +128,7 @@ func TestEmbeddedWebUIUsesReadableLocalFontStack(t *testing.T) {
 	}
 }
 func TestEmbeddedWebUIHasMonochromeIconsAndLanguageSwitcher(t *testing.T) {
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		t.Fatalf("read embedded WebUI: %v", err)
-	}
-	html := string(data)
+	html := readWebUIBundle(t)
 
 	required := []string{
 		`--bg-base: #090909`,
@@ -151,11 +160,7 @@ func TestEmbeddedWebUIHasMonochromeIconsAndLanguageSwitcher(t *testing.T) {
 }
 
 func TestEmbeddedWebUIHasScalableNodeOperations(t *testing.T) {
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		t.Fatalf("read embedded WebUI: %v", err)
-	}
-	html := string(data)
+	html := readWebUIBundle(t)
 
 	required := []string{
 		`id="nodeSearch"`,
@@ -220,11 +225,7 @@ func TestEmbeddedWebUIHasScalableNodeOperations(t *testing.T) {
 }
 
 func TestEmbeddedWebUIExposesAdaptivePoolSettings(t *testing.T) {
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		t.Fatalf("read embedded WebUI: %v", err)
-	}
-	html := string(data)
+	html := readWebUIBundle(t)
 	required := []string{
 		`value="latency"`,
 		`id="settingPoolRetry"`,
@@ -244,11 +245,7 @@ func TestEmbeddedWebUIExposesAdaptivePoolSettings(t *testing.T) {
 }
 
 func TestEmbeddedWebUIExposesInputConcurrencySettings(t *testing.T) {
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		t.Fatalf("read embedded WebUI: %v", err)
-	}
-	html := string(data)
+	html := readWebUIBundle(t)
 	for _, value := range []string{
 		`id="settingProbeConcurrency"`,
 		`id="settingSubFetchConcurrency"`,
@@ -264,11 +261,7 @@ func TestEmbeddedWebUIExposesInputConcurrencySettings(t *testing.T) {
 	}
 }
 func TestEmbeddedWebUIExposesP0P1P2Operations(t *testing.T) {
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		t.Fatalf("read embedded WebUI: %v", err)
-	}
-	html := string(data)
+	html := readWebUIBundle(t)
 	for _, value := range []string{
 		`value="adaptive"`, `value="quality"`, `id="settingProbeMaxPerHour"`, `id="settingProbeMaxPerDay"`,
 		`id="operationsTab"`, `id="operationsHistoryChart"`, `fetch('/api/metrics/history?limit=720')`,

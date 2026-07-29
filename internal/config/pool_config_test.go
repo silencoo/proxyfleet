@@ -21,6 +21,39 @@ func TestNormalizePoolConfigAppliesAdaptiveDefaults(t *testing.T) {
 	}
 }
 
+func TestNormalizeProfilesCanonicalizesFiltersAndRejectsInvalidConfiguration(t *testing.T) {
+	cfg := &Config{
+		Mode:     "pool",
+		Listener: ListenerConfig{Username: "fleet", Password: "secret"},
+		Profiles: []ProfileConfig{{
+			Name: " HK-Fast ", Regions: []string{"HK", " hk ", "SG"},
+			Protocols: []string{"VLESS"}, Sources: []string{"Subscription"},
+			NameRegex: "(?i)premium", MinQuality: 75,
+		}},
+	}
+	if err := cfg.NormalizeProfiles(); err != nil {
+		t.Fatalf("valid profiles rejected: %v", err)
+	}
+	profile := cfg.Profiles[0]
+	if profile.Name != "hk-fast" || len(profile.Regions) != 2 || profile.Regions[0] != "hk" || profile.Protocols[0] != "vless" || profile.Sources[0] != "subscription" {
+		t.Fatalf("profiles were not canonicalized: %#v", profile)
+	}
+
+	cfg.Profiles = []ProfileConfig{{Name: "bad", NameRegex: "["}}
+	if err := cfg.NormalizeProfiles(); err == nil {
+		t.Fatal("invalid profile regex was accepted")
+	}
+	cfg.Profiles = []ProfileConfig{{Name: "same"}, {Name: "SAME"}}
+	if err := cfg.NormalizeProfiles(); err == nil {
+		t.Fatal("duplicate profile names were accepted")
+	}
+	cfg.Listener.Password = ""
+	cfg.Profiles = []ProfileConfig{{Name: "valid"}}
+	if err := cfg.NormalizeProfiles(); err == nil {
+		t.Fatal("profiles without unified listener authentication were accepted")
+	}
+}
+
 func TestNormalizePoolConfigAcceptsRoundRobinAliasAndRejectsUnknown(t *testing.T) {
 	cfg := &Config{Pool: PoolConfig{Mode: "round-robin"}}
 	if err := cfg.normalizePoolConfig(); err != nil || cfg.Pool.Mode != "sequential" {

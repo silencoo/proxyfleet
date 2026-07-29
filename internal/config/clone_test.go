@@ -10,6 +10,7 @@ func TestConfigCloneIsolatesMutableFields(t *testing.T) {
 		Subscriptions: []string{
 			"https://example.test/subscription",
 		},
+		Profiles:   []ProfileConfig{{Name: "hk", Regions: []string{"hk"}, Protocols: []string{"vless"}, Sources: []string{"subscription"}}},
 		Pool:       PoolConfig{RetryEnabled: &retryEnabled},
 		Management: ManagementConfig{Enabled: &managementEnabled},
 		filePath:   "config.yaml",
@@ -25,6 +26,9 @@ func TestConfigCloneIsolatesMutableFields(t *testing.T) {
 
 	clone.Nodes[0].Name = "clone-node"
 	clone.Subscriptions[0] = "https://clone.test/subscription"
+	clone.Profiles[0].Regions[0] = "sg"
+	clone.Profiles[0].Protocols[0] = "trojan"
+	clone.Profiles[0].Sources[0] = "inline"
 	*clone.Pool.RetryEnabled = false
 	*clone.Management.Enabled = true
 	if original.Nodes[0].Name != "first" {
@@ -32,6 +36,9 @@ func TestConfigCloneIsolatesMutableFields(t *testing.T) {
 	}
 	if original.Subscriptions[0] != "https://example.test/subscription" {
 		t.Fatalf("clone subscription mutation reached original: %q", original.Subscriptions[0])
+	}
+	if original.Profiles[0].Regions[0] != "hk" || original.Profiles[0].Protocols[0] != "vless" || original.Profiles[0].Sources[0] != "subscription" {
+		t.Fatalf("clone profile mutation reached original: %#v", original.Profiles[0])
 	}
 	if !*original.Pool.RetryEnabled {
 		t.Fatal("clone retry pointer mutation reached original")

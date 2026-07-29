@@ -74,7 +74,19 @@ pool:
     ttl: 30m
     max_entries: 4096
   # 失败计数、黑名单和测活结果的重启持久化文件（相对 config.yaml）
+  # Legacy YAML is imported once when runtime-state.db is empty.
   health_state_file: health-state.yaml
+  runtime_state_file: runtime-state.db
+
+# 命名子池（pool / hybrid）。连接用户名为 listener.username@profile 名称，密码不变。
+# 过滤视图在池构建时预计算，最低质量分会在选择时动态检查。
+profiles:
+  - name: hk-fast
+    regions: [hk]
+    protocols: [vless, hysteria2]
+    sources: [subscription]
+    name_regex: "(?i)premium"
+    min_quality: 80
 
 # ───────────────────────────────────────────────────────────────
 # 多端口模式配置（multi-port / hybrid 模式使用）

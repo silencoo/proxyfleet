@@ -20,6 +20,9 @@ logs/
 # Runtime state
 data/
 *.lock
+*.db
+*.db-wal
+*.db-shm
 
 # IDE and editor
 .idea/

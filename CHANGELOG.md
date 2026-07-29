@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Secure first run**: Fresh starts generate a cryptographically random administrator password, persist it with the new loopback-only config, and print it once with a change warning
+- **Named pool Profiles**: Precomputed region/protocol/source/name views with dynamic quality thresholds, selected through `base@profile` authentication
+- **Access Assistant**: Administrator-only HTTP/SOCKS5 URI and curl generation with one-click copy controls
+- **SQLite runtime state**: WAL-backed transactional health, blacklist/cooldown, monitor, and bounded target-latency persistence with one-time legacy YAML migration
+- **Target-aware passive latency**: Successful real traffic feeds per-domain EWMA scheduling without additional probe traffic
+- **Modular WebUI build**: Vite/TypeScript source modules and reproducible production assets embedded into the single executable
 - **Log Rotation**: Configurable log file rotation with size limits, backup count, and compression
   - New `log` section in config with `output`, `file`, `max_size`, `max_backups`, `max_age`, `compress` options
   - Uses lumberjack for automatic log rotation

@@ -68,6 +68,12 @@ jobs:
       - name: Install WebUI browser test dependencies
         run: npm ci
 
+      - name: Type-check and build embedded WebUI
+        run: npm run check:webui && npm run build:webui
+
+      - name: Verify embedded WebUI is current
+        run: git diff --exit-code -- webui/dist
+
       - name: Run Chromium WebUI regression tests
         run: npx playwright install --with-deps chromium && npm run test:e2e
 

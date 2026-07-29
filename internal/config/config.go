@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ type Config struct {
 	GeoIP               GeoIPConfig               `yaml:"geoip"`
 	Log                 LogConfig                 `yaml:"log"`
 	Nodes               []NodeConfig              `yaml:"nodes"`
+	Profiles            []ProfileConfig           `yaml:"profiles,omitempty"`
 	NodesFile           string                    `yaml:"nodes_file"`    // 节点文件路径，每行一个 URI
 	Subscriptions       []string                  `yaml:"subscriptions"` // 订阅链接列表
 	ExternalIP          string                    `yaml:"external_ip"`   // 外部 IP 地址，用于导出时替换 0.0.0.0
@@ -83,12 +85,24 @@ type PoolConfig struct {
 	BlacklistDuration time.Duration `yaml:"blacklist_duration"`
 	FailOpen          bool          `yaml:"fail_open,omitempty"`
 	HealthStateFile   string        `yaml:"health_state_file,omitempty"`
+	RuntimeStateFile  string        `yaml:"runtime_state_file,omitempty"`
 	RetryEnabled      *bool         `yaml:"retry_enabled,omitempty"`
 	RetryAttempts     int           `yaml:"retry_attempts,omitempty"`
 	TransientCooldown time.Duration `yaml:"transient_cooldown,omitempty"`
 	LatencySampleSize int           `yaml:"latency_sample_size,omitempty"`
 	LatencyTolerance  time.Duration `yaml:"latency_tolerance,omitempty"`
 	Sticky            StickyConfig  `yaml:"sticky,omitempty"`
+}
+
+// ProfileConfig defines a named, pre-filtered view of the shared pool. Clients
+// select it with the unified-listener username "<base>@<profile>".
+type ProfileConfig struct {
+	Name       string   `yaml:"name" json:"name"`
+	Regions    []string `yaml:"regions,omitempty" json:"regions,omitempty"`
+	NameRegex  string   `yaml:"name_regex,omitempty" json:"name_regex,omitempty"`
+	Protocols  []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+	Sources    []string `yaml:"sources,omitempty" json:"sources,omitempty"`
+	MinQuality float64  `yaml:"min_quality,omitempty" json:"min_quality,omitempty"`
 }
 
 // StickyConfig controls bounded session affinity on the unified pool listener.
@@ -355,6 +369,9 @@ func (c *Config) normalize() error {
 		c.Listener.Port = 2323
 	}
 	if err := c.normalizePoolConfig(); err != nil {
+		return err
+	}
+	if err := c.normalizeProfiles(); err != nil {
 		return err
 	}
 	if c.MultiPort.Address == "" {
@@ -1052,6 +1069,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if err := c.normalizePoolConfig(); err != nil {
 		return err
 	}
+	if err := c.normalizeProfiles(); err != nil {
+		return err
+	}
 	if c.MultiPort.Address == "" {
 		c.MultiPort.Address = "0.0.0.0"
 	}
@@ -1288,6 +1308,86 @@ func (c *Config) normalizePoolConfig() error {
 		c.Pool.Sticky.MaxEntries = 1_000_000
 	}
 	return nil
+}
+
+var profileNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
+var profileFilterPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._+-]{0,31}$`)
+
+// NormalizeProfiles validates and canonicalizes named pool profile filters.
+// It is exported so transactional API updates can reject invalid profiles
+// before any persistence or runtime reload work begins.
+func (c *Config) NormalizeProfiles() error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	return c.normalizeProfiles()
+}
+
+func (c *Config) normalizeProfiles() error {
+	if len(c.Profiles) == 0 {
+		return nil
+	}
+	if c.Mode != "pool" && c.Mode != "hybrid" {
+		return errors.New("named profiles require pool or hybrid mode")
+	}
+	if strings.TrimSpace(c.Listener.Username) == "" || strings.TrimSpace(c.Listener.Password) == "" {
+		return errors.New("named profiles require unified listener username and password")
+	}
+	seen := make(map[string]struct{}, len(c.Profiles))
+	for index := range c.Profiles {
+		profile := &c.Profiles[index]
+		profile.Name = strings.ToLower(strings.TrimSpace(profile.Name))
+		if !profileNamePattern.MatchString(profile.Name) {
+			return fmt.Errorf("profile %d name must match %s", index, profileNamePattern.String())
+		}
+		if _, exists := seen[profile.Name]; exists {
+			return fmt.Errorf("duplicate profile name %q", profile.Name)
+		}
+		seen[profile.Name] = struct{}{}
+		profile.NameRegex = strings.TrimSpace(profile.NameRegex)
+		if profile.NameRegex != "" {
+			if _, err := regexp.Compile(profile.NameRegex); err != nil {
+				return fmt.Errorf("profile %q name_regex: %w", profile.Name, err)
+			}
+		}
+		if profile.MinQuality < 0 || profile.MinQuality > 100 {
+			return fmt.Errorf("profile %q min_quality must be between 0 and 100", profile.Name)
+		}
+		var err error
+		profile.Regions, err = normalizeProfileFilters(profile.Name, "region", profile.Regions)
+		if err != nil {
+			return err
+		}
+		profile.Protocols, err = normalizeProfileFilters(profile.Name, "protocol", profile.Protocols)
+		if err != nil {
+			return err
+		}
+		profile.Sources, err = normalizeProfileFilters(profile.Name, "source", profile.Sources)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeProfileFilters(profileName, label string, values []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if !profileFilterPattern.MatchString(value) {
+			return nil, fmt.Errorf("profile %q %s %q is invalid", profileName, label, value)
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result, nil
 }
 
 func (c *Config) normalizeGeoIPConfig() {
@@ -2396,6 +2496,24 @@ func (c *Config) HealthStatePath() string {
 	return filepath.Join(filepath.Dir(c.filePath), path)
 }
 
+// RuntimeStatePath resolves the SQLite database used for weak runtime state.
+func (c *Config) RuntimeStatePath() string {
+	if c == nil {
+		return ""
+	}
+	path := strings.TrimSpace(c.Pool.RuntimeStateFile)
+	if path == "" {
+		path = "runtime-state.db"
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	if c.filePath == "" {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(filepath.Dir(c.filePath), path)
+}
+
 // writeNodesToFile writes nodes to a file (one URI per line) with file locking.
 func writeNodesToFile(path string, nodes []NodeConfig) error {
 	_, err := writeNodesToFileSnapshot(path, nodes)
@@ -2642,6 +2760,7 @@ func (c *Config) transformSettingsData(data []byte) ([]byte, error) {
 	saveCfg.Listener = c.Listener
 	saveCfg.MultiPort = c.MultiPort
 	saveCfg.Pool = c.Pool
+	saveCfg.Profiles = c.Profiles
 	saveCfg.Management = c.Management
 
 	newData, err := yaml.Marshal(&saveCfg)

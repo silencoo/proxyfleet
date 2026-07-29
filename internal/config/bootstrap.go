@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -8,7 +10,7 @@ import (
 	"strings"
 )
 
-const defaultConfigYAML = `# Easy Proxies configuration.
+const defaultConfigYAML = `# ProxyFleet configuration.
 # This first-run file starts the local WebUI without proxy nodes.
 # Add a subscription in System settings, refresh it, and the proxy runtime
 # will start automatically after usable nodes have been loaded.
@@ -20,10 +22,12 @@ listener:
 
 pool:
   mode: sequential
+  runtime_state_file: runtime-state.db
 
 management:
   enabled: true
   listen: 127.0.0.1:9091
+  password: %s
   probe_target: www.apple.com:80
   probe_mode: adaptive
   probe_interval: 5m
@@ -52,34 +56,65 @@ log:
   rotate_interval: 0s
 
 subscriptions: []
+profiles: []
 nodes: []
 `
+
+// BootstrapResult reports whether this process created the first-run
+// configuration. ManagementPassword is populated only for the winning creator
+// so callers can print it once without re-reading or exposing existing secrets.
+type BootstrapResult struct {
+	Created            bool
+	ManagementPassword string
+}
 
 // EnsureDefaultFile creates a safe first-run configuration when path does not
 // exist. The existence check and write share the config sidecar lock so a
 // concurrent user or process can never have its newly-created file replaced.
 func EnsureDefaultFile(path string) (bool, error) {
+	result, err := EnsureDefaultFileWithResult(path)
+	return result.Created, err
+}
+
+// EnsureDefaultFileWithResult is the credential-aware first-run helper used by
+// the executable bootstrap.
+func EnsureDefaultFileWithResult(path string) (BootstrapResult, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return false, errors.New("config file path is empty")
+		return BootstrapResult{}, errors.New("config file path is empty")
 	}
 	path = filepath.Clean(path)
 
-	created := false
+	var result BootstrapResult
 	err := withFileLock(path, func() error {
 		if _, err := os.Stat(path); err == nil {
 			return nil
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("inspect config file: %w", err)
 		}
-		if _, err := writeFileLockedSnapshot(path, []byte(defaultConfigYAML), 0o600); err != nil {
+		password, err := generateBootstrapPassword()
+		if err != nil {
+			return fmt.Errorf("generate management password: %w", err)
+		}
+		data := fmt.Sprintf(defaultConfigYAML, password)
+		if _, err := writeFileLockedSnapshot(path, []byte(data), 0o600); err != nil {
 			return fmt.Errorf("create default config: %w", err)
 		}
-		created = true
+		result.Created = true
+		result.ManagementPassword = password
 		return nil
 	})
 	if err != nil {
-		return false, err
+		return BootstrapResult{}, err
 	}
-	return created, nil
+	return result, nil
+}
+
+func generateBootstrapPassword() (string, error) {
+	const randomBytes = 24
+	buffer := make([]byte, randomBytes)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buffer), nil
 }

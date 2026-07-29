@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="internal/monitor/assets/proxyfleet-logo.png" alt="ProxyFleet dithering snowman logo" width="180" />
+  <img src="webui/public/assets/proxyfleet-logo.png" alt="ProxyFleet dithering snowman logo" width="180" />
 </p>
 
 <h1 align="center">ProxyFleet</h1>
@@ -19,12 +19,12 @@ Upstream changes are reviewed and selectively ported instead of blindly merged.
 
 | Area | Enhancement in this fork |
 |------|--------------------------|
-| First run | A native binary can start without `config.yaml`; it creates a safe loopback-only default, prints the absolute config path, and opens a zero-node WebUI |
+| First run | A native binary can start without `config.yaml`; it creates a safe loopback-only default, prints a cryptographically random administrator password once, and opens a zero-node WebUI |
 | Proxy access | `pool`, `multi-port`, and `hybrid` modes support rotating traffic and deterministic direct access to individual nodes |
 | Live updates | Node-level diffs keep unchanged listeners and connections alive; removed outbounds drain instead of being cut off immediately |
-| Stable identity | Subscription reorder/rename does not change dedicated ports; port mappings, per-node credentials, and health/blacklist state survive restarts |
+| Stable identity | Subscription reorder/rename does not change dedicated ports; port mappings and credentials remain strong YAML configuration while weak health/latency state survives restarts in SQLite |
 | Subscription safety | Bounded concurrent fetching, private-network protection, per-source fallback, deduplication, candidate health checks, atomic persistence, and rollback |
-| WebUI | Embedded bilingual Chinese/English UI with a monochrome theme, formal SVG icons, sorting, search, region filters, pagination, diagnostics, colored logs, and masked secrets |
+| WebUI | Vite/TypeScript modules compiled into the single executable, with a bilingual monochrome UI, Profiles, access-command generation, diagnostics, logs, and masked secrets |
 | Operations | Serialized health sweeps, probe deadlines, transient cooldown, retry/session-affinity controls, log rotation, and transactional config writes |
 | Region insight | Exit-IP GeoIP routing plus name-based JP/KR/US/HK/TW/SG/residential fallback grouping for dashboard visibility |
 
@@ -57,9 +57,10 @@ go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvis
 On the first launch, ProxyFleet:
 
 1. Creates `config.yaml` in the current working directory if it is missing.
-2. Prints the absolute path of the config it is using.
-3. Starts the embedded WebUI at `http://127.0.0.1:9091` in management-only mode.
-4. Starts the proxy runtime automatically after a subscription refresh or node edit produces usable nodes.
+2. Generates a 32-character cryptographically random administrator password, stores it in the new file, and prints it **once** with a change-password warning.
+3. Prints the absolute path of the config it is using.
+4. Starts the embedded WebUI at `http://127.0.0.1:9091` in management-only mode.
+5. Starts the proxy runtime automatically after a subscription refresh or node edit produces usable nodes.
 
 In the WebUI, open **System Settings**, add a subscription, save and refresh it.
 The generated pool listener is available at `127.0.0.1:2323` after nodes pass
@@ -113,7 +114,7 @@ Open `http://127.0.0.1:9091` after startup.
 
 Dedicated ports keep their assignments in `port-map.yaml`. Per-node listener credentials edited through the WebUI are stored separately in `node-auth.yaml` (mode `0600`) and are automatically reapplied to matching `nodes_file` or subscription nodes by stable node identity.
 
-Pool failure streaks, active blacklist deadlines, and the latest health/latency counters are coalesced into `health-state.yaml` (also mode `0600`). They are restored on restart; active connection counts remain process-local.
+Pool failure streaks, blacklist/cooldown deadlines, monitor counters, and bounded per-domain passive latency EWMAs are coalesced into `runtime-state.db` next to `config.yaml`. SQLite uses WAL and transactional snapshots; an existing `health-state.yaml` is imported once when the database is empty. Active connection counts remain process-local. Set `pool.runtime_state_file` to move the database.
 
 ### Pool Scheduling
 
@@ -124,7 +125,21 @@ Pool failure streaks, active blacklist deadlines, and the latest health/latency 
 | `balance` | O(1) power-of-two-choices balancing using active connection counts |
 | `latency` | Samples a bounded set, then balances connections among nodes inside the configured latency tolerance |
 
-Transient network failures use a short cooldown instead of immediately increasing the long-term blacklist streak. The unified pool can retry a different node after a failed dial and can optionally keep bounded, expiring session affinity. Dedicated per-node ports never retry through another node.
+Transient network failures use a short cooldown instead of immediately increasing the long-term blacklist streak. Successful real traffic records target-domain connection setup latency without extra requests; latency scheduling prefers this bounded EWMA and falls back to the global probe result. The unified pool can retry a different node after a failed dial and can optionally keep bounded, expiring session affinity. Dedicated per-node ports never retry through another node.
+
+### Named Pool Profiles
+
+Profiles precompute filtered views by region, protocol, source, node-name regex, and minimum quality. Connect with the normal password and username `base@profile`; the un-suffixed username continues to use the full pool. Profiles require unified listener authentication and are available in `pool`/`hybrid` modes. The WebUI Access Assistant generates copyable HTTP/SOCKS5 URIs and curl commands.
+
+```yaml
+profiles:
+  - name: hk-fast
+    regions: [hk]
+    protocols: [vless, hysteria2]
+    sources: [subscription]
+    name_regex: "(?i)premium"
+    min_quality: 80
+```
 
 ### Minimal Config Example
 
@@ -368,7 +383,7 @@ Features:
 - **Node Config**: Add/edit/delete inline nodes and manage subscription URLs without exposing credentials in list responses
 - **Subscription safety**: Candidate diff preview, risky-removal confirmation, availability-ratio preflight, and atomic cutover
 - **Diagnostics / Console**: Searchable diagnostics and clearable in-memory logs; disk logs support scheduled rotation and compression
-- **Settings**: Chinese/English switcher, system theme, masked secrets, viewer/operator/admin passwords, and persistent configuration editing
+- **Settings**: Chinese/English switcher, system theme, masked secrets, Named Profiles, copyable proxy access commands, viewer/operator/admin passwords, and persistent configuration editing
 
 When all management role passwords are empty, loopback requests run as administrator without a login.
 
@@ -377,7 +392,8 @@ When all management role passwords are empty, loopback requests run as administr
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/auth` | POST | Login with password |
-| `/api/settings` | GET, PUT | Read/update settings |
+| `/api/settings` | GET, PUT | Read/update settings and Named Profiles |
+| `/api/access` | GET | Administrator-only listener credentials, Profiles, and copyable HTTP/SOCKS5 URIs |
 | `/api/nodes` | GET | Paginated/filterable node status and pool summary |
 | `/api/nodes/{tag}/probe` | POST | Test node connectivity |
 | `/api/nodes/{tag}/blacklist` | POST | Manually blacklist a node |
@@ -440,13 +456,18 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 ## Development
 
 ```bash
+npm ci
+npm run check:webui
+npm run build:webui
+npm run test:e2e
 go test ./...
 go vet ./...
 
+# webui/dist is embedded into the executable; CI verifies it matches the TypeScript/CSS source.
 # Verify the production/full-protocol build
 go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
 ```
 
 ## License
 
-MIT License
+MIT License. Dependency attributions are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and are also compiled into the executable: `easy_proxies -third-party-notices`.

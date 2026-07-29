@@ -31,5 +31,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run check:webui
+      - run: npm run build:webui
+      - name: Verify embedded WebUI is current
+        run: git diff --exit-code -- webui/dist
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e

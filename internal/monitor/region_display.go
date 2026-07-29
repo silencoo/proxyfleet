@@ -18,15 +18,16 @@ var regionNamePatterns = []regionNamePattern{
 	{region: "sg", keywords: []string{"新加坡", "狮城", "獅城", "singapore", "🇸🇬"}, tokens: []string{"sg"}},
 }
 
-// displayRegion keeps an explicit GeoIP classification and falls back to the
-// subscription's node metadata when GeoIP is disabled or cannot classify it.
-func displayRegion(snapshot Snapshot) string {
-	reported := strings.ToLower(strings.TrimSpace(snapshot.Region))
+// ResolveDisplayRegion keeps an explicit GeoIP classification and falls back
+// to subscription metadata when GeoIP is disabled or cannot classify it. It is
+// shared by the API and named pool profiles so both expose identical regions.
+func ResolveDisplayRegion(name, tag, country, reportedRegion string) string {
+	reported := strings.ToLower(strings.TrimSpace(reportedRegion))
 	if reported != "" && reported != "other" && reported != "unknown" {
 		return reported
 	}
 
-	searchable := strings.ToLower(strings.Join([]string{snapshot.Name, snapshot.Tag, snapshot.Country}, " "))
+	searchable := strings.ToLower(strings.Join([]string{name, tag, country}, " "))
 	for _, pattern := range regionNamePatterns {
 		for _, keyword := range pattern.keywords {
 			if strings.Contains(searchable, keyword) {
@@ -40,6 +41,10 @@ func displayRegion(snapshot Snapshot) string {
 		}
 	}
 	return "other"
+}
+
+func displayRegion(snapshot Snapshot) string {
+	return ResolveDisplayRegion(snapshot.Name, snapshot.Tag, snapshot.Country, snapshot.Region)
 }
 
 func containsASCIIToken(text, token string) bool {

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,10 +13,12 @@ import (
 	"io"
 	"log"
 	mathrand "math/rand"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,10 +28,8 @@ import (
 	"easy_proxies/internal/buildinfo"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/geoip"
+	"easy_proxies/webui"
 )
-
-//go:embed assets/*
-var embeddedFS embed.FS
 
 // Session represents a user session with expiration.
 type Session struct {
@@ -81,15 +80,16 @@ const (
 )
 
 type settingsUpdateRequest struct {
-	ExternalIP       *string `json:"external_ip,omitempty"`
-	ProbeTarget      *string `json:"probe_target,omitempty"`
-	SkipCertVerify   *bool   `json:"skip_cert_verify,omitempty"`
-	ProbeConcurrency *int    `json:"probe_concurrency,omitempty"`
-	ProbeMode        *string `json:"probe_mode,omitempty"`
-	ProbeInterval    *string `json:"probe_interval,omitempty"`
-	ProbeTimeout     *string `json:"probe_timeout,omitempty"`
-	ProbeBatchSize   *int    `json:"probe_batch_size,omitempty"`
-	Mode             *string `json:"mode,omitempty"`
+	ExternalIP       *string                 `json:"external_ip,omitempty"`
+	ProbeTarget      *string                 `json:"probe_target,omitempty"`
+	SkipCertVerify   *bool                   `json:"skip_cert_verify,omitempty"`
+	ProbeConcurrency *int                    `json:"probe_concurrency,omitempty"`
+	ProbeMode        *string                 `json:"probe_mode,omitempty"`
+	ProbeInterval    *string                 `json:"probe_interval,omitempty"`
+	ProbeTimeout     *string                 `json:"probe_timeout,omitempty"`
+	ProbeBatchSize   *int                    `json:"probe_batch_size,omitempty"`
+	Mode             *string                 `json:"mode,omitempty"`
+	Profiles         *[]config.ProfileConfig `json:"profiles,omitempty"`
 	Listener         *struct {
 		Address  string `json:"address"`
 		Port     uint16 `json:"port"`
@@ -397,10 +397,12 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/assets/echarts.min.js", s.handleEChartsAsset)
 	mux.HandleFunc("/assets/proxyfleet-logo.png", s.handleLogoAsset)
+	mux.HandleFunc("/assets/", s.handleStaticAsset)
 	mux.HandleFunc("/api/auth", s.handleAuth)
 	mux.HandleFunc("/api/session", s.withRole(RoleViewer, s.handleSession))
 	mux.HandleFunc("/api/build-info", s.withRole(RoleViewer, s.handleBuildInfo))
 	mux.HandleFunc("/api/settings", s.withRole(RoleAdmin, s.handleSettings))
+	mux.HandleFunc("/api/access", s.withRole(RoleAdmin, s.handleAccessAssistant))
 	mux.HandleFunc("/api/nodes", s.withRole(RoleViewer, s.handleNodes))
 	mux.HandleFunc("/api/nodes/config", s.withRole(RoleAdmin, s.handleConfigNodes))
 	mux.HandleFunc("/api/nodes/config/", s.withRole(RoleAdmin, s.handleConfigNodeItem))
@@ -703,7 +705,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
 	}
-	data, err := embeddedFS.ReadFile("assets/index.html")
+	data, err := webui.ReadFile("index.html")
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -728,7 +730,7 @@ func (s *Server) handleEChartsAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
 	}
-	data, err := embeddedFS.ReadFile("assets/echarts.min.js")
+	data, err := webui.ReadFile("assets/echarts.min.js")
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -752,13 +754,46 @@ func (s *Server) handleLogoAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
 	}
-	data, err := embeddedFS.ReadFile("assets/proxyfleet-logo.png")
+	data, err := webui.ReadFile("assets/proxyfleet-logo.png")
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
+	setManagementSecurityHeaders(w)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleStaticAsset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimPrefix(pathpkg.Clean(r.URL.Path), "/")
+	if !strings.HasPrefix(name, "assets/") || strings.Contains(name, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := webui.ReadFile(name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	contentType := mime.TypeByExtension(filepath.Ext(name))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	if strings.HasPrefix(filepath.Base(name), "index-") || name == "assets/echarts.min.js" {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+	}
 	setManagementSecurityHeaders(w)
 	if r.Method == http.MethodHead {
 		return
@@ -1449,6 +1484,34 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(strings.Join(lines, "\n")))
 }
 
+func (s *Server) handleAccessAssistant(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	var cfg *config.Config
+	if nodeMgr := s.nodeManager(); nodeMgr != nil {
+		cfg, _ = nodeMgr.ConfigSnapshot()
+	}
+	if cfg == nil {
+		s.cfgMu.RLock()
+		cfg = s.cfgSrc.Clone()
+		s.cfgMu.RUnlock()
+	}
+	if cfg == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "配置存储未初始化")
+		return
+	}
+	host := exportAddress(cfg.Listener.Address, cfg.ExternalIP)
+	httpURI, _ := formatProxyURI("http", host, cfg.Listener.Port, cfg.Listener.Username, cfg.Listener.Password)
+	socksURI, _ := formatProxyURI("socks5", host, cfg.Listener.Port, cfg.Listener.Username, cfg.Listener.Password)
+	writeJSON(w, map[string]any{
+		"mode": cfg.Mode, "host": host, "port": cfg.Listener.Port,
+		"username": cfg.Listener.Username, "password": cfg.Listener.Password,
+		"http_uri": httpURI, "socks5_uri": socksURI, "profiles": cfg.Profiles,
+	})
+}
+
 func appendProxyURIs(lines *[]string, seen map[string]bool, selection, host string, port uint16, username, password string) {
 	schemes := []string{selection}
 	if selection == "all" {
@@ -1694,6 +1757,18 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 		candidate.Listener.Port = request.Listener.Port
 		candidate.Listener.Username = request.Listener.Username
 		candidate.Listener.Password = request.Listener.Password
+	}
+	if request.Profiles != nil {
+		candidate.Profiles = make([]config.ProfileConfig, len(*request.Profiles))
+		for index := range *request.Profiles {
+			candidate.Profiles[index] = (*request.Profiles)[index]
+			candidate.Profiles[index].Regions = append([]string(nil), (*request.Profiles)[index].Regions...)
+			candidate.Profiles[index].Protocols = append([]string(nil), (*request.Profiles)[index].Protocols...)
+			candidate.Profiles[index].Sources = append([]string(nil), (*request.Profiles)[index].Sources...)
+		}
+	}
+	if err := candidate.NormalizeProfiles(); err != nil {
+		return fmt.Errorf("Named Profiles 配置无效: %w", err)
 	}
 	if request.MultiPort != nil {
 		if strings.TrimSpace(request.MultiPort.Address) == "" || request.MultiPort.BasePort == 0 {
@@ -2012,6 +2087,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if cfg != nil {
 			resp["mode"] = cfg.Mode
+			resp["profiles"] = cfg.Profiles
 			resp["listener"] = map[string]any{
 				"address":  cfg.Listener.Address,
 				"port":     cfg.Listener.Port,

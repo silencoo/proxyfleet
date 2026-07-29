@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"errors"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
+	"easy_proxies/internal/runtimestate"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,16 +37,21 @@ type persistedHealthFile struct {
 }
 
 type healthPersistenceManager struct {
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	path    string
-	records map[string]persistedMemberHealth
-	dirty   bool
-	timer   *time.Timer
+	writeMu     sync.Mutex
+	mu          sync.Mutex
+	path        string
+	runtimePath string
+	engine      *runtimestate.Engine
+	records     map[string]persistedMemberHealth
+	domains     map[string]map[string]domainLatencyValue
+	dirty       bool
+	domainDirty bool
+	timer       *time.Timer
 }
 
 var healthPersistence = healthPersistenceManager{
 	records: make(map[string]persistedMemberHealth),
+	domains: make(map[string]map[string]domainLatencyValue),
 }
 
 var readHealthStateFile = os.ReadFile
@@ -145,7 +152,7 @@ func restoredMemberHealth(tag string) (persistedMemberHealth, bool) {
 
 func storeMemberHealth(tag string, record persistedMemberHealth) {
 	healthPersistence.mu.Lock()
-	if healthPersistence.path == "" {
+	if healthPersistence.path == "" && healthPersistence.engine == nil {
 		healthPersistence.mu.Unlock()
 		return
 	}
@@ -176,25 +183,37 @@ func FlushHealthState() error {
 		healthPersistence.timer.Stop()
 		healthPersistence.timer = nil
 	}
-	if !healthPersistence.dirty || healthPersistence.path == "" {
+	if (!healthPersistence.dirty && !healthPersistence.domainDirty) || (healthPersistence.path == "" && healthPersistence.engine == nil) {
 		healthPersistence.mu.Unlock()
 		return nil
 	}
 	path := healthPersistence.path
+	engine := healthPersistence.engine
 	records := make(map[string]persistedMemberHealth, len(healthPersistence.records))
 	for tag, record := range healthPersistence.records {
 		records[tag] = record
 	}
+	domains := cloneDomainLatencyState(healthPersistence.domains)
+	hadHealthDirty := healthPersistence.dirty
+	hadDomainDirty := healthPersistence.domainDirty
 	healthPersistence.dirty = false
+	healthPersistence.domainDirty = false
 	healthPersistence.mu.Unlock()
 
-	data, err := yaml.Marshal(persistedHealthFile{Version: healthStateVersion, Nodes: records})
-	if err != nil {
-		return err
+	var err error
+	if engine != nil {
+		err = saveRuntimeSnapshot(context.Background(), engine, records, domains)
+	} else if hadHealthDirty && path != "" {
+		var data []byte
+		data, err = yaml.Marshal(persistedHealthFile{Version: healthStateVersion, Nodes: records})
+		if err == nil {
+			err = writeHealthStateFile(path, data, 0o600)
+		}
 	}
-	if err := writeHealthStateFile(path, data, 0o600); err != nil {
+	if err != nil {
 		healthPersistence.mu.Lock()
-		healthPersistence.dirty = true
+		healthPersistence.dirty = healthPersistence.dirty || hadHealthDirty
+		healthPersistence.domainDirty = healthPersistence.domainDirty || hadDomainDirty
 		healthPersistence.mu.Unlock()
 		return err
 	}
@@ -218,9 +237,17 @@ func resetHealthPersistenceForTest() {
 	if healthPersistence.timer != nil {
 		healthPersistence.timer.Stop()
 	}
+	engine := healthPersistence.engine
 	healthPersistence.path = ""
+	healthPersistence.runtimePath = ""
+	healthPersistence.engine = nil
 	healthPersistence.records = make(map[string]persistedMemberHealth)
+	healthPersistence.domains = make(map[string]map[string]domainLatencyValue)
 	healthPersistence.dirty = false
+	healthPersistence.domainDirty = false
 	healthPersistence.timer = nil
+	if engine != nil {
+		_ = engine.Close()
+	}
 	healthPersistence.mu.Unlock()
 }

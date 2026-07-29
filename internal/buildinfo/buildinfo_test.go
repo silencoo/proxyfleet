@@ -1,6 +1,15 @@
 package buildinfo
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestThirdPartyNoticesIncludeSQLiteAttribution(t *testing.T) {
+	if !strings.Contains(ThirdPartyNotices, "modernc.org/sqlite") || !strings.Contains(ThirdPartyNotices, "Copyright (c) 2017 The Sqlite Authors") {
+		t.Fatal("SQLite attribution is missing from the compiled notices")
+	}
+}
 
 func TestCurrentReturnsIsolatedCapabilityMap(t *testing.T) {
 	first := Current()

@@ -17,7 +17,7 @@ export default defineConfig({
   ],
   webServer: {
     command: 'node tests/webui/static-server.mjs',
-    url: 'http://127.0.0.1:4173/assets/index.html',
+    url: 'http://127.0.0.1:4173/',
     reuseExistingServer: !process.env.CI,
     timeout: 30_000
   }

@@ -256,3 +256,65 @@ func TestSettingsRequiresAndReturnsRevisionETag(t *testing.T) {
 		t.Fatalf("stale If-Match status=%d body=%s", staleRecorder.Code, staleRecorder.Body.String())
 	}
 }
+
+func TestSettingsNamedProfilesValidateBeforeCommit(t *testing.T) {
+	cfg := newSettingsTransactionConfig(t)
+	cfg.Mode = "pool"
+	cfg.Listener.Username = "fleet"
+	cfg.Listener.Password = "secret"
+	manager := &settingsTransactionNodeManager{cfg: cfg.Clone(), revision: 21}
+	server := newSettingsTransactionServer(cfg, manager)
+	recorder := httptest.NewRecorder()
+	body := bytes.NewBufferString(`{"profiles":[{"name":" HK-Fast ","regions":["HK","hk"],"protocols":["VLESS"],"min_quality":80}]}`)
+	server.handleSettings(recorder, settingsPutRequest(body, 21))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid profile status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	committed, revision := manager.ConfigSnapshot()
+	if revision != 22 || len(committed.Profiles) != 1 || committed.Profiles[0].Name != "hk-fast" || len(committed.Profiles[0].Regions) != 1 {
+		t.Fatalf("profile not normalized and committed: revision=%d profiles=%#v", revision, committed.Profiles)
+	}
+
+	invalidManager := &settingsTransactionNodeManager{cfg: cfg.Clone(), revision: 8}
+	invalidServer := newSettingsTransactionServer(cfg, invalidManager)
+	invalidRecorder := httptest.NewRecorder()
+	invalidBody := bytes.NewBufferString(`{"profiles":[{"name":"broken","name_regex":"["}]}`)
+	invalidServer.handleSettings(invalidRecorder, settingsPutRequest(invalidBody, 8))
+	if invalidRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid profile status=%d body=%s", invalidRecorder.Code, invalidRecorder.Body.String())
+	}
+	_, invalidRevision := invalidManager.ConfigSnapshot()
+	if invalidRevision != 8 {
+		t.Fatalf("invalid profile advanced revision to %d", invalidRevision)
+	}
+}
+
+func TestAccessAssistantReturnsCopyableProfileEndpointData(t *testing.T) {
+	cfg := newSettingsTransactionConfig(t)
+	cfg.Mode = "pool"
+	cfg.Listener.Address = "127.0.0.1"
+	cfg.Listener.Port = 23230
+	cfg.Listener.Username = "fleet"
+	cfg.Listener.Password = "p@ss word"
+	cfg.Profiles = []config.ProfileConfig{{Name: "hk-fast", Regions: []string{"hk"}}}
+	server := newSettingsTransactionServer(cfg, nil)
+	recorder := httptest.NewRecorder()
+	server.handleAccessAssistant(recorder, httptest.NewRequest(http.MethodGet, "/api/access", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		HTTPURI  string                 `json:"http_uri"`
+		SOCKSURI string                 `json:"socks5_uri"`
+		Profiles []config.ProfileConfig `json:"profiles"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.HTTPURI != "http://fleet:p%40ss%20word@127.0.0.1:23230" || response.SOCKSURI != "socks5://fleet:p%40ss%20word@127.0.0.1:23230" {
+		t.Fatalf("unexpected access URIs: http=%q socks=%q", response.HTTPURI, response.SOCKSURI)
+	}
+	if len(response.Profiles) != 1 || response.Profiles[0].Name != "hk-fast" {
+		t.Fatalf("profiles=%#v", response.Profiles)
+	}
+}
