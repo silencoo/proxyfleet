@@ -5,7 +5,7 @@ package subscription
 import (
 	"testing"
 
-	"easy_proxies/internal/config"
+	"github.com/silencoo/proxyfleet/internal/config"
 )
 
 func TestFilterNodesForBuildCapabilitiesSkipsOnlyUnsupportedNodes(t *testing.T) {

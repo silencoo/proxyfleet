@@ -1,4 +1,4 @@
-module easy_proxies
+module github.com/silencoo/proxyfleet
 
 go 1.24.1
 

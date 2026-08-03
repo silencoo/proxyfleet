@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"easy_proxies/internal/builder"
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/builder"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 
 	"github.com/sagernet/sing-box"
 )

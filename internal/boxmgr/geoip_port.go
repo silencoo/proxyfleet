@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"easy_proxies/internal/config"
+	"github.com/silencoo/proxyfleet/internal/config"
 )
 
 const (

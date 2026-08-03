@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"easy_proxies/internal/probetarget"
+	"github.com/silencoo/proxyfleet/internal/probetarget"
 
 	M "github.com/sagernet/sing/common/metadata"
 )

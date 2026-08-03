@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"easy_proxies/internal/config"
+	"github.com/silencoo/proxyfleet/internal/config"
 )
 
 type testCandidateNodeError struct {

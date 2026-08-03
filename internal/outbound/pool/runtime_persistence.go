@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"easy_proxies/internal/runtimestate"
+	"github.com/silencoo/proxyfleet/internal/runtimestate"
 
 	"gopkg.in/yaml.v3"
 )

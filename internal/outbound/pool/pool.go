@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/monitor"
-	"easy_proxies/internal/trafficlog"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/trafficlog"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"

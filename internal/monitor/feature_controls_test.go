@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"easy_proxies/internal/config"
+	"github.com/silencoo/proxyfleet/internal/config"
 )
 
 func TestConfiguredSampleProbeRotatesBoundedBatches(t *testing.T) {

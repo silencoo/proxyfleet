@@ -2,7 +2,7 @@
 
 ## 背景
 
-当前 easy_proxies 支持从订阅链接获取节点，但只在启动时加载一次。用户需要定时刷新订阅以获取最新节点，同时不能中断现有连接。
+当前 ProxyFleet 支持从订阅链接获取节点，但只在启动时加载一次。用户需要定时刷新订阅以获取最新节点，同时不能中断现有连接。
 
 ## 需求
 
@@ -261,7 +261,7 @@ main
 
 ```bash
 # 发送 SIGHUP 信号触发重载
-kill -HUP $(pidof easy-proxies)
+kill -HUP $(pidof proxyfleet)
 ```
 
 **优点**：实现简单

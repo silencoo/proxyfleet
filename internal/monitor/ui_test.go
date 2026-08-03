@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"easy_proxies/webui"
+	"github.com/silencoo/proxyfleet/webui"
 )
 
 func readWebUIBundle(t testing.TB) string {
@@ -74,8 +74,13 @@ func TestEmbeddedWebUIUsesBundledECharts(t *testing.T) {
 func TestEmbeddedWebUIUsesProxyFleetLogo(t *testing.T) {
 	html := readWebUIBundle(t)
 	for _, value := range []string{
-		`<link rel="icon" type="image/png" href="/assets/proxyfleet-logo.png" />`,
-		`<img class="brand-logo" src="/assets/proxyfleet-logo.png" alt="" width="36" height="36" />`,
+		`<meta name="application-name" content="ProxyFleet" />`,
+		`<meta name="apple-mobile-web-app-title" content="ProxyFleet" />`,
+		`<link rel="icon" type="image/png" sizes="any" href="/assets/proxyfleet-logo.png?v=66dc1afe" />`,
+		`<link rel="shortcut icon" type="image/png" href="/assets/proxyfleet-logo.png?v=66dc1afe" />`,
+		`<link rel="apple-touch-icon" href="/assets/proxyfleet-logo.png?v=66dc1afe" />`,
+		`<img class="brand-logo" src="/assets/proxyfleet-logo.png?v=66dc1afe" alt="" aria-hidden="true" width="36" height="36" />`,
+		`<span class="brand-name">ProxyFleet</span>`,
 		`ProxyFleet - 监控中心`,
 	} {
 		if !strings.Contains(html, value) {

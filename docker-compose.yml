@@ -1,9 +1,9 @@
 services:
-  easy_proxies:
+  proxyfleet:
     build:
       context: .
-    image: easy_proxies:fork
-    container_name: easy_proxies
+    image: proxyfleet:local
+    container_name: proxyfleet
     restart: unless-stopped
     # 方式一：使用主机网络模式（推荐，支持端口自动重分配）
     network_mode: host
@@ -34,7 +34,7 @@ services:
     volumes:
       # 配置文件需要可写权限以支持 WebUI 设置保存
       # 如遇权限问题，请在宿主机执行: chmod 666 config.yaml nodes.txt
-      - ./config.yaml:/etc/easy_proxies/config.yaml
-      - ./nodes.txt:/etc/easy_proxies/nodes.txt
+      - ./config.yaml:/etc/proxyfleet/config.yaml
+      - ./nodes.txt:/etc/proxyfleet/nodes.txt
       # 日志映射目录（当从 WebUI 开启日志写到文件时有效）
       - ./logs:/app/logs

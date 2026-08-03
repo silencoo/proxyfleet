@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 )
 
 // sharedMemberState holds failure/blacklist state shared across all pool instances.

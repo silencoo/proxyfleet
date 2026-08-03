@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"easy_proxies/internal/commitguard"
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/commitguard"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 )
 
 type fakeBoxManager struct {

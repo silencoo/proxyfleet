@@ -1,3 +1,4 @@
+// Tests for the ProxyFleet command bootstrap behavior.
 package main
 
 import (

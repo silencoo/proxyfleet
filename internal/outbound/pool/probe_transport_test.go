@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 )
 
 func TestProbeConnectionWatchdogClosesBlockedConnection(t *testing.T) {

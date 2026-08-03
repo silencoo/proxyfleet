@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"easy_proxies/internal/config"
+	"github.com/silencoo/proxyfleet/internal/config"
 )
 
 func TestProfilePreviewExplainsComposableRuleExclusions(t *testing.T) {

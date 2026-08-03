@@ -25,11 +25,11 @@ import (
 	"sync"
 	"time"
 
-	"easy_proxies/internal/buildinfo"
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/geoip"
-	"easy_proxies/internal/trafficlog"
-	"easy_proxies/webui"
+	"github.com/silencoo/proxyfleet/internal/buildinfo"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/geoip"
+	"github.com/silencoo/proxyfleet/internal/trafficlog"
+	"github.com/silencoo/proxyfleet/webui"
 )
 
 // Session represents a user session with expiration.

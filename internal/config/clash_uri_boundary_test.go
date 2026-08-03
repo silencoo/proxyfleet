@@ -4,8 +4,8 @@ import (
 	"net/url"
 	"testing"
 
-	"easy_proxies/internal/ssruri"
-	"easy_proxies/internal/ssuri"
+	"github.com/silencoo/proxyfleet/internal/ssruri"
+	"github.com/silencoo/proxyfleet/internal/ssuri"
 )
 
 func TestConvertClashProxyEscapesUserInfoAndBracketsIPv6(t *testing.T) {

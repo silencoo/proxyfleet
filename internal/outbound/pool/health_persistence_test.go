@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 
 	"gopkg.in/yaml.v3"
 )

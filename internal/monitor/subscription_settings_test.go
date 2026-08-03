@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"easy_proxies/internal/config"
+	"github.com/silencoo/proxyfleet/internal/config"
 )
 
 type subscriptionSettingsStub struct {

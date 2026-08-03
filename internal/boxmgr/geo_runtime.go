@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/geoip"
-	"easy_proxies/internal/outbound/pool"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/geoip"
+	"github.com/silencoo/proxyfleet/internal/outbound/pool"
 
 	"github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/option"

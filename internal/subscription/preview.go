@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 )
 
 const subscriptionPreviewTTL = 10 * time.Minute

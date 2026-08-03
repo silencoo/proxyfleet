@@ -20,8 +20,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"easy_proxies/internal/probetarget"
-	"easy_proxies/internal/ssruri"
+	"github.com/silencoo/proxyfleet/internal/probetarget"
+	"github.com/silencoo/proxyfleet/internal/ssruri"
 
 	"gopkg.in/yaml.v3"
 )
@@ -53,7 +53,7 @@ type Config struct {
 // LogConfig controls log output and rotation.
 type LogConfig struct {
 	Output         string        `yaml:"output"`          // 日志输出: "stdout", "file", 默认 "stdout"
-	File           string        `yaml:"file"`            // 日志文件路径，默认 "logs/easy_proxies.log"
+	File           string        `yaml:"file"`            // 日志文件路径，默认 "logs/proxyfleet.log"
 	MaxSize        int           `yaml:"max_size"`        // 单个日志文件最大 MB，默认 50
 	MaxBackups     int           `yaml:"max_backups"`     // 保留旧日志文件个数，默认 3
 	MaxAge         int           `yaml:"max_age"`         // 保留旧日志文件天数，默认 7
@@ -1802,7 +1802,7 @@ func (c *Config) normalizeLogConfig() {
 		c.Log.Output = "stdout"
 	}
 	if c.Log.File == "" {
-		c.Log.File = "logs/easy_proxies.log"
+		c.Log.File = "logs/proxyfleet.log"
 	}
 	// Resolve relative log file path against config dir
 	if c.filePath != "" && !filepath.IsAbs(c.Log.File) {

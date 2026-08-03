@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"easy_proxies/internal/config"
-	poolout "easy_proxies/internal/outbound/pool"
+	"github.com/silencoo/proxyfleet/internal/config"
+	poolout "github.com/silencoo/proxyfleet/internal/outbound/pool"
 
 	"github.com/sagernet/sing-box/option"
 )

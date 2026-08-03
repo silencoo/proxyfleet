@@ -10,7 +10,7 @@
 > rotating endpoint, one stable port per node, or both at the same time.
 
 This repository is an actively developed fork of
-[jasonwong1991/easy_proxies](https://github.com/jasonwong1991/easy_proxies).
+[the original upstream repository](https://github.com/jasonwong1991/easy_proxies).
 It keeps the upstream protocol foundation, but its runtime lifecycle, state
 persistence, WebUI, and first-run experience have diverged substantially.
 Upstream changes are reviewed and selectively ported instead of blindly merged.
@@ -43,15 +43,15 @@ Upstream changes are reviewed and selectively ported instead of blindly merged.
 Build the full-protocol binary:
 
 ```bash
-go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
-./easy_proxies
+go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o proxyfleet ./cmd/proxyfleet
+./proxyfleet
 ```
 
 Windows:
 
 ```powershell
-go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies.exe ./cmd/easy_proxies
-.\easy_proxies.exe
+go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o proxyfleet.exe ./cmd/proxyfleet
+.\proxyfleet.exe
 ```
 
 On the first launch, ProxyFleet:
@@ -77,7 +77,7 @@ nodes but cannot start them.
 ### Start with an Existing Config
 
 ```bash
-./easy_proxies -config /path/to/config.yaml
+./proxyfleet -config /path/to/config.yaml
 ```
 
 The `-config` flag is optional. When omitted, the program uses
@@ -448,16 +448,16 @@ The default setup uses host networking (recommended for automatic port managemen
 
 ```yaml
 services:
-  easy_proxies:
+  proxyfleet:
     build:
       context: .
-    image: easy_proxies:fork
-    container_name: easy_proxies
+    image: proxyfleet:local
+    container_name: proxyfleet
     restart: unless-stopped
     network_mode: host
     volumes:
-      - ./config.yaml:/etc/easy_proxies/config.yaml
-      - ./nodes.txt:/etc/easy_proxies/nodes.txt
+      - ./config.yaml:/etc/proxyfleet/config.yaml
+      - ./nodes.txt:/etc/proxyfleet/nodes.txt
       - ./logs:/app/logs
 ```
 
@@ -494,9 +494,9 @@ go vet ./...
 
 # webui/dist is embedded into the executable; CI verifies it matches the TypeScript/CSS source.
 # Verify the production/full-protocol build
-go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
+go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o proxyfleet ./cmd/proxyfleet
 ```
 
 ## License
 
-MIT License. Dependency attributions are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and are also compiled into the executable: `easy_proxies -third-party-notices`.
+MIT License. Dependency attributions are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and are also compiled into the executable: `proxyfleet -third-party-notices`.

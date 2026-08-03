@@ -1,3 +1,4 @@
+// Command proxyfleet starts the ProxyFleet proxy pool and embedded control plane.
 package main
 
 import (
@@ -13,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"easy_proxies/internal/app"
-	"easy_proxies/internal/buildinfo"
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/app"
+	"github.com/silencoo/proxyfleet/internal/buildinfo"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -87,7 +88,7 @@ func main() {
 	defer cancel()
 
 	if err := app.Run(ctx, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "proxy pool exited with error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ProxyFleet exited with error: %v\n", err)
 		os.Exit(1)
 	}
 }

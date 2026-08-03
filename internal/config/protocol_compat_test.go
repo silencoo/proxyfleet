@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"easy_proxies/internal/ssruri"
+	"github.com/silencoo/proxyfleet/internal/ssruri"
 )
 
 func TestIsProxyURIRecognizesCompatibilitySchemes(t *testing.T) {

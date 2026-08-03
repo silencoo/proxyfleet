@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"testing"
 
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/geoip"
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/geoip"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 )
 
 func listenerPort(t *testing.T, listener net.Listener) uint16 {

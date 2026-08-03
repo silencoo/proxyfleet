@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/monitor"
-	"easy_proxies/internal/runtimestate"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/runtimestate"
 
 	"gopkg.in/yaml.v3"
 )

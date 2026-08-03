@@ -10,7 +10,7 @@
 > 入口，也能为每个节点保留稳定的独立端口。
 
 本仓库基于
-[jasonwong1991/easy_proxies](https://github.com/jasonwong1991/easy_proxies)
+[原始上游仓库](https://github.com/jasonwong1991/easy_proxies)
 持续开发。它保留了上游的协议基础，但运行时生命周期、状态持久化、
 WebUI 和首次启动体验已经明显分化。上游更新会经过评估后选择性移植，
 不会直接覆盖本 fork 的实现。
@@ -43,15 +43,15 @@ WebUI 和首次启动体验已经明显分化。上游更新会经过评估后�
 构建完整协议版本：
 
 ```bash
-go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
-./easy_proxies
+go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o proxyfleet ./cmd/proxyfleet
+./proxyfleet
 ```
 
 Windows：
 
 ```powershell
-go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies.exe ./cmd/easy_proxies
-.\easy_proxies.exe
+go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o proxyfleet.exe ./cmd/proxyfleet
+.\proxyfleet.exe
 ```
 
 首次启动时程序会：
@@ -76,7 +76,7 @@ Hysteria2 和 TUIC 必须使用 `with_quic`；无标签构建虽然能解析这�
 ### 使用已有配置
 
 ```bash
-./easy_proxies -config /path/to/config.yaml
+./proxyfleet -config /path/to/config.yaml
 ```
 
 `-config` 可以省略；省略时使用当前工作目录的 `config.yaml`。
@@ -257,10 +257,9 @@ go vet ./...
 
 # webui/dist 会嵌入 EXE；CI 会校验它与 TypeScript/CSS 源码一致。
 # 验证生产/完整协议构建
-go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o easy_proxies ./cmd/easy_proxies
+go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o proxyfleet ./cmd/proxyfleet
 ```
 
 ## 许可证
 
-MIT License。依赖归属声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)，也可通过 `easy_proxies -third-party-notices` 从单个 EXE 直接查看。
-
+MIT License。依赖归属声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)，也可通过 `proxyfleet -third-party-notices` 从单个 EXE 直接查看。

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"easy_proxies/internal/config"
+	"github.com/silencoo/proxyfleet/internal/config"
 )
 
 var ErrSubscriptionChangeGuard = errors.New("subscription change requires explicit confirmation")

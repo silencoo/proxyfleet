@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"easy_proxies/internal/config"
-	poolout "easy_proxies/internal/outbound/pool"
-	"easy_proxies/internal/ssruri"
-	"easy_proxies/internal/ssuri"
+	"github.com/silencoo/proxyfleet/internal/config"
+	poolout "github.com/silencoo/proxyfleet/internal/outbound/pool"
+	"github.com/silencoo/proxyfleet/internal/ssruri"
+	"github.com/silencoo/proxyfleet/internal/ssuri"
 
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"

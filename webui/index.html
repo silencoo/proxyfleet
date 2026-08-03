@@ -3,8 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="application-name" content="ProxyFleet" />
+  <meta name="apple-mobile-web-app-title" content="ProxyFleet" />
   <title>ProxyFleet - 监控中心</title>
-  <link rel="icon" type="image/png" href="/assets/proxyfleet-logo.png" />
+  <link rel="icon" type="image/png" sizes="any" href="/assets/proxyfleet-logo.png?v=66dc1afe" />
+  <link rel="shortcut icon" type="image/png" href="/assets/proxyfleet-logo.png?v=66dc1afe" />
+  <link rel="apple-touch-icon" href="/assets/proxyfleet-logo.png?v=66dc1afe" />
 
   <script src="/assets/echarts.min.js"></script>
   <script>
@@ -57,8 +61,8 @@
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="brand">
-      <img class="brand-logo" src="/assets/proxyfleet-logo.png" alt="" width="36" height="36" />
-      ProxyFleet
+      <img class="brand-logo" src="/assets/proxyfleet-logo.png?v=66dc1afe" alt="" aria-hidden="true" width="36" height="36" />
+      <span class="brand-name">ProxyFleet</span>
     </div>
     <div class="nav">
       <button type="button" class="nav-item active" data-tab="dashboard" aria-current="page" onclick="switchTab('dashboard')"><svg class="icon"><use href="#i-dashboard"></use></svg><span>监控看板</span></button>

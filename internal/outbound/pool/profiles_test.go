@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 
 	"github.com/sagernet/sing-box/adapter"
 )

@@ -8,10 +8,10 @@ import (
 	"syscall"
 	"time"
 
-	"easy_proxies/internal/boxmgr"
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/monitor"
-	"easy_proxies/internal/subscription"
+	"github.com/silencoo/proxyfleet/internal/boxmgr"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/subscription"
 )
 
 // Run builds the runtime components from config and blocks until shutdown.

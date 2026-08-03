@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"easy_proxies/internal/config"
-	"easy_proxies/internal/ssruri"
-	"easy_proxies/internal/ssuri"
+	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/ssruri"
+	"github.com/silencoo/proxyfleet/internal/ssuri"
 
 	"github.com/oschwald/geoip2-golang"
 )

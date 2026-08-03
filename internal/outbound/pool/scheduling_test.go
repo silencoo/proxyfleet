@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"easy_proxies/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/monitor"
 
 	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"

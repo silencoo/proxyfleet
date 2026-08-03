@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-08-03
+
 ### Added
+- **Endpoint Manager**: Multiple named HTTP/SOCKS5 pool listeners with per-endpoint enablement, Profile binding, live status, and validated reloads
+- **Composable Profile rules**: `ANY`, `MUST`, and `MUST_NOT` tag filters with match previews and rule-level diagnostics
+- **Named subscription sources**: Independent enablement, refresh intervals, status, fallback reporting, masked URLs, and per-source refresh controls
+- **Structured traffic history**: Optional asynchronous SQLite traffic log with connection latency, TTFB, transfer totals, retries, retention, and destination redaction
 - **Secure first run**: Fresh starts generate a cryptographically random administrator password, persist it with the new loopback-only config, and print it once with a change warning
 - **Named pool Profiles**: Precomputed region/protocol/source/name views with dynamic quality thresholds, selected through `base@profile` authentication
 - **Access Assistant**: Administrator-only HTTP/SOCKS5 URI and curl generation with one-click copy controls
@@ -34,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Enables Clash-compatible tooling integration
 
 ### Changed
+- **Complete ProxyFleet identity migration**: Go module, command path, Docker service/image/paths, executable, Release asset, documentation, and local defaults now consistently use ProxyFleet
+- **WebUI branding**: Snowman favicon and sidebar mark share one cache-versioned asset, with ProxyFleet application metadata in the embedded UI
 - **Subscription Parsing**: Improved Clash YAML format detection
   - User-Agent changed to `clash-verge/v2.2.3` for better compatibility
   - YAML detection sample size increased from 200 to 16384 characters
@@ -43,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Ensures proper file ownership for nodes.txt and logs
 
 ### Fixed
+- Stale local executables serving the former Easy Proxies title and icon
+- Mixed shell-script line endings that prevented the Docker entrypoint from parsing on Linux
 - Docker nodes.txt permission denied on bind-mount
 - VMess node name extraction from base64 payload
 - Cross-platform file locking for Windows support
