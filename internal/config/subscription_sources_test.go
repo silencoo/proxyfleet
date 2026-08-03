@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -51,15 +52,16 @@ func TestSubscriptionSourcesRejectDuplicateAndSensitiveHeaders(t *testing.T) {
 }
 
 func TestTrafficLogDefaultsAndRelativePath(t *testing.T) {
-	cfg := &Config{filePath: `C:\configs\proxyfleet\config.yaml`}
+	configDir := filepath.Join("configs", "proxyfleet")
+	cfg := &Config{filePath: filepath.Join(configDir, "config.yaml")}
 	if err := cfg.normalizeTrafficLogConfig(); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.TrafficLog.Enabled || cfg.TrafficLog.Retention != 24*time.Hour || cfg.TrafficLog.MaxEntries != 100_000 || !cfg.TrafficLog.RedactDestinationValue() {
 		t.Fatalf("unexpected traffic defaults: %#v", cfg.TrafficLog)
 	}
-	if path := strings.ToLower(cfg.TrafficLogPath()); !strings.HasSuffix(path, `proxyfleet\traffic-log.db`) {
-		t.Fatalf("traffic log path=%q", path)
+	if path, want := cfg.TrafficLogPath(), filepath.Join(configDir, "traffic-log.db"); path != want {
+		t.Fatalf("traffic log path=%q, want %q", path, want)
 	}
 }
 

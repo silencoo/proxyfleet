@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-08-03
+
+### Fixed
+- Made the traffic-log relative-path test platform-independent so the official Linux release runner validates the Windows binary build correctly
+
 ## [3.2.0] - 2026-08-03
 
 ### Added
