@@ -16,9 +16,11 @@ const defaultConfigYAML = `# ProxyFleet configuration.
 # will start automatically after usable nodes have been loaded.
 mode: pool
 
-listener:
-  address: 127.0.0.1
-  port: 2323
+endpoints:
+  - name: default
+    enabled: true
+    address: 127.0.0.1
+    port: 2323
 
 pool:
   mode: sequential

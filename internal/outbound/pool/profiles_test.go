@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -31,6 +32,27 @@ func TestCompileProfilesPrecomputesStaticMemberView(t *testing.T) {
 	}
 }
 
+func TestCompileProfilesUsesComposableTagRules(t *testing.T) {
+	profiles, err := compileProfiles([]ProfileOptions{{
+		Name: "premium", TagRules: config.ProfileTagRules{
+			Any: []string{`HK|JP`}, Must: []string{`Premium`}, MustNot: []string{`Expired`},
+		},
+	}}, map[string]MemberMeta{
+		"hk": {Name: "HK Premium 01"}, "shared": {Name: "HK Shared"},
+		"expired": {Name: "JP Premium Expired"}, "us": {Name: "US Premium"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := profiles["premium"].allowed
+	if len(allowed) != 1 {
+		t.Fatalf("allowed=%v", allowed)
+	}
+	if _, ok := allowed["hk"]; !ok {
+		t.Fatal("composable rule match was not precomputed")
+	}
+}
+
 func TestCompileProfilesUsesNameRegionFallback(t *testing.T) {
 	profiles, err := compileProfiles([]ProfileOptions{{Name: "hk", Regions: []string{"hk"}}}, map[string]MemberMeta{
 		"node-a": {Name: "🇭🇰 香港 Premium", Region: "other"},
@@ -53,6 +75,18 @@ func TestProfileFromContextUsesAuthenticatedUsernameSuffix(t *testing.T) {
 	base := adapter.WithContext(context.Background(), &adapter.InboundContext{User: "fleet"})
 	if got := pool.profileFromContext(base); got != nil {
 		t.Fatalf("base username unexpectedly selected profile %#v", got)
+	}
+}
+
+func TestProfileFromContextUsesEndpointBindingBeforeUsername(t *testing.T) {
+	profile := &compiledProfile{name: "hk-fast"}
+	pool := &poolOutbound{
+		profiles: map[string]*compiledProfile{"hk-fast": profile},
+		options:  Options{EndpointProfiles: map[string]string{"endpoint-hk": "hk-fast"}},
+	}
+	ctx := adapter.WithContext(context.Background(), &adapter.InboundContext{Inbound: "endpoint-hk", User: "fleet"})
+	if got := pool.profileFromContext(ctx); got != profile {
+		t.Fatalf("profileFromContext() = %p, want endpoint-bound profile %p", got, profile)
 	}
 }
 

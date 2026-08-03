@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -27,21 +28,24 @@ import (
 
 // Config describes the high level settings for the proxy pool server.
 type Config struct {
-	Mode                string                    `yaml:"mode"`
-	Listener            ListenerConfig            `yaml:"listener"`
-	MultiPort           MultiPortConfig           `yaml:"multi_port"`
-	Pool                PoolConfig                `yaml:"pool"`
-	Management          ManagementConfig          `yaml:"management"`
-	SubscriptionRefresh SubscriptionRefreshConfig `yaml:"subscription_refresh"`
-	GeoIP               GeoIPConfig               `yaml:"geoip"`
-	Log                 LogConfig                 `yaml:"log"`
-	Nodes               []NodeConfig              `yaml:"nodes"`
-	Profiles            []ProfileConfig           `yaml:"profiles,omitempty"`
-	NodesFile           string                    `yaml:"nodes_file"`    // 节点文件路径，每行一个 URI
-	Subscriptions       []string                  `yaml:"subscriptions"` // 订阅链接列表
-	ExternalIP          string                    `yaml:"external_ip"`   // 外部 IP 地址，用于导出时替换 0.0.0.0
-	LogLevel            string                    `yaml:"log_level"`
-	SkipCertVerify      bool                      `yaml:"skip_cert_verify"` // 全局跳过 SSL 证书验证
+	Mode                string                     `yaml:"mode"`
+	Listener            ListenerConfig             `yaml:"listener"`
+	MultiPort           MultiPortConfig            `yaml:"multi_port"`
+	Pool                PoolConfig                 `yaml:"pool"`
+	Management          ManagementConfig           `yaml:"management"`
+	SubscriptionRefresh SubscriptionRefreshConfig  `yaml:"subscription_refresh"`
+	GeoIP               GeoIPConfig                `yaml:"geoip"`
+	Log                 LogConfig                  `yaml:"log"`
+	TrafficLog          TrafficLogConfig           `yaml:"traffic_log,omitempty"`
+	Nodes               []NodeConfig               `yaml:"nodes"`
+	Profiles            []ProfileConfig            `yaml:"profiles,omitempty"`
+	Endpoints           []EndpointConfig           `yaml:"endpoints,omitempty"`
+	NodesFile           string                     `yaml:"nodes_file"` // 节点文件路径，每行一个 URI
+	Subscriptions       []string                   `yaml:"-" json:"-"` // enabled URL compatibility view
+	SubscriptionSources []SubscriptionSourceConfig `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
+	ExternalIP          string                     `yaml:"external_ip"` // 外部 IP 地址，用于导出时替换 0.0.0.0
+	LogLevel            string                     `yaml:"log_level"`
+	SkipCertVerify      bool                       `yaml:"skip_cert_verify"` // 全局跳过 SSL 证书验证
 
 	filePath string `yaml:"-"` // 配置文件路径，用于保存
 }
@@ -55,6 +59,21 @@ type LogConfig struct {
 	MaxAge         int           `yaml:"max_age"`         // 保留旧日志文件天数，默认 7
 	Compress       bool          `yaml:"compress"`        // 是否压缩旧日志，默认 false
 	RotateInterval time.Duration `yaml:"rotate_interval"` // 定时轮转间隔；0 表示仅按大小轮转
+}
+
+// TrafficLogConfig controls the optional structured connection history. It is
+// intentionally independent from runtime-state.db because traffic data has a
+// different retention and write-volume profile.
+type TrafficLogConfig struct {
+	Enabled           bool          `yaml:"enabled" json:"enabled"`
+	File              string        `yaml:"file,omitempty" json:"file"`
+	Retention         time.Duration `yaml:"retention,omitempty" json:"retention"`
+	MaxEntries        int           `yaml:"max_entries,omitempty" json:"max_entries"`
+	RedactDestination *bool         `yaml:"redact_destination,omitempty" json:"redact_destination,omitempty"`
+}
+
+func (c TrafficLogConfig) RedactDestinationValue() bool {
+	return c.RedactDestination == nil || *c.RedactDestination
 }
 
 // GeoIPConfig controls GeoIP-based region routing.
@@ -78,6 +97,87 @@ type ListenerConfig struct {
 	Password string `yaml:"password"`
 }
 
+// EndpointConfig defines one independently managed entry point into the
+// shared pool. Endpoints reuse the same outbounds and health state; Profile
+// only constrains which members this listener may select.
+type EndpointConfig struct {
+	Name     string `yaml:"name" json:"name"`
+	Enabled  *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Address  string `yaml:"address" json:"address"`
+	Port     uint16 `yaml:"port" json:"port"`
+	Username string `yaml:"username,omitempty" json:"username,omitempty"`
+	Password string `yaml:"password,omitempty" json:"password,omitempty"`
+	Profile  string `yaml:"profile,omitempty" json:"profile,omitempty"`
+}
+
+// EnabledValue treats an omitted enabled field as true so hand-written
+// endpoint entries remain concise and backwards compatible with early drafts.
+func (e EndpointConfig) EnabledValue() bool {
+	return e.Enabled == nil || *e.Enabled
+}
+
+// EffectiveEndpoints returns configured pool endpoints or a synthesized view
+// of the legacy listener when Endpoint Manager has not been configured yet.
+func (c *Config) EffectiveEndpoints() []EndpointConfig {
+	if c == nil {
+		return nil
+	}
+	if len(c.Endpoints) > 0 {
+		endpoints := make([]EndpointConfig, len(c.Endpoints))
+		for index := range c.Endpoints {
+			endpoints[index] = c.Endpoints[index]
+			endpoints[index].Enabled = cloneBool(c.Endpoints[index].Enabled)
+		}
+		return endpoints
+	}
+	enabled := true
+	return []EndpointConfig{{
+		Name: "default", Enabled: &enabled, Address: c.Listener.Address,
+		Port: c.Listener.Port, Username: c.Listener.Username, Password: c.Listener.Password,
+	}}
+}
+
+// PrimaryEndpoint returns the enabled unfiltered endpoint preferred by legacy
+// integrations, falling back deterministically when all entries are filtered
+// or disabled.
+func (c *Config) PrimaryEndpoint() EndpointConfig {
+	endpoints := c.EffectiveEndpoints()
+	for _, endpoint := range endpoints {
+		if endpoint.EnabledValue() && endpoint.Profile == "" {
+			return endpoint
+		}
+	}
+	for _, endpoint := range endpoints {
+		if endpoint.EnabledValue() {
+			return endpoint
+		}
+	}
+	if len(endpoints) > 0 {
+		return endpoints[0]
+	}
+	return EndpointConfig{}
+}
+
+// PoolEndpointUsesPort reports whether an active pool-mode configuration owns
+// the port through either Endpoint Manager or the legacy listener.
+func (c *Config) PoolEndpointUsesPort(port uint16) bool {
+	if c == nil || port == 0 || (c.Mode != "pool" && c.Mode != "hybrid") {
+		return false
+	}
+	for _, endpoint := range c.EffectiveEndpoints() {
+		if endpoint.Port == port {
+			return true
+		}
+	}
+	return false
+}
+
+// EndpointInboundTag is stable across reloads so changing unrelated endpoints
+// does not disturb existing listeners or their active connections.
+func EndpointInboundTag(name string) string {
+	return "endpoint-" + strings.ToLower(strings.TrimSpace(name))
+}
+
 // PoolConfig configures scheduling + failure handling.
 type PoolConfig struct {
 	Mode              string        `yaml:"mode"`
@@ -97,12 +197,13 @@ type PoolConfig struct {
 // ProfileConfig defines a named, pre-filtered view of the shared pool. Clients
 // select it with the unified-listener username "<base>@<profile>".
 type ProfileConfig struct {
-	Name       string   `yaml:"name" json:"name"`
-	Regions    []string `yaml:"regions,omitempty" json:"regions,omitempty"`
-	NameRegex  string   `yaml:"name_regex,omitempty" json:"name_regex,omitempty"`
-	Protocols  []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
-	Sources    []string `yaml:"sources,omitempty" json:"sources,omitempty"`
-	MinQuality float64  `yaml:"min_quality,omitempty" json:"min_quality,omitempty"`
+	Name       string          `yaml:"name" json:"name"`
+	Regions    []string        `yaml:"regions,omitempty" json:"regions,omitempty"`
+	NameRegex  string          `yaml:"name_regex,omitempty" json:"name_regex,omitempty"`
+	TagRules   ProfileTagRules `yaml:"tag_rules,omitempty" json:"tag_rules,omitempty"`
+	Protocols  []string        `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+	Sources    []string        `yaml:"sources,omitempty" json:"sources,omitempty"`
+	MinQuality float64         `yaml:"min_quality,omitempty" json:"min_quality,omitempty"`
 }
 
 // StickyConfig controls bounded session affinity on the unified pool listener.
@@ -371,7 +472,13 @@ func (c *Config) normalize() error {
 	if err := c.normalizePoolConfig(); err != nil {
 		return err
 	}
+	if err := c.normalizeTrafficLogConfig(); err != nil {
+		return err
+	}
 	if err := c.normalizeProfiles(); err != nil {
+		return err
+	}
+	if err := c.normalizeEndpoints(); err != nil {
 		return err
 	}
 	if c.MultiPort.Address == "" {
@@ -427,6 +534,9 @@ func (c *Config) normalize() error {
 	if err := c.normalizeSubscriptionSafetyConfig(); err != nil {
 		return err
 	}
+	if err := c.normalizeSubscriptionSources(); err != nil {
+		return err
+	}
 	validatedSubscriptions, err := ValidateSubscriptionURLs(c.Subscriptions)
 	if err != nil {
 		return err
@@ -466,6 +576,7 @@ func (c *Config) normalize() error {
 			Timeout:              c.SubscriptionRefresh.Timeout,
 			Concurrency:          c.SubscriptionRefresh.FetchConcurrency,
 			AllowPrivateNetworks: c.SubscriptionRefresh.AllowPrivateNetworks,
+			HeadersBySourceKey:   c.subscriptionHeadersBySourceKey(),
 			Loggerf:              log.Printf,
 		})
 		if (stats.Failed > 0 || stats.Empty > 0 || len(subNodes) == 0) && cacheErr == nil && len(cachedNodes) > 0 {
@@ -966,9 +1077,11 @@ func (c *Config) assignNodePorts(runtimeMap map[string]uint16, persist bool) err
 			reserved[lease.Port] = key
 		}
 	}
-	used := make(map[uint16]string, len(c.Nodes)+1)
+	used := make(map[uint16]string, len(c.Nodes)+len(c.Endpoints)+1)
 	if c.Mode == "hybrid" {
-		used[c.Listener.Port] = "pool-listener"
+		for _, endpoint := range c.EffectiveEndpoints() {
+			used[endpoint.Port] = "pool-endpoint-" + endpoint.Name
+		}
 	}
 
 	for idx := range c.Nodes {
@@ -1069,7 +1182,13 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if err := c.normalizePoolConfig(); err != nil {
 		return err
 	}
+	if err := c.normalizeTrafficLogConfig(); err != nil {
+		return err
+	}
 	if err := c.normalizeProfiles(); err != nil {
+		return err
+	}
+	if err := c.normalizeEndpoints(); err != nil {
 		return err
 	}
 	if c.MultiPort.Address == "" {
@@ -1121,6 +1240,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	}
 	c.SubscriptionRefresh.FetchConcurrency = NormalizeSubscriptionFetchConcurrency(c.SubscriptionRefresh.FetchConcurrency)
 	if err := c.normalizeSubscriptionSafetyConfig(); err != nil {
+		return err
+	}
+	if err := c.normalizeSubscriptionSources(); err != nil {
 		return err
 	}
 	validatedSubscriptions, err := ValidateSubscriptionURLs(c.Subscriptions)
@@ -1244,8 +1366,16 @@ func (c *Config) validateInboundCredentials() error {
 		return errors.New("config is nil")
 	}
 	if c.Mode == "pool" || c.Mode == "hybrid" {
-		if err := validateCredentialPair("listener", c.Listener.Username, c.Listener.Password); err != nil {
-			return err
+		if len(c.Endpoints) == 0 {
+			if err := validateCredentialPair("listener", c.Listener.Username, c.Listener.Password); err != nil {
+				return err
+			}
+		} else {
+			for index, endpoint := range c.Endpoints {
+				if err := validateCredentialPair(fmt.Sprintf("endpoint %d", index), endpoint.Username, endpoint.Password); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if c.Mode != "multi-port" && c.Mode != "hybrid" {
@@ -1310,6 +1440,28 @@ func (c *Config) normalizePoolConfig() error {
 	return nil
 }
 
+func (c *Config) normalizeTrafficLogConfig() error {
+	c.TrafficLog.File = strings.TrimSpace(c.TrafficLog.File)
+	if c.TrafficLog.File == "" {
+		c.TrafficLog.File = "traffic-log.db"
+	}
+	if c.TrafficLog.Retention <= 0 {
+		c.TrafficLog.Retention = 24 * time.Hour
+	} else if c.TrafficLog.Retention < time.Minute {
+		return errors.New("traffic_log retention must be at least 1m")
+	}
+	if c.TrafficLog.MaxEntries <= 0 {
+		c.TrafficLog.MaxEntries = 100_000
+	} else if c.TrafficLog.MaxEntries > 10_000_000 {
+		return errors.New("traffic_log max_entries cannot exceed 10000000")
+	}
+	if c.TrafficLog.RedactDestination == nil {
+		redact := true
+		c.TrafficLog.RedactDestination = &redact
+	}
+	return nil
+}
+
 var profileNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 var profileFilterPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._+-]{0,31}$`)
 
@@ -1327,10 +1479,14 @@ func (c *Config) normalizeProfiles() error {
 	if len(c.Profiles) == 0 {
 		return nil
 	}
-	if c.Mode != "pool" && c.Mode != "hybrid" {
+	poolMode := c.Mode == "pool" || c.Mode == "hybrid"
+	// Endpoint Manager configuration is intentionally preserved while the
+	// runtime is in multi-port mode. Profiles referenced by those inactive
+	// endpoints therefore remain valid and become active again on mode switch.
+	if !poolMode && len(c.Endpoints) == 0 {
 		return errors.New("named profiles require pool or hybrid mode")
 	}
-	if strings.TrimSpace(c.Listener.Username) == "" || strings.TrimSpace(c.Listener.Password) == "" {
+	if poolMode && len(c.Endpoints) == 0 && (strings.TrimSpace(c.Listener.Username) == "" || strings.TrimSpace(c.Listener.Password) == "") {
 		return errors.New("named profiles require unified listener username and password")
 	}
 	seen := make(map[string]struct{}, len(c.Profiles))
@@ -1366,6 +1522,90 @@ func (c *Config) normalizeProfiles() error {
 		if err != nil {
 			return err
 		}
+		profile.TagRules.Any, err = normalizeProfileRules(profile.Name, "any", profile.TagRules.Any)
+		if err != nil {
+			return err
+		}
+		profile.TagRules.Must, err = normalizeProfileRules(profile.Name, "must", profile.TagRules.Must)
+		if err != nil {
+			return err
+		}
+		profile.TagRules.MustNot, err = normalizeProfileRules(profile.Name, "must_not", profile.TagRules.MustNot)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const maxPoolEndpoints = 128
+
+// NormalizeEndpoints validates Endpoint Manager configuration and keeps the
+// legacy Listener mirror aligned for integrations that have not adopted the
+// endpoint list yet.
+func (c *Config) NormalizeEndpoints() error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	return c.normalizeEndpoints()
+}
+
+func (c *Config) normalizeEndpoints() error {
+	if len(c.Endpoints) == 0 {
+		return nil
+	}
+	if len(c.Endpoints) > maxPoolEndpoints {
+		return fmt.Errorf("endpoint count exceeds %d", maxPoolEndpoints)
+	}
+	profileNames := make(map[string]struct{}, len(c.Profiles))
+	for _, profile := range c.Profiles {
+		profileNames[profile.Name] = struct{}{}
+	}
+	seenNames := make(map[string]struct{}, len(c.Endpoints))
+	seenSockets := make(map[string]string, len(c.Endpoints))
+	for index := range c.Endpoints {
+		endpoint := &c.Endpoints[index]
+		endpoint.Name = strings.ToLower(strings.TrimSpace(endpoint.Name))
+		if !profileNamePattern.MatchString(endpoint.Name) {
+			return fmt.Errorf("endpoint %d name must match %s", index, profileNamePattern.String())
+		}
+		if _, exists := seenNames[endpoint.Name]; exists {
+			return fmt.Errorf("duplicate endpoint name %q", endpoint.Name)
+		}
+		seenNames[endpoint.Name] = struct{}{}
+		if endpoint.Enabled == nil {
+			enabled := true
+			endpoint.Enabled = &enabled
+		}
+		endpoint.Address = strings.Trim(strings.TrimSpace(endpoint.Address), "[]")
+		address, err := netip.ParseAddr(endpoint.Address)
+		if err != nil {
+			return fmt.Errorf("endpoint %q address: %w", endpoint.Name, err)
+		}
+		endpoint.Address = address.String()
+		if endpoint.Port == 0 {
+			return fmt.Errorf("endpoint %q port must be between 1 and 65535", endpoint.Name)
+		}
+		if err := validateCredentialPair("endpoint "+endpoint.Name, endpoint.Username, endpoint.Password); err != nil {
+			return err
+		}
+		endpoint.Profile = strings.ToLower(strings.TrimSpace(endpoint.Profile))
+		if endpoint.Profile != "" {
+			if _, exists := profileNames[endpoint.Profile]; !exists {
+				return fmt.Errorf("endpoint %q references unknown profile %q", endpoint.Name, endpoint.Profile)
+			}
+		}
+		socket := net.JoinHostPort(endpoint.Address, strconv.Itoa(int(endpoint.Port)))
+		if owner, exists := seenSockets[socket]; exists {
+			return fmt.Errorf("endpoints %q and %q use the same listener %s", owner, endpoint.Name, socket)
+		}
+		seenSockets[socket] = endpoint.Name
+	}
+
+	primary := c.PrimaryEndpoint()
+	c.Listener = ListenerConfig{
+		Address: primary.Address, Port: primary.Port,
+		Username: primary.Username, Password: primary.Password,
 	}
 	return nil
 }
@@ -2514,6 +2754,24 @@ func (c *Config) RuntimeStatePath() string {
 	return filepath.Join(filepath.Dir(c.filePath), path)
 }
 
+// TrafficLogPath resolves the separate structured traffic database.
+func (c *Config) TrafficLogPath() string {
+	if c == nil {
+		return ""
+	}
+	path := strings.TrimSpace(c.TrafficLog.File)
+	if path == "" {
+		path = "traffic-log.db"
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	if c.filePath == "" {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(filepath.Dir(c.filePath), path)
+}
+
 // writeNodesToFile writes nodes to a file (one URI per line) with file locking.
 func writeNodesToFile(path string, nodes []NodeConfig) error {
 	_, err := writeNodesToFileSnapshot(path, nodes)
@@ -2753,7 +3011,9 @@ func (c *Config) transformSettingsData(data []byte) ([]byte, error) {
 	saveCfg.Management.ProbeTarget = c.Management.ProbeTarget
 	saveCfg.SkipCertVerify = c.SkipCertVerify
 	saveCfg.Log = c.Log
-	saveCfg.Subscriptions = c.Subscriptions
+	saveCfg.TrafficLog = c.TrafficLog
+	saveCfg.Subscriptions = append([]string(nil), c.Subscriptions...)
+	saveCfg.SubscriptionSources = cloneSubscriptionSources(c.EffectiveSubscriptionSources())
 	saveCfg.SubscriptionRefresh = c.SubscriptionRefresh
 	saveCfg.GeoIP = c.GeoIP
 	saveCfg.Mode = c.Mode
@@ -2761,6 +3021,7 @@ func (c *Config) transformSettingsData(data []byte) ([]byte, error) {
 	saveCfg.MultiPort = c.MultiPort
 	saveCfg.Pool = c.Pool
 	saveCfg.Profiles = c.Profiles
+	saveCfg.Endpoints = c.Endpoints
 	saveCfg.Management = c.Management
 
 	newData, err := yaml.Marshal(&saveCfg)

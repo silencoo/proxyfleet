@@ -22,6 +22,7 @@ type settingsTransactionNodeManager struct {
 	revision         uint64
 	conflictOnce     bool
 	concurrentUpdate func(*config.Config)
+	endpointStatuses []EndpointRuntimeStatus
 }
 
 func (m *settingsTransactionNodeManager) ListConfigNodes(context.Context) ([]config.NodeConfig, error) {
@@ -37,6 +38,11 @@ func (m *settingsTransactionNodeManager) DeleteNode(context.Context, string) err
 	return errors.New("not implemented")
 }
 func (m *settingsTransactionNodeManager) TriggerReload(context.Context) error { return nil }
+func (m *settingsTransactionNodeManager) EndpointStatuses() []EndpointRuntimeStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]EndpointRuntimeStatus(nil), m.endpointStatuses...)
+}
 func (m *settingsTransactionNodeManager) ConfigSnapshot() (*config.Config, uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -159,6 +165,31 @@ func TestSettingsPartialUpdatePreservesUnrelatedConfiguration(t *testing.T) {
 	}
 	if disk.GeoIP.DatabasePath != cfg.GeoIP.DatabasePath || disk.Management.Password != cfg.Management.Password {
 		t.Fatalf("disk update lost unrelated settings: %#v", disk)
+	}
+}
+
+func TestSettingsTrafficLogUpdatePersistsTransactionally(t *testing.T) {
+	cfg := newSettingsTransactionConfig(t)
+	manager := &settingsTransactionNodeManager{cfg: cfg.Clone(), revision: 12}
+	server := newSettingsTransactionServer(cfg, manager)
+	body := bytes.NewBufferString(`{"traffic_log":{"enabled":true,"file":"history/traffic.db","retention":"2h","max_entries":4321,"redact_destination":false}}`)
+	recorder := httptest.NewRecorder()
+
+	server.handleSettings(recorder, settingsPutRequest(body, 12))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	committed, _ := manager.ConfigSnapshot()
+	if !committed.TrafficLog.Enabled || committed.TrafficLog.Retention != 2*time.Hour || committed.TrafficLog.MaxEntries != 4321 || committed.TrafficLog.RedactDestinationValue() {
+		t.Fatalf("traffic log settings not committed: %#v", committed.TrafficLog)
+	}
+	disk, err := config.Load(cfg.FilePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disk.TrafficLog.File != "history/traffic.db" || disk.TrafficLog.MaxEntries != 4321 {
+		t.Fatalf("traffic log settings not persisted: %#v", disk.TrafficLog)
 	}
 }
 
@@ -286,6 +317,49 @@ func TestSettingsNamedProfilesValidateBeforeCommit(t *testing.T) {
 	_, invalidRevision := invalidManager.ConfigSnapshot()
 	if invalidRevision != 8 {
 		t.Fatalf("invalid profile advanced revision to %d", invalidRevision)
+	}
+}
+
+func TestSettingsEndpointManagerCommitsAndReturnsRuntimeStatus(t *testing.T) {
+	cfg := newSettingsTransactionConfig(t)
+	cfg.Mode = "pool"
+	manager := &settingsTransactionNodeManager{
+		cfg: cfg.Clone(), revision: 31,
+		endpointStatuses: []EndpointRuntimeStatus{
+			{Name: "public", Status: "running"},
+			{Name: "standby", Status: "disabled", Message: "已由配置停用"},
+		},
+	}
+	server := newSettingsTransactionServer(cfg, manager)
+	body := bytes.NewBufferString(`{"endpoints":[{"name":" Public ","enabled":true,"address":"127.0.0.1","port":2323,"username":"fleet","password":"secret"},{"name":"standby","enabled":false,"address":"127.0.0.1","port":2324}]}`)
+	recorder := httptest.NewRecorder()
+
+	server.handleSettings(recorder, settingsPutRequest(body, 31))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	committed, revision := manager.ConfigSnapshot()
+	if revision != 32 || len(committed.Endpoints) != 2 || committed.Endpoints[0].Name != "public" {
+		t.Fatalf("endpoints not normalized and committed: revision=%d endpoints=%#v", revision, committed.Endpoints)
+	}
+	if committed.Listener.Address != "127.0.0.1" || committed.Listener.Port != 2323 || committed.Listener.Username != "fleet" {
+		t.Fatalf("legacy listener mirror was not updated: %#v", committed.Listener)
+	}
+
+	getRecorder := httptest.NewRecorder()
+	server.handleSettings(getRecorder, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if getRecorder.Code != http.StatusOK || getRecorder.Header().Get("ETag") != settingsETag(32) {
+		t.Fatalf("GET status=%d ETag=%q body=%s", getRecorder.Code, getRecorder.Header().Get("ETag"), getRecorder.Body.String())
+	}
+	var response struct {
+		Endpoints []endpointSettingsResponse `json:"endpoints"`
+	}
+	if err := json.Unmarshal(getRecorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode settings response: %v", err)
+	}
+	if len(response.Endpoints) != 2 || response.Endpoints[0].Status != "running" || response.Endpoints[1].Status != "disabled" {
+		t.Fatalf("unexpected endpoint settings payload: %#v", response.Endpoints)
 	}
 }
 

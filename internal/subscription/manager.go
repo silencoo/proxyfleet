@@ -71,6 +71,7 @@ type Manager struct {
 	activeBatch   *refreshBatch
 	pendingUpdate *pendingConfigUpdate
 	sourceCache   map[string][]config.NodeConfig
+	sourceStatus  map[string]monitor.SubscriptionSourceStatus
 	previews      map[string]subscriptionPreviewPlan
 
 	// Track nodes.txt content hash to detect modifications
@@ -97,6 +98,7 @@ func New(cfg *config.Config, boxMgr boxManager, opts ...Option) *Manager {
 		waiters:       make(map[uint64]chan error),
 		canceled:      make(map[uint64]error),
 		sourceCache:   make(map[string][]config.NodeConfig),
+		sourceStatus:  make(map[string]monitor.SubscriptionSourceStatus),
 		previews:      make(map[string]subscriptionPreviewPlan),
 		waitBudgetFn:  refreshWaitBudget,
 	}
@@ -106,6 +108,12 @@ func New(cfg *config.Config, boxMgr boxManager, opts ...Option) *Manager {
 	}
 	if m.logger == nil {
 		m.logger = defaultLogger{}
+	}
+	now := time.Now()
+	for _, source := range m.baseCfg.EffectiveSubscriptionSources() {
+		m.sourceStatus[source.Name] = monitor.SubscriptionSourceStatus{
+			Name: source.Name, Enabled: source.EnabledValue(), LastAttempt: now,
+		}
 	}
 	return m
 }
@@ -251,6 +259,42 @@ func (m *Manager) RefreshNow() error {
 	}
 }
 
+// RefreshSource refreshes one enabled source and composes its result with the
+// last-known-good cache for the remaining enabled sources.
+func (m *Manager) RefreshSource(name string) error {
+	name = strings.ToLower(strings.TrimSpace(name))
+	m.mu.RLock()
+	cfg := m.baseCfg.Clone()
+	waitCtx := m.ctx
+	stopped := m.stopped
+	m.mu.RUnlock()
+	if stopped || waitCtx == nil {
+		return context.Canceled
+	}
+	var selected config.SubscriptionSourceConfig
+	found := false
+	for _, source := range cfg.EffectiveSubscriptionSources() {
+		if source.Name == name {
+			selected, found = source, true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("subscription source %q does not exist", name)
+	}
+	if !selected.EnabledValue() {
+		return fmt.Errorf("subscription source %q is disabled", name)
+	}
+	budget := m.waitBudgetFn(cfg, 1)
+	ctx, cancel := context.WithTimeout(waitCtx, budget)
+	defer cancel()
+	err := m.doRefreshContext(ctx, 0, map[string]struct{}{selected.Key(): {}})
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("refresh timeout: %w", err)
+	}
+	return err
+}
+
 func (m *Manager) startLoop() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -280,7 +324,9 @@ func (m *Manager) updateConfig(urls []string, enabled bool, interval time.Durati
 		return nil, configRevisionConflict(*expectedRevision, liveRevision)
 	}
 	desired := liveCfg.Clone()
-	desired.Subscriptions = append([]string(nil), urls...)
+	if err := desired.SetSubscriptionSources(config.SubscriptionSourcesFromURLs(urls)); err != nil {
+		return nil, err
+	}
 	desired.SubscriptionRefresh.Enabled = enabled
 	if interval > 0 {
 		desired.SubscriptionRefresh.Interval = interval
@@ -493,11 +539,37 @@ func (m *Manager) Status() monitor.SubscriptionStatus {
 	m.mu.RLock()
 	status := m.status
 	status.NodeFailures = append([]monitor.SubscriptionNodeFailure(nil), m.status.NodeFailures...)
+	status.Sources = m.sourceStatusesLocked(time.Now())
 	m.mu.RUnlock()
 
 	// Check if nodes have been modified since last refresh
 	status.NodesModified = m.CheckNodesModified()
 	return status
+}
+
+func (m *Manager) sourceStatusesLocked(now time.Time) []monitor.SubscriptionSourceStatus {
+	if m.baseCfg == nil {
+		return nil
+	}
+	sources := m.baseCfg.EffectiveSubscriptionSources()
+	result := make([]monitor.SubscriptionSourceStatus, 0, len(sources))
+	for _, source := range sources {
+		status := m.sourceStatus[source.Name]
+		status.Name = source.Name
+		status.Enabled = source.EnabledValue()
+		if status.Enabled {
+			base := latestSourceActivity(status)
+			if base.IsZero() {
+				base = now
+			}
+			status.NextRefresh = base.Add(source.IntervalOrDefault(m.baseCfg.SubscriptionRefresh.Interval))
+		} else {
+			status.NextRefresh = time.Time{}
+			status.IsRefreshing = false
+		}
+		result = append(result, status)
+	}
+	return result
 }
 
 // refreshLoop is the manager's only scheduler. A stable loop/channel pair
@@ -512,19 +584,20 @@ func (m *Manager) refreshLoop() {
 	for {
 		m.mu.RLock()
 		autoEnabled := m.baseCfg.SubscriptionRefresh.Enabled && len(m.baseCfg.Subscriptions) > 0
-		interval := m.baseCfg.SubscriptionRefresh.Interval
+		nextRefresh := m.nextSourceRefreshLocked(time.Now())
 		loopCtx := m.ctx
 		m.mu.RUnlock()
-		if interval <= 0 {
-			interval = time.Hour
-		}
 
 		var timerChannel <-chan time.Time
 		if autoEnabled {
-			timer.Reset(interval)
+			delay := time.Until(nextRefresh)
+			if delay < time.Second {
+				delay = time.Second
+			}
+			timer.Reset(delay)
 			timerChannel = timer.C
 			m.mu.Lock()
-			m.status.NextRefresh = time.Now().Add(interval)
+			m.status.NextRefresh = nextRefresh
 			m.mu.Unlock()
 		} else {
 			m.mu.Lock()
@@ -540,7 +613,7 @@ func (m *Manager) refreshLoop() {
 			continue
 		case <-timerChannel:
 			target := m.requestedSequence()
-			err := m.runScheduledRefresh(target)
+			err := m.runScheduledRefresh(target, m.dueSourceKeys(time.Now()))
 			m.completeRequests(target, err)
 		case <-m.manualRefresh:
 			stopTimer(timer)
@@ -548,13 +621,13 @@ func (m *Manager) refreshLoop() {
 			if !pending {
 				continue
 			}
-			err := m.runScheduledRefresh(target)
+			err := m.runScheduledRefresh(target, nil)
 			m.completeRequests(target, err)
 		}
 	}
 }
 
-func (m *Manager) runScheduledRefresh(target uint64) error {
+func (m *Manager) runScheduledRefresh(target uint64, sourceKeys map[string]struct{}) error {
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.mu.Lock()
 	m.activeBatch = &refreshBatch{upTo: target, cancel: cancel}
@@ -565,7 +638,59 @@ func (m *Manager) runScheduledRefresh(target uint64) error {
 		}
 	}
 	m.mu.Unlock()
-	return m.doRefreshContext(ctx, target)
+	return m.doRefreshContext(ctx, target, sourceKeys)
+}
+
+func (m *Manager) nextSourceRefreshLocked(now time.Time) time.Time {
+	if m.baseCfg == nil {
+		return now.Add(time.Hour)
+	}
+	next := time.Time{}
+	for _, source := range m.baseCfg.EffectiveSubscriptionSources() {
+		if !source.EnabledValue() {
+			continue
+		}
+		status := m.sourceStatus[source.Name]
+		base := latestSourceActivity(status)
+		if base.IsZero() {
+			base = now
+		}
+		candidate := base.Add(source.IntervalOrDefault(m.baseCfg.SubscriptionRefresh.Interval))
+		if next.IsZero() || candidate.Before(next) {
+			next = candidate
+		}
+	}
+	if next.IsZero() {
+		return now.Add(time.Hour)
+	}
+	return next
+}
+
+func (m *Manager) dueSourceKeys(now time.Time) map[string]struct{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]struct{})
+	if m.baseCfg == nil {
+		return result
+	}
+	for _, source := range m.baseCfg.EffectiveSubscriptionSources() {
+		if !source.EnabledValue() {
+			continue
+		}
+		status := m.sourceStatus[source.Name]
+		base := latestSourceActivity(status)
+		if base.IsZero() || !base.Add(source.IntervalOrDefault(m.baseCfg.SubscriptionRefresh.Interval)).After(now) {
+			result[source.Key()] = struct{}{}
+		}
+	}
+	return result
+}
+
+func latestSourceActivity(status monitor.SubscriptionSourceStatus) time.Time {
+	if status.LastAttempt.After(status.LastSuccess) {
+		return status.LastAttempt
+	}
+	return status.LastSuccess
 }
 
 func stopTimer(timer *time.Timer) {
@@ -657,10 +782,10 @@ func addDuration(left, right time.Duration) time.Duration {
 
 // doRefresh performs one atomic fetch, file update, and runtime reload.
 func (m *Manager) doRefresh() (refreshErr error) {
-	return m.doRefreshContext(m.ctx, ^uint64(0))
+	return m.doRefreshContext(m.ctx, ^uint64(0), nil)
 }
 
-func (m *Manager) doRefreshContext(refreshCtx context.Context, targetSequence uint64) (refreshErr error) {
+func (m *Manager) doRefreshContext(refreshCtx context.Context, targetSequence uint64, selectedSourceKeys map[string]struct{}) (refreshErr error) {
 	select {
 	case <-refreshCtx.Done():
 		return refreshCtx.Err()
@@ -742,6 +867,9 @@ func (m *Manager) doRefreshContext(refreshCtx context.Context, targetSequence ui
 		m.logger.Infof("subscription config cleared; %d inline nodes remain", len(committed.Nodes))
 		return nil
 	}
+	if selectedPending != 0 {
+		selectedSourceKeys = nil
+	}
 	// A queued manual signal can outlive a synchronous clear operation. Treat
 	// it as already satisfied instead of turning a successful clear into a
 	// spurious "no nodes fetched" status error.
@@ -751,7 +879,12 @@ func (m *Manager) doRefreshContext(refreshCtx context.Context, targetSequence ui
 	nodesFilePath := nodesFilePathForConfig(baseCfg)
 
 	m.logger.Infof("starting subscription refresh")
-	plan, err := m.fetchAllSubscriptions(refreshCtx, baseCfg, nodesFilePath, selectedPending == 0)
+	if selectedSourceKeys != nil && len(selectedSourceKeys) == 0 {
+		return nil
+	}
+	m.markSourcesRefreshing(baseCfg, selectedSourceKeys)
+	plan, err := m.fetchAllSubscriptions(refreshCtx, baseCfg, nodesFilePath, selectedPending == 0, selectedSourceKeys)
+	m.recordSourceFetch(baseCfg, plan)
 	if err != nil {
 		m.logger.Errorf("fetch subscriptions failed: %v", err)
 		return err
@@ -1283,17 +1416,40 @@ type subscriptionFetchPlan struct {
 	cacheUpdates map[string][]config.NodeConfig
 	activeKeys   map[string]struct{}
 	usedFallback bool
+	results      []config.SubscriptionSourceResult
+	fallbackKeys map[string]struct{}
 }
 
 // fetchAllSubscriptions fetches all unique URLs concurrently. Once a complete
 // refresh has populated sourceCache, a failed source can be replaced by only
 // that source's last known-good nodes. On the first incomplete refresh after a
 // restart, nodes.txt remains the conservative aggregate fallback.
-func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Config, nodesFilePath string, allowAggregateFallback bool) (subscriptionFetchPlan, error) {
-	results, stats := config.FetchSubscriptionSources(ctx, baseCfg.Subscriptions, config.SubscriptionFetchOptions{
+func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Config, nodesFilePath string, allowAggregateFallback bool, selectedKeys map[string]struct{}) (subscriptionFetchPlan, error) {
+	sources := baseCfg.EffectiveSubscriptionSources()
+	urls := make([]string, 0, len(sources))
+	headers := make(map[string]map[string]string)
+	activeKeys := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		if !source.EnabledValue() {
+			continue
+		}
+		key := source.Key()
+		activeKeys[key] = struct{}{}
+		if selectedKeys != nil {
+			if _, selected := selectedKeys[key]; !selected {
+				continue
+			}
+		}
+		urls = append(urls, source.URL)
+		if len(source.Headers) > 0 {
+			headers[key] = source.Headers
+		}
+	}
+	results, stats := config.FetchSubscriptionSources(ctx, urls, config.SubscriptionFetchOptions{
 		Timeout:              baseCfg.SubscriptionRefresh.Timeout,
 		Concurrency:          baseCfg.SubscriptionRefresh.FetchConcurrency,
 		AllowPrivateNetworks: baseCfg.SubscriptionRefresh.AllowPrivateNetworks,
+		HeadersBySourceKey:   headers,
 		Loggerf: func(format string, args ...any) {
 			m.logger.Infof(format, args...)
 		},
@@ -1304,7 +1460,9 @@ func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Con
 
 	plan := subscriptionFetchPlan{
 		cacheUpdates: make(map[string][]config.NodeConfig),
-		activeKeys:   make(map[string]struct{}, len(results)),
+		activeKeys:   activeKeys,
+		results:      append([]config.SubscriptionSourceResult(nil), results...),
+		fallbackKeys: make(map[string]struct{}),
 	}
 	unresolved := 0
 	var lastErr error
@@ -1323,6 +1481,7 @@ func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Con
 		if len(cached) > 0 {
 			m.logger.Warnf("using %d cached nodes for one unavailable subscription", len(cached))
 			plan.nodes = append(plan.nodes, cached...)
+			plan.fallbackKeys[result.Key] = struct{}{}
 			continue
 		}
 		unresolved++
@@ -1330,6 +1489,20 @@ func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Con
 			lastErr = result.Err
 		} else {
 			lastErr = fmt.Errorf("subscription returned no usable nodes")
+		}
+	}
+	if selectedKeys != nil {
+		for key := range activeKeys {
+			if _, selected := selectedKeys[key]; selected {
+				continue
+			}
+			m.mu.RLock()
+			cached := cloneNodes(m.sourceCache[key])
+			m.mu.RUnlock()
+			if len(cached) == 0 {
+				return plan, fmt.Errorf("subscription source cache is not initialized; run a full refresh first")
+			}
+			plan.nodes = append(plan.nodes, cached...)
 		}
 	}
 
@@ -1347,15 +1520,15 @@ func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Con
 			lastErr = fmt.Errorf("%d subscription sources could not be refreshed", unresolved)
 		}
 		if cacheErr != nil && !os.IsNotExist(cacheErr) {
-			return subscriptionFetchPlan{}, fmt.Errorf("%w; read aggregate cache: %v", lastErr, cacheErr)
+			return plan, fmt.Errorf("%w; read aggregate cache: %v", lastErr, cacheErr)
 		}
-		return subscriptionFetchPlan{}, lastErr
+		return plan, lastErr
 	}
 	if unresolved > 0 {
 		if lastErr == nil {
 			lastErr = fmt.Errorf("%d subscription sources could not be refreshed", unresolved)
 		}
-		return subscriptionFetchPlan{}, lastErr
+		return plan, lastErr
 	}
 
 	plan.nodes, stats.DedupedNodes = config.DedupeNodesByStableIdentity(plan.nodes)
@@ -1363,9 +1536,61 @@ func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Con
 		m.logger.Infof("subscription node dedupe removed %d duplicate entries", stats.DedupedNodes)
 	}
 	if len(plan.nodes) == 0 {
-		return subscriptionFetchPlan{}, fmt.Errorf("no nodes fetched from subscriptions")
+		return plan, fmt.Errorf("no nodes fetched from subscriptions")
 	}
 	return plan, nil
+}
+
+func (m *Manager) markSourcesRefreshing(cfg *config.Config, selectedKeys map[string]struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, source := range cfg.EffectiveSubscriptionSources() {
+		if !source.EnabledValue() {
+			continue
+		}
+		if selectedKeys != nil {
+			if _, selected := selectedKeys[source.Key()]; !selected {
+				continue
+			}
+		}
+		status := m.sourceStatus[source.Name]
+		status.Name, status.Enabled, status.IsRefreshing = source.Name, true, true
+		status.UsingFallback = false
+		m.sourceStatus[source.Name] = status
+	}
+}
+
+func (m *Manager) recordSourceFetch(cfg *config.Config, plan subscriptionFetchPlan) {
+	now := time.Now()
+	sourceByKey := make(map[string]config.SubscriptionSourceConfig)
+	for _, source := range cfg.EffectiveSubscriptionSources() {
+		sourceByKey[source.Key()] = source
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, result := range plan.results {
+		source, exists := sourceByKey[result.Key]
+		if !exists {
+			continue
+		}
+		status := m.sourceStatus[source.Name]
+		status.Name, status.Enabled, status.IsRefreshing = source.Name, source.EnabledValue(), false
+		status.LastAttempt, status.DurationMS = now, result.Duration.Milliseconds()
+		_, status.UsingFallback = plan.fallbackKeys[result.Key]
+		if result.Err == nil && len(result.Nodes) > 0 {
+			status.LastSuccess, status.NodeCount, status.LastError = now, len(result.Nodes), ""
+		} else {
+			if result.Err != nil {
+				status.LastError = monitor.SanitizeProbeError(result.Err)
+			} else {
+				status.LastError = "订阅未返回可用节点"
+			}
+			if cached := m.sourceCache[result.Key]; len(cached) > 0 {
+				status.NodeCount = len(cached)
+			}
+		}
+		m.sourceStatus[source.Name] = status
+	}
 }
 
 // createNewConfig merges explicit inline nodes with refreshed subscription
@@ -1396,6 +1621,7 @@ func (m *Manager) createNewConfig(baseCfg *config.Config, nodes []config.NodeCon
 	}
 	newCfg.Nodes = merged
 	newCfg.Subscriptions = append([]string(nil), baseCfg.Subscriptions...)
+	newCfg.SubscriptionSources = baseCfg.EffectiveSubscriptionSources()
 	return &newCfg
 }
 

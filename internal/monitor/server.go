@@ -28,6 +28,7 @@ import (
 	"easy_proxies/internal/buildinfo"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/geoip"
+	"easy_proxies/internal/trafficlog"
 	"easy_proxies/webui"
 )
 
@@ -72,6 +73,10 @@ type SubscriptionRefresher interface {
 	UpdateConfigAndRefreshAtRevision(urls []string, enabled bool, interval time.Duration, fetchConcurrency int, allowPrivateNetworks bool, expectedRevision uint64) error
 }
 
+type SubscriptionSourceRefresher interface {
+	RefreshSource(name string) error
+}
+
 const (
 	maxSubscriptionConfigBodyBytes int64 = 512 * 1024
 	maxSettingsBodyBytes           int64 = 512 * 1024
@@ -80,16 +85,17 @@ const (
 )
 
 type settingsUpdateRequest struct {
-	ExternalIP       *string                 `json:"external_ip,omitempty"`
-	ProbeTarget      *string                 `json:"probe_target,omitempty"`
-	SkipCertVerify   *bool                   `json:"skip_cert_verify,omitempty"`
-	ProbeConcurrency *int                    `json:"probe_concurrency,omitempty"`
-	ProbeMode        *string                 `json:"probe_mode,omitempty"`
-	ProbeInterval    *string                 `json:"probe_interval,omitempty"`
-	ProbeTimeout     *string                 `json:"probe_timeout,omitempty"`
-	ProbeBatchSize   *int                    `json:"probe_batch_size,omitempty"`
-	Mode             *string                 `json:"mode,omitempty"`
-	Profiles         *[]config.ProfileConfig `json:"profiles,omitempty"`
+	ExternalIP       *string                  `json:"external_ip,omitempty"`
+	ProbeTarget      *string                  `json:"probe_target,omitempty"`
+	SkipCertVerify   *bool                    `json:"skip_cert_verify,omitempty"`
+	ProbeConcurrency *int                     `json:"probe_concurrency,omitempty"`
+	ProbeMode        *string                  `json:"probe_mode,omitempty"`
+	ProbeInterval    *string                  `json:"probe_interval,omitempty"`
+	ProbeTimeout     *string                  `json:"probe_timeout,omitempty"`
+	ProbeBatchSize   *int                     `json:"probe_batch_size,omitempty"`
+	Mode             *string                  `json:"mode,omitempty"`
+	Profiles         *[]config.ProfileConfig  `json:"profiles,omitempty"`
+	Endpoints        *[]config.EndpointConfig `json:"endpoints,omitempty"`
 	Listener         *struct {
 		Address  string `json:"address"`
 		Port     uint16 `json:"port"`
@@ -156,6 +162,13 @@ type settingsUpdateRequest struct {
 		Compress       bool   `json:"compress"`
 		RotateInterval string `json:"rotate_interval"`
 	} `json:"log,omitempty"`
+	TrafficLog *struct {
+		Enabled           bool   `json:"enabled"`
+		File              string `json:"file"`
+		Retention         string `json:"retention"`
+		MaxEntries        int    `json:"max_entries"`
+		RedactDestination bool   `json:"redact_destination"`
+	} `json:"traffic_log,omitempty"`
 	GeoIP *struct {
 		Enabled            bool   `json:"enabled"`
 		DatabasePath       string `json:"database_path"`
@@ -176,18 +189,84 @@ type SubscriptionNodeFailure struct {
 	Error   string `json:"error"`
 }
 
+// EndpointRuntimeStatus describes whether a configured pool listener is
+// currently published by the active sing-box runtime.
+type EndpointRuntimeStatus struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+type endpointSettingsResponse struct {
+	Name     string `json:"name"`
+	Enabled  bool   `json:"enabled"`
+	Address  string `json:"address"`
+	Port     uint16 `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Profile  string `json:"profile,omitempty"`
+	Status   string `json:"status"`
+	Message  string `json:"message,omitempty"`
+}
+
+type endpointAccessResponse struct {
+	endpointSettingsResponse
+	Host      string `json:"host"`
+	HTTPURI   string `json:"http_uri"`
+	Socks5URI string `json:"socks5_uri"`
+}
+
+type endpointStatusProvider interface {
+	EndpointStatuses() []EndpointRuntimeStatus
+}
+
+type profilePreviewSample struct {
+	Name      string  `json:"name"`
+	Region    string  `json:"region"`
+	Protocol  string  `json:"protocol"`
+	Source    string  `json:"source"`
+	Quality   float64 `json:"quality"`
+	Matched   bool    `json:"matched"`
+	Reason    string  `json:"reason,omitempty"`
+	RuleGroup string  `json:"rule_group,omitempty"`
+	RuleIndex int     `json:"rule_index,omitempty"`
+	Rule      string  `json:"rule,omitempty"`
+}
+
+type profilePreviewResponse struct {
+	Total           int                    `json:"total"`
+	Matched         int                    `json:"matched"`
+	Excluded        map[string]int         `json:"excluded"`
+	MatchedSamples  []profilePreviewSample `json:"matched_samples"`
+	ExcludedSamples []profilePreviewSample `json:"excluded_samples"`
+}
+
 // SubscriptionStatus represents subscription refresh status.
 type SubscriptionStatus struct {
-	LastRefresh   time.Time                 `json:"last_refresh"`
-	NextRefresh   time.Time                 `json:"next_refresh"`
-	NodeCount     int                       `json:"node_count"`
-	LastError     string                    `json:"last_error,omitempty"`
-	RefreshCount  int                       `json:"refresh_count"`
-	IsRefreshing  bool                      `json:"is_refreshing"`
-	NodesModified bool                      `json:"nodes_modified"` // True if nodes.txt was modified since last refresh
-	FailurePolicy string                    `json:"failure_policy"`
-	SkippedNodes  int                       `json:"skipped_nodes"`
-	NodeFailures  []SubscriptionNodeFailure `json:"node_failures,omitempty"`
+	LastRefresh   time.Time                  `json:"last_refresh"`
+	NextRefresh   time.Time                  `json:"next_refresh"`
+	NodeCount     int                        `json:"node_count"`
+	LastError     string                     `json:"last_error,omitempty"`
+	RefreshCount  int                        `json:"refresh_count"`
+	IsRefreshing  bool                       `json:"is_refreshing"`
+	NodesModified bool                       `json:"nodes_modified"` // True if nodes.txt was modified since last refresh
+	FailurePolicy string                     `json:"failure_policy"`
+	SkippedNodes  int                        `json:"skipped_nodes"`
+	NodeFailures  []SubscriptionNodeFailure  `json:"node_failures,omitempty"`
+	Sources       []SubscriptionSourceStatus `json:"sources,omitempty"`
+}
+
+type SubscriptionSourceStatus struct {
+	Name          string    `json:"name"`
+	Enabled       bool      `json:"enabled"`
+	IsRefreshing  bool      `json:"is_refreshing"`
+	UsingFallback bool      `json:"using_fallback"`
+	NodeCount     int       `json:"node_count"`
+	LastAttempt   time.Time `json:"last_attempt,omitempty"`
+	LastSuccess   time.Time `json:"last_success,omitempty"`
+	NextRefresh   time.Time `json:"next_refresh,omitempty"`
+	DurationMS    int64     `json:"duration_ms"`
+	LastError     string    `json:"last_error,omitempty"`
 }
 
 // Server exposes HTTP endpoints for monitoring.
@@ -402,6 +481,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/session", s.withRole(RoleViewer, s.handleSession))
 	mux.HandleFunc("/api/build-info", s.withRole(RoleViewer, s.handleBuildInfo))
 	mux.HandleFunc("/api/settings", s.withRole(RoleAdmin, s.handleSettings))
+	mux.HandleFunc("/api/profiles/preview", s.withRole(RoleAdmin, s.handleProfilePreview))
 	mux.HandleFunc("/api/access", s.withRole(RoleAdmin, s.handleAccessAssistant))
 	mux.HandleFunc("/api/nodes", s.withRole(RoleViewer, s.handleNodes))
 	mux.HandleFunc("/api/nodes/config", s.withRole(RoleAdmin, s.handleConfigNodes))
@@ -414,9 +494,12 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/subscription/status", s.withRole(RoleViewer, s.handleSubscriptionStatus))
 	mux.HandleFunc("/api/subscription/preview", s.withRole(RoleAdmin, s.handleSubscriptionPreview))
 	mux.HandleFunc("/api/subscription/refresh", s.withRole(RoleOperator, s.handleSubscriptionRefresh))
+	mux.HandleFunc("/api/subscription/sources/refresh", s.withRole(RoleOperator, s.handleSubscriptionSourceRefresh))
 	mux.HandleFunc("/api/subscription/config", s.withRole(RoleAdmin, s.handleSubscriptionConfig))
 	mux.HandleFunc("/api/reload", s.withRole(RoleAdmin, s.handleReload))
 	mux.HandleFunc("/api/traffic", s.withRole(RoleViewer, s.handleTraffic))
+	mux.HandleFunc("/api/traffic/logs", s.withRole(RoleViewer, s.handleTrafficLogs))
+	mux.HandleFunc("/api/traffic/logs/clear", s.withRole(RoleAdmin, s.handleTrafficLogsClear))
 	mux.HandleFunc("/api/logs", s.withRole(RoleViewer, s.handleLogs))
 	mux.HandleFunc("/api/probe/status", s.withRole(RoleViewer, s.handleProbeStatus))
 	mux.HandleFunc("/api/metrics/history", s.withRole(RoleViewer, s.handleMetricsHistory))
@@ -1408,22 +1491,33 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.RLock()
 	mode := ""
 	var listenerCfg config.ListenerConfig
+	var endpointCfgs []config.EndpointConfig
 	var multiPortCfg config.MultiPortConfig
 	var geoipCfg config.GeoIPConfig
 	externalIP := s.cfg.ExternalIP
 	if s.cfgSrc != nil {
 		mode = s.cfgSrc.Mode
 		listenerCfg = s.cfgSrc.Listener
+		endpointCfgs = s.cfgSrc.EffectiveEndpoints()
 		multiPortCfg = s.cfgSrc.MultiPort
 		geoipCfg = s.cfgSrc.GeoIP
 	}
 	s.cfgMu.RUnlock()
 
-	// Pool 代理池入口（pool 或 hybrid 模式）
-	if (mode == "pool" || mode == "hybrid") && listenerCfg.Port > 0 {
-		poolAddr := exportAddress(listenerCfg.Address, externalIP)
-		lines = append(lines, "# Pool 代理池入口")
-		appendProxyURIs(&lines, seen, scheme, poolAddr, listenerCfg.Port, listenerCfg.Username, listenerCfg.Password)
+	// Endpoint 入口（pool 或 hybrid 模式，共享同一节点池）
+	if mode == "pool" || mode == "hybrid" {
+		for _, endpoint := range endpointCfgs {
+			if !endpoint.EnabledValue() || endpoint.Port == 0 {
+				continue
+			}
+			poolAddr := exportAddress(endpoint.Address, externalIP)
+			label := fmt.Sprintf("# Endpoint %s", endpoint.Name)
+			if endpoint.Profile != "" {
+				label += " (profile=" + endpoint.Profile + ")"
+			}
+			lines = append(lines, label)
+			appendProxyURIs(&lines, seen, scheme, poolAddr, endpoint.Port, endpoint.Username, endpoint.Password)
+		}
 	}
 
 	// GeoIP 分区路由入口
@@ -1490,6 +1584,53 @@ func (s *Server) handleAccessAssistant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cfg *config.Config
+	nodeMgr := s.nodeManager()
+	if nodeMgr != nil {
+		cfg, _ = nodeMgr.ConfigSnapshot()
+	}
+	if cfg == nil {
+		s.cfgMu.RLock()
+		cfg = s.cfgSrc.Clone()
+		s.cfgMu.RUnlock()
+	}
+	if cfg == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "配置存储未初始化")
+		return
+	}
+	endpoints := endpointSettingsPayload(cfg, nodeMgr)
+	accessEndpoints := make([]endpointAccessResponse, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		host := exportAddress(endpoint.Address, cfg.ExternalIP)
+		httpURI, _ := formatProxyURI("http", host, endpoint.Port, endpoint.Username, endpoint.Password)
+		socksURI, _ := formatProxyURI("socks5", host, endpoint.Port, endpoint.Username, endpoint.Password)
+		accessEndpoints = append(accessEndpoints, endpointAccessResponse{
+			endpointSettingsResponse: endpoint,
+			Host:                     host, HTTPURI: httpURI, Socks5URI: socksURI,
+		})
+	}
+	primary := cfg.PrimaryEndpoint()
+	host := exportAddress(primary.Address, cfg.ExternalIP)
+	httpURI, _ := formatProxyURI("http", host, primary.Port, primary.Username, primary.Password)
+	socksURI, _ := formatProxyURI("socks5", host, primary.Port, primary.Username, primary.Password)
+	writeJSON(w, map[string]any{
+		"mode": cfg.Mode, "host": host, "port": primary.Port,
+		"username": primary.Username, "password": primary.Password,
+		"http_uri": httpURI, "socks5_uri": socksURI, "profiles": cfg.Profiles,
+		"endpoints": accessEndpoints,
+	})
+}
+
+func (s *Server) handleProfilePreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var profile config.ProfileConfig
+	if err := decodeStrictJSON(w, r, maxNodeConfigBodyBytes, &profile); err != nil {
+		writeStrictJSONError(w, err)
+		return
+	}
+	var cfg *config.Config
 	if nodeMgr := s.nodeManager(); nodeMgr != nil {
 		cfg, _ = nodeMgr.ConfigSnapshot()
 	}
@@ -1502,14 +1643,142 @@ func (s *Server) handleAccessAssistant(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "配置存储未初始化")
 		return
 	}
-	host := exportAddress(cfg.Listener.Address, cfg.ExternalIP)
-	httpURI, _ := formatProxyURI("http", host, cfg.Listener.Port, cfg.Listener.Username, cfg.Listener.Password)
-	socksURI, _ := formatProxyURI("socks5", host, cfg.Listener.Port, cfg.Listener.Username, cfg.Listener.Password)
-	writeJSON(w, map[string]any{
-		"mode": cfg.Mode, "host": host, "port": cfg.Listener.Port,
-		"username": cfg.Listener.Username, "password": cfg.Listener.Password,
-		"http_uri": httpURI, "socks5_uri": socksURI, "profiles": cfg.Profiles,
-	})
+	candidate := cfg.Clone()
+	candidate.Profiles = []config.ProfileConfig{profile}
+	if err := candidate.NormalizeProfiles(); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Profile 配置无效: %v", err))
+		return
+	}
+	profile = candidate.Profiles[0]
+	matcher, err := config.CompileProfileNameMatcher(profile)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Profile 规则无效: %v", err))
+		return
+	}
+
+	snapshots := make(map[string]Snapshot)
+	if s.mgr != nil {
+		for _, snapshot := range s.mgr.Snapshot() {
+			snapshots[snapshot.Tag] = snapshot
+		}
+	}
+	regions := previewStringSet(profile.Regions)
+	protocols := previewStringSet(profile.Protocols)
+	sources := previewStringSet(profile.Sources)
+	response := profilePreviewResponse{Excluded: make(map[string]int)}
+	usedKeys := make(map[string]int)
+	for _, node := range cfg.Nodes {
+		nodeKey := node.NodeKey()
+		occurrence := usedKeys[nodeKey]
+		usedKeys[nodeKey] = occurrence + 1
+		tag := "node-" + nodeKey
+		if occurrence > 0 {
+			tag = fmt.Sprintf("%s-%d", tag, occurrence+1)
+		}
+		snapshot, hasSnapshot := snapshots[tag]
+		if len(snapshots) > 0 && !hasSnapshot {
+			continue
+		}
+		region := ResolveDisplayRegion(node.Name, tag, snapshot.Country, snapshot.Region)
+		protocol := profileNodeProtocol(node.URI)
+		source := strings.ToLower(strings.TrimSpace(string(node.Source)))
+		if source == "" {
+			source = string(config.NodeSourceInline)
+		}
+		sample := profilePreviewSample{
+			Name: node.Name, Region: region, Protocol: protocol, Source: source,
+			Quality: snapshot.QualityScore, Matched: true, RuleIndex: -1,
+		}
+		switch {
+		case len(regions) > 0 && !previewSetContains(regions, region):
+			sample.Matched, sample.Reason = false, "region"
+		case len(protocols) > 0 && !previewSetContains(protocols, protocol):
+			sample.Matched, sample.Reason = false, "protocol"
+		case len(sources) > 0 && !previewSetContains(sources, source):
+			sample.Matched, sample.Reason = false, "source"
+		default:
+			ruleMatch := matcher.Match(node.Name)
+			if !ruleMatch.Allowed {
+				sample.Matched, sample.Reason = false, "tag_rule"
+				sample.RuleGroup, sample.RuleIndex, sample.Rule = ruleMatch.Group, ruleMatch.Index, ruleMatch.Pattern
+			} else if profile.MinQuality > 0 && sample.Quality < profile.MinQuality {
+				sample.Matched, sample.Reason = false, "quality"
+			}
+		}
+		response.Total++
+		if sample.Matched {
+			response.Matched++
+			if len(response.MatchedSamples) < 6 {
+				response.MatchedSamples = append(response.MatchedSamples, sample)
+			}
+		} else {
+			response.Excluded[sample.Reason]++
+			if len(response.ExcludedSamples) < 6 {
+				response.ExcludedSamples = append(response.ExcludedSamples, sample)
+			}
+		}
+	}
+	writeJSON(w, response)
+}
+
+func previewStringSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			result[value] = struct{}{}
+		}
+	}
+	return result
+}
+
+func previewSetContains(values map[string]struct{}, value string) bool {
+	_, exists := values[strings.ToLower(strings.TrimSpace(value))]
+	return exists
+}
+
+func profileNodeProtocol(rawURI string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURI))
+	if err != nil {
+		return "unknown"
+	}
+	protocol := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if protocol == "" {
+		return "unknown"
+	}
+	return protocol
+}
+
+func endpointSettingsPayload(cfg *config.Config, nodeMgr NodeManager) []endpointSettingsResponse {
+	if cfg == nil {
+		return nil
+	}
+	statuses := make(map[string]EndpointRuntimeStatus)
+	if provider, ok := nodeMgr.(endpointStatusProvider); ok {
+		for _, status := range provider.EndpointStatuses() {
+			statuses[status.Name] = status
+		}
+	}
+	endpoints := cfg.EffectiveEndpoints()
+	result := make([]endpointSettingsResponse, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		status := statuses[endpoint.Name]
+		if status.Status == "" {
+			switch {
+			case !endpoint.EnabledValue():
+				status.Status = "disabled"
+			case cfg.Mode != "pool" && cfg.Mode != "hybrid":
+				status.Status = "inactive"
+			default:
+				status.Status = "waiting"
+			}
+		}
+		result = append(result, endpointSettingsResponse{
+			Name: endpoint.Name, Enabled: endpoint.EnabledValue(), Address: endpoint.Address,
+			Port: endpoint.Port, Username: endpoint.Username, Password: endpoint.Password,
+			Profile: endpoint.Profile, Status: status.Status, Message: status.Message,
+		})
+	}
+	return result
 }
 
 func appendProxyURIs(lines *[]string, seen map[string]bool, selection, host string, port uint16, username, password string) {
@@ -1757,6 +2026,31 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 		candidate.Listener.Port = request.Listener.Port
 		candidate.Listener.Username = request.Listener.Username
 		candidate.Listener.Password = request.Listener.Password
+		// Older API clients know only the legacy listener object. When Endpoint
+		// Manager is already configured, keep that update meaningful by applying
+		// it to the current primary endpoint.
+		if request.Endpoints == nil && len(candidate.Endpoints) > 0 {
+			primaryName := candidate.PrimaryEndpoint().Name
+			for index := range candidate.Endpoints {
+				if candidate.Endpoints[index].Name == primaryName {
+					candidate.Endpoints[index].Address = candidate.Listener.Address
+					candidate.Endpoints[index].Port = candidate.Listener.Port
+					candidate.Endpoints[index].Username = candidate.Listener.Username
+					candidate.Endpoints[index].Password = candidate.Listener.Password
+					break
+				}
+			}
+		}
+	}
+	if request.Endpoints != nil {
+		candidate.Endpoints = make([]config.EndpointConfig, len(*request.Endpoints))
+		for index := range *request.Endpoints {
+			candidate.Endpoints[index] = (*request.Endpoints)[index]
+			if (*request.Endpoints)[index].Enabled != nil {
+				enabled := *(*request.Endpoints)[index].Enabled
+				candidate.Endpoints[index].Enabled = &enabled
+			}
+		}
 	}
 	if request.Profiles != nil {
 		candidate.Profiles = make([]config.ProfileConfig, len(*request.Profiles))
@@ -1765,10 +2059,16 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 			candidate.Profiles[index].Regions = append([]string(nil), (*request.Profiles)[index].Regions...)
 			candidate.Profiles[index].Protocols = append([]string(nil), (*request.Profiles)[index].Protocols...)
 			candidate.Profiles[index].Sources = append([]string(nil), (*request.Profiles)[index].Sources...)
+			candidate.Profiles[index].TagRules.Any = append([]string(nil), (*request.Profiles)[index].TagRules.Any...)
+			candidate.Profiles[index].TagRules.Must = append([]string(nil), (*request.Profiles)[index].TagRules.Must...)
+			candidate.Profiles[index].TagRules.MustNot = append([]string(nil), (*request.Profiles)[index].TagRules.MustNot...)
 		}
 	}
 	if err := candidate.NormalizeProfiles(); err != nil {
 		return fmt.Errorf("Named Profiles 配置无效: %w", err)
+	}
+	if err := candidate.NormalizeEndpoints(); err != nil {
+		return fmt.Errorf("Endpoint 配置无效: %w", err)
 	}
 	if request.MultiPort != nil {
 		if strings.TrimSpace(request.MultiPort.Address) == "" || request.MultiPort.BasePort == 0 {
@@ -1960,6 +2260,24 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 		candidate.Log.Compress = request.Log.Compress
 		candidate.Log.RotateInterval = rotateInterval
 	}
+	if request.TrafficLog != nil {
+		retention, err := parsePositiveSettingsDuration(request.TrafficLog.Retention)
+		if err != nil || retention < time.Minute {
+			return errors.New("结构化流量日志保留时间必须至少为 1m")
+		}
+		if request.TrafficLog.MaxEntries < 1 || request.TrafficLog.MaxEntries > 10_000_000 {
+			return errors.New("结构化流量日志条数上限必须在 1 到 10000000 之间")
+		}
+		file := strings.TrimSpace(request.TrafficLog.File)
+		if file == "" {
+			return errors.New("结构化流量日志数据库路径不能为空")
+		}
+		redact := request.TrafficLog.RedactDestination
+		candidate.TrafficLog = config.TrafficLogConfig{
+			Enabled: request.TrafficLog.Enabled, File: file, Retention: retention,
+			MaxEntries: request.TrafficLog.MaxEntries, RedactDestination: &redact,
+		}
+	}
 	if request.GeoIP != nil {
 		candidate.GeoIP.Enabled = request.GeoIP.Enabled
 		candidate.GeoIP.DatabasePath = strings.TrimSpace(request.GeoIP.DatabasePath)
@@ -2037,7 +2355,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.cfgMu.RLock()
 		cfg := s.cfgSrc.Clone()
 		s.cfgMu.RUnlock()
-		if nodeMgr := s.nodeManager(); nodeMgr != nil {
+		nodeMgr := s.nodeManager()
+		if nodeMgr != nil {
 			if committed, revision := nodeMgr.ConfigSnapshot(); committed != nil {
 				cfg = committed
 				extIP = committed.ExternalIP
@@ -2073,6 +2392,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"compress":        logCfg.Compress,
 				"rotate_interval": logCfg.RotateInterval.String(),
 			},
+			"traffic_log": map[string]any{
+				"enabled": false, "file": "traffic-log.db", "retention": "24h0m0s",
+				"max_entries": 100000, "redact_destination": true,
+			},
 			"geoip": map[string]any{
 				"enabled":              false,
 				"database_path":        "",
@@ -2088,6 +2411,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if cfg != nil {
 			resp["mode"] = cfg.Mode
 			resp["profiles"] = cfg.Profiles
+			resp["endpoints"] = endpointSettingsPayload(cfg, nodeMgr)
 			resp["listener"] = map[string]any{
 				"address":  cfg.Listener.Address,
 				"port":     cfg.Listener.Port,
@@ -2145,6 +2469,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"audit_max_entries":            cfg.AuditMaxEntriesOrDefault(),
 				"tls_cert_file":                cfg.Management.TLSCertFile,
 				"tls_key_file":                 cfg.Management.TLSKeyFile,
+			}
+			resp["traffic_log"] = map[string]any{
+				"enabled": cfg.TrafficLog.Enabled, "file": cfg.TrafficLog.File,
+				"retention": cfg.TrafficLog.Retention.String(), "max_entries": cfg.TrafficLog.MaxEntries,
+				"redact_destination": cfg.TrafficLog.RedactDestinationValue(),
 			}
 			resp["geoip"] = map[string]any{
 				"enabled":              cfg.GeoIP.Enabled,
@@ -2471,6 +2800,7 @@ func (s *Server) handleSubscriptionStatus(w http.ResponseWriter, r *http.Request
 		"failure_policy": status.FailurePolicy,
 		"skipped_nodes":  status.SkippedNodes,
 		"node_failures":  status.NodeFailures,
+		"sources":        status.Sources,
 	})
 }
 
@@ -2499,11 +2829,48 @@ func (s *Server) handleSubscriptionRefresh(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// handleSubscriptionSourceRefresh refreshes one configured provider while
+// reusing cached nodes from every other enabled provider.
+func (s *Server) handleSubscriptionSourceRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	refresher, ok := s.subscriptionRefresher().(SubscriptionSourceRefresher)
+	if !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, "当前订阅管理器不支持独立刷新")
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := decodeStrictJSON(w, r, 16<<10, &body); err != nil {
+		writeStrictJSONError(w, err)
+		return
+	}
+	body.Name = strings.ToLower(strings.TrimSpace(body.Name))
+	if body.Name == "" {
+		writeSettingsBadRequest(w, "订阅源名称不能为空")
+		return
+	}
+	if err := refresher.RefreshSource(body.Name); err != nil {
+		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("订阅源刷新失败: %v", err))
+		return
+	}
+	status := s.subscriptionRefresher().Status()
+	writeJSON(w, map[string]any{
+		"message":    "订阅源刷新成功",
+		"sources":    status.Sources,
+		"node_count": status.NodeCount,
+	})
+}
+
 // handleSubscriptionConfig handles GET/PUT for subscription configuration.
 func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		var urls []string
+		var sources []subscriptionSourceResponse
 		var enabled bool
 		var interval string
 		fetchConcurrency := config.NormalizeSubscriptionFetchConcurrency(0)
@@ -2523,6 +2890,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		}
 		if cfg != nil {
 			urls = append([]string(nil), cfg.Subscriptions...)
+			sources = subscriptionSourcesResponse(cfg)
 			enabled = cfg.SubscriptionRefresh.Enabled
 			interval = cfg.SubscriptionRefresh.Interval.String()
 			fetchConcurrency = config.NormalizeSubscriptionFetchConcurrency(cfg.SubscriptionRefresh.FetchConcurrency)
@@ -2534,6 +2902,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		}
 		writeJSON(w, map[string]any{
 			"subscriptions":          urls,
+			"sources":                sources,
 			"enabled":                enabled,
 			"interval":               interval,
 			"fetch_concurrency":      fetchConcurrency,
@@ -2551,17 +2920,18 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			return
 		}
 		var req struct {
-			Subscriptions        []string `json:"subscriptions"`
-			Enabled              bool     `json:"enabled"`
-			Interval             string   `json:"interval"` // e.g. "1h", "30m"
-			FetchConcurrency     *int     `json:"fetch_concurrency,omitempty"`
-			AllowPrivateNetworks *bool    `json:"allow_private_networks,omitempty"`
-			MaxRemovedRatio      *float64 `json:"max_removed_ratio,omitempty"`
-			MinAvailableRatio    *float64 `json:"min_available_ratio,omitempty"`
-			QuarantineNewNodes   *bool    `json:"quarantine_new_nodes,omitempty"`
-			NodeFailurePolicy    *string  `json:"node_failure_policy,omitempty"`
-			PreviewToken         string   `json:"preview_token"`
-			ConfirmRisky         bool     `json:"confirm_risky"`
+			Subscriptions        []string                  `json:"subscriptions"`
+			Sources              *[]subscriptionSourceHTTP `json:"sources,omitempty"`
+			Enabled              bool                      `json:"enabled"`
+			Interval             string                    `json:"interval"` // e.g. "1h", "30m"
+			FetchConcurrency     *int                      `json:"fetch_concurrency,omitempty"`
+			AllowPrivateNetworks *bool                     `json:"allow_private_networks,omitempty"`
+			MaxRemovedRatio      *float64                  `json:"max_removed_ratio,omitempty"`
+			MinAvailableRatio    *float64                  `json:"min_available_ratio,omitempty"`
+			QuarantineNewNodes   *bool                     `json:"quarantine_new_nodes,omitempty"`
+			NodeFailurePolicy    *string                   `json:"node_failure_policy,omitempty"`
+			PreviewToken         string                    `json:"preview_token"`
+			ConfirmRisky         bool                      `json:"confirm_risky"`
 		}
 		if err := decodeStrictJSON(w, r, maxSubscriptionConfigBodyBytes, &req); err != nil {
 			writeStrictJSONError(w, err)
@@ -2576,7 +2946,23 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		}
 
 		cleanURLs, err := config.ValidateSubscriptionURLs(req.Subscriptions)
-		if err != nil {
+		if req.Sources != nil {
+			var current *config.Config
+			if nodeMgr := s.nodeManager(); nodeMgr != nil {
+				current, _ = nodeMgr.ConfigSnapshot()
+			}
+			sources, sourceErr := parseSubscriptionSourceHTTP(*req.Sources, current)
+			if sourceErr != nil {
+				writeSettingsBadRequest(w, "订阅源无效: "+sourceErr.Error())
+				return
+			}
+			cleanURLs = nil
+			for _, source := range sources {
+				if source.EnabledValue() {
+					cleanURLs = append(cleanURLs, source.URL)
+				}
+			}
+		} else if err != nil {
 			writeSettingsBadRequest(w, "订阅链接无效: "+err.Error())
 			return
 		}
@@ -2647,6 +3033,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		responseMinAvailableRatio := 0.0
 		responseQuarantineNewNodes := true
 		responseNodeFailurePolicy := "skip"
+		var responseSources []subscriptionSourceResponse
 		if committed, committedRevision := nodeMgr.ConfigSnapshot(); committed != nil {
 			s.SetConfig(committed)
 			w.Header().Set("ETag", settingsETag(committedRevision))
@@ -2659,12 +3046,14 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			responseMinAvailableRatio = committed.SubscriptionRefresh.MinAvailableRatio
 			responseQuarantineNewNodes = committed.SubscriptionQuarantineNewNodesValue()
 			responseNodeFailurePolicy = committed.SubscriptionNodeFailurePolicyOrDefault()
+			responseSources = subscriptionSourcesResponse(committed)
 		}
 
 		status := refresher.Status()
 		writeJSON(w, map[string]any{
 			"message":                "订阅配置已更新并生效",
 			"subscriptions":          cleanURLs,
+			"sources":                responseSources,
 			"enabled":                req.Enabled,
 			"interval":               interval.String(),
 			"fetch_concurrency":      fetchConcurrency,
@@ -2888,6 +3277,54 @@ func (s *Server) respondNodeError(w http.ResponseWriter, err error) {
 		status = http.StatusGatewayTimeout
 	}
 	writeJSONError(w, status, err.Error())
+}
+
+func (s *Server) handleTrafficLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	limit := 200
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 1000 {
+			writeSettingsBadRequest(w, "limit 必须在 1 到 1000 之间")
+			return
+		}
+		limit = parsed
+	}
+	query := trafficlog.Query{Limit: limit, NodeID: r.URL.Query().Get("node"), Profile: r.URL.Query().Get("profile")}
+	if raw := strings.TrimSpace(r.URL.Query().Get("success")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeSettingsBadRequest(w, "success 必须为 true 或 false")
+			return
+		}
+		query.Success = &parsed
+	}
+	status := trafficlog.CurrentStatus()
+	if !status.Enabled {
+		writeJSON(w, map[string]any{"enabled": false, "dropped": status.Dropped, "events": []trafficlog.Event{}})
+		return
+	}
+	events, err := trafficlog.QueryEvents(r.Context(), query)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("读取结构化流量日志失败: %v", err))
+		return
+	}
+	writeJSON(w, map[string]any{"enabled": true, "dropped": status.Dropped, "events": events})
+}
+
+func (s *Server) handleTrafficLogsClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSONMethodNotAllowed(w, http.MethodDelete)
+		return
+	}
+	if err := trafficlog.Clear(r.Context()); err != nil && !errors.Is(err, trafficlog.ErrDisabled) {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("清空结构化流量日志失败: %v", err))
+		return
+	}
+	writeJSON(w, map[string]any{"message": "结构化流量日志已清空"})
 }
 
 // handleTraffic streams real-time traffic from sing-box Clash API as SSE.

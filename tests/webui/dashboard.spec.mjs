@@ -37,7 +37,9 @@ async function mockAPI(page) {
     } else if (path === '/api/session') {
       body = { role: 'admin' };
     } else if (path === '/api/subscription/status') {
-      body = { enabled: true, node_count: 0, is_refreshing: false, last_error: '', skipped_nodes: 0, node_failures: [] };
+      body = { enabled: true, node_count: 14, is_refreshing: false, last_error: '', skipped_nodes: 0, node_failures: [], sources: [
+        { name: 'provider-a', enabled: true, is_refreshing: false, using_fallback: false, node_count: 14, duration_ms: 245, last_success: '2026-07-28T12:00:00Z', next_refresh: '2026-07-28T13:00:00Z' }
+      ] };
     } else if (path === '/api/build-info') {
       body = buildInfo;
     } else if (path === '/api/settings') {
@@ -51,9 +53,14 @@ async function mockAPI(page) {
         probe_interval: '5m0s',
         probe_timeout: '10s',
         probe_batch_size: 100,
-        listener: { host: '127.0.0.1', port: 23230, username: 'fleet', password: 'secret-pass' },
+        listener: { address: '127.0.0.1', port: 23230, username: 'fleet', password: 'secret-pass' },
+        endpoints: [
+          { name: 'public', enabled: true, address: '127.0.0.1', port: 23230, username: 'fleet', password: 'secret-pass', profile: '', status: 'running' },
+          { name: 'hk-only', enabled: true, address: '127.0.0.1', port: 23231, username: 'hk', password: 'hk-secret', profile: 'hk-fast', status: 'running' }
+        ],
         multi_port: {}, pool: {}, geoip: {}, log: {},
-        profiles: [{ name: 'hk-fast', regions: ['hk'], name_regex: '', protocols: ['vless'], sources: [], min_quality: 80 }],
+        traffic_log: { enabled: true, file: 'traffic-log.db', retention: '24h0m0s', max_entries: 100000, redact_destination: true },
+        profiles: [{ name: 'hk-fast', regions: ['hk'], name_regex: '', tag_rules: { any: ['HK|Hong Kong'], must: ['Premium'], must_not: ['Expired'] }, protocols: ['vless'], sources: [], min_quality: 80 }],
         management: {
           probe_healthy_interval: '30m0s',
           probe_failure_retry_interval: '1m0s',
@@ -69,15 +76,27 @@ async function mockAPI(page) {
         username: 'fleet', password: 'secret-pass',
         http_uri: 'http://fleet:secret-pass@127.0.0.1:23230',
         socks5_uri: 'socks5://fleet:secret-pass@127.0.0.1:23230',
-        profiles: [{ name: 'hk-fast', regions: ['hk'], name_regex: '', protocols: ['vless'], sources: [], min_quality: 80 }]
+        profiles: [{ name: 'hk-fast', regions: ['hk'], name_regex: '', protocols: ['vless'], sources: [], min_quality: 80 }],
+        endpoints: [
+          { name: 'public', enabled: true, host: '127.0.0.1', port: 23230, username: 'fleet', password: 'secret-pass', profile: '', status: 'running' },
+          { name: 'hk-only', enabled: true, host: '127.0.0.1', port: 23231, username: 'hk', password: 'hk-secret', profile: 'hk-fast', status: 'running' }
+        ]
       };
     } else if (path === '/api/subscription/config') {
       headers = { ETag: '"config-1"' };
       body = {
-        subscriptions: [], enabled: false, interval: '1h0m0s', fetch_concurrency: 16,
+        subscriptions: ['https://example.com/sub?token=secret'], sources: [{ name: 'provider-a', url: 'https://example.com/sub?token=secret', enabled: true, refresh_interval: '30m0s', has_headers: false }], enabled: true, interval: '1h0m0s', fetch_concurrency: 16,
         allow_private_networks: false, max_removed_ratio: 0.5, min_available_ratio: 0,
         quarantine_new_nodes: true, node_failure_policy: 'skip'
       };
+    } else if (path === '/api/profiles/preview') {
+      body = { total: 100, matched: 42, excluded: { tag_rule: 41, region: 17 }, matched_samples: [{ name: 'HK Premium 01', region: 'hk', protocol: 'vless', source: 'subscription', quality: 91, matched: true }], excluded_samples: [{ name: 'HK Expired', region: 'hk', protocol: 'vless', source: 'subscription', quality: 80, matched: false, reason: 'tag_rule', rule_group: 'must_not', rule_index: 0, rule: 'Expired' }] };
+    } else if (path === '/api/subscription/sources/refresh') {
+      body = { message: 'ok', node_count: 14, sources: [{ name: 'provider-a', enabled: true, is_refreshing: false, using_fallback: false, node_count: 14, duration_ms: 123, last_success: '2026-07-28T12:05:00Z', next_refresh: '2026-07-28T12:35:00Z' }] };
+    } else if (path === '/api/traffic/logs') {
+      body = { enabled: true, dropped: 0, events: [{ timestamp: '2026-07-28T12:05:00Z', node_id: 'node-a', profile: 'hk-fast', destination: '[sha256:0123456789abcdef]:443', network: 'tcp', connect_ms: 81, ttfb_ms: 123, duration_ms: 940, upload_bytes: 1024, download_bytes: 4096, attempt: 2, retried: true, success: true }] };
+    } else if (path === '/api/traffic/logs/clear') {
+      body = { message: 'cleared' };
     } else {
       body = {};
     }
@@ -134,6 +153,10 @@ test('edits named profiles and generates profile-aware proxy commands', async ({
   await expect(mount.getByText('Named Profiles')).toBeVisible();
   await expect(mount.locator('[data-profile-row]')).toHaveCount(1);
   await expect(mount.locator('[data-field="name"]')).toHaveValue('hk-fast');
+  await expect(mount.locator('[data-field="tag_any"]')).toHaveValue('HK|Hong Kong');
+  await expect(mount.locator('[data-field="tag_must"]')).toHaveValue('Premium');
+  await expect(mount.locator('[data-field="tag_must_not"]')).toHaveValue('Expired');
+  await expect(mount.locator('[data-profile-preview]')).toContainText('42');
   await expect(mount.locator('[data-access-status]')).toHaveText('就绪');
 
   await mount.locator('[data-access-profile]').selectOption('hk-fast');
@@ -142,4 +165,72 @@ test('edits named profiles and generates profile-aware proxy commands', async ({
 
   await mount.locator('[data-add-profile]').click();
   await expect(mount.locator('[data-profile-row]')).toHaveCount(2);
+});
+
+test('manages named subscription sources with masked URLs, status, refresh, and delete confirmation', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.nav-item[data-tab="settings"]').click();
+
+  const mount = page.locator('#subscriptionSourcesMount');
+  await expect(mount.getByText('Subscription Sources')).toBeVisible();
+  await expect(mount.locator('[data-subscription-source]')).toHaveCount(1);
+  const source = mount.locator('[data-subscription-source]').first();
+  await expect(source.locator('[data-field="url"]')).toHaveAttribute('type', 'password');
+  await expect(source.locator('[data-field="refresh_interval"]')).toHaveValue('30m0s');
+  await expect(source).toContainText('14');
+  await source.locator('[data-toggle-source-url]').click();
+  await expect(source.locator('[data-field="url"]')).toHaveAttribute('type', 'text');
+  await source.locator('[data-refresh-source]').click();
+  await expect(source).toContainText('123 ms');
+
+  await source.locator('[data-remove-source]').click();
+  await expect(page.locator('#confirmOverlay')).toHaveClass(/show/);
+  await expect(page.locator('#confirmMessage')).toContainText('provider-a');
+  await page.locator('#confirmAccept').click();
+  await expect(mount.locator('[data-subscription-source]')).toHaveCount(0);
+});
+
+test('shows and clears structured traffic history and exposes safe settings', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.nav-item[data-tab="logs"]').click();
+  await expect(page.locator('#trafficLogTableBody')).toContainText('node-a');
+  await expect(page.locator('#trafficLogTableBody')).toContainText('hk-fast');
+  await expect(page.locator('#trafficLogTableBody')).toContainText('retry');
+  await expect(page.locator('#trafficLogSummary')).toContainText('丢弃 0 条');
+
+  await page.locator('.nav-item[data-tab="settings"]').click();
+  await expect(page.locator('#settingTrafficLogEnabled')).toBeChecked();
+  await expect(page.locator('#settingTrafficLogRedact')).toBeChecked();
+  await expect(page.locator('#settingTrafficLogMaxEntries')).toHaveValue('100000');
+});
+
+test('manages shared-pool endpoints with status, profile binding, and delete confirmation', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.nav-item[data-tab="settings"]').click();
+
+  const mount = page.locator('#endpointSettingsMount');
+  await expect(mount.getByText('Endpoint Manager')).toBeVisible();
+  await expect(mount.locator('[data-endpoint-row]')).toHaveCount(2);
+  await expect(mount.locator('[data-endpoint-row]').first().locator('[data-endpoint-status]')).toHaveText('运行中');
+  await expect(mount.locator('[data-endpoint-row]').nth(1).locator('[data-field="profile"]')).toHaveValue('hk-fast');
+
+  await mount.locator('[data-add-endpoint]').click();
+  await expect(mount.locator('[data-endpoint-row]')).toHaveCount(3);
+  const added = mount.locator('[data-endpoint-row]').last();
+  await expect(added.locator('[data-endpoint-status]')).toHaveText('待保存');
+  await added.locator('[data-remove-endpoint]').click();
+  await expect(page.locator('#confirmOverlay')).toHaveClass(/show/);
+  await expect(page.locator('#confirmMessage')).toContainText('endpoint-3');
+  await page.locator('#confirmAccept').click();
+  await expect(mount.locator('[data-endpoint-row]')).toHaveCount(2);
+
+  const access = page.locator('#profileSettingsMount');
+  await access.locator('[data-access-endpoint]').selectOption('hk-only');
+  await expect(access.locator('[data-access-profile]')).toBeDisabled();
+  await expect(access.locator('[data-access-profile]')).toHaveValue('hk-fast');
+  await expect(access.locator('[data-access-uri]')).toHaveValue('http://hk:hk-secret@127.0.0.1:23231');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(mount.locator('[data-add-endpoint]')).toBeVisible();
+  await expect.poll(() => mount.locator('.endpoint-fields').first().evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1);
 });

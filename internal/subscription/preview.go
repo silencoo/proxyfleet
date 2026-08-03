@@ -37,12 +37,20 @@ func (m *Manager) PreviewConfigAtRevision(ctx context.Context, request monitor.S
 	if revision != expectedRevision {
 		return monitor.SubscriptionPreview{}, configRevisionConflict(expectedRevision, revision)
 	}
-	cleanURLs, err := config.ValidateSubscriptionURLs(request.Subscriptions)
-	if err != nil {
-		return monitor.SubscriptionPreview{}, err
-	}
 	desired := live.Clone()
-	desired.Subscriptions = cleanURLs
+	if request.SourcesProvided {
+		if err := desired.SetSubscriptionSources(request.Sources); err != nil {
+			return monitor.SubscriptionPreview{}, err
+		}
+	} else {
+		cleanURLs, err := config.ValidateSubscriptionURLs(request.Subscriptions)
+		if err != nil {
+			return monitor.SubscriptionPreview{}, err
+		}
+		if err := desired.SetSubscriptionSources(config.SubscriptionSourcesFromURLs(cleanURLs)); err != nil {
+			return monitor.SubscriptionPreview{}, err
+		}
+	}
 	desired.SubscriptionRefresh.Enabled = request.Enabled
 	desired.SubscriptionRefresh.Interval = request.Interval
 	desired.SubscriptionRefresh.FetchConcurrency = config.NormalizeSubscriptionFetchConcurrency(request.FetchConcurrency)
@@ -54,8 +62,9 @@ func (m *Manager) PreviewConfigAtRevision(ctx context.Context, request monitor.S
 	desired.SubscriptionRefresh.QuarantineNewNodes = &quarantine
 
 	fetch := subscriptionFetchPlan{cacheUpdates: make(map[string][]config.NodeConfig), activeKeys: make(map[string]struct{})}
-	if len(cleanURLs) > 0 {
-		fetch, err = m.fetchAllSubscriptions(ctx, desired, nodesFilePathForConfig(desired), false)
+	var err error
+	if len(desired.Subscriptions) > 0 {
+		fetch, err = m.fetchAllSubscriptions(ctx, desired, nodesFilePathForConfig(desired), false, nil)
 		if err != nil {
 			return monitor.SubscriptionPreview{}, err
 		}
@@ -64,7 +73,7 @@ func (m *Manager) PreviewConfigAtRevision(ctx context.Context, request monitor.S
 	if err != nil {
 		return monitor.SubscriptionPreview{}, err
 	}
-	plan := subscriptionPreviewPlan{desired: desired, fetch: fetch, preview: preview, expectedRevision: expectedRevision, clear: len(cleanURLs) == 0}
+	plan := subscriptionPreviewPlan{desired: desired, fetch: fetch, preview: preview, expectedRevision: expectedRevision, clear: len(desired.Subscriptions) == 0}
 	m.mu.Lock()
 	if m.previews == nil {
 		m.previews = make(map[string]subscriptionPreviewPlan)
@@ -119,6 +128,9 @@ func (m *Manager) ApplyPreview(ctx context.Context, token string, expectedRevisi
 	}
 	if err != nil {
 		return err
+	}
+	if !plan.clear {
+		m.recordSourceFetch(plan.desired, plan.fetch)
 	}
 
 	if plan.clear {

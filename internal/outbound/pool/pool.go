@@ -14,7 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
+	"easy_proxies/internal/trafficlog"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -68,6 +70,10 @@ type Options struct {
 	// pool avoids per-node route rules, so listeners can be added and removed
 	// without rebuilding the sing-box router.
 	DedicatedMembers map[string]string
+	// EndpointProfiles binds a managed inbound directly to a named profile.
+	// This lets clients select a filtered pool by port without encoding the
+	// profile name into proxy authentication.
+	EndpointProfiles map[string]string
 	// SkipStartupProbe is used for metadata-only pool replacements after exit
 	// GeoIP discovery; shared health state is already initialized at that point.
 	SkipStartupProbe bool
@@ -106,6 +112,7 @@ type ProfileOptions struct {
 	Name       string
 	Regions    []string
 	NameRegex  string
+	TagRules   config.ProfileTagRules
 	Protocols  []string
 	Sources    []string
 	MinQuality float64
@@ -407,6 +414,7 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 	}
 	stickyKey := p.stickyKeyFromContext(ctx)
 	targetKey := destinationLatencyKey(destination)
+	requestStarted := time.Now()
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		member, err := p.pickMemberExcludingForTarget(ctx, network, tried, stickyKey, targetKey)
@@ -427,10 +435,15 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 				p.decActive(member)
 				return nil, errPoolClosed
 			}
-			p.recordSuccess(member, targetKey, time.Since(dialStarted))
-			return p.wrapConn(conn, member), nil
+			connectDuration := time.Since(dialStarted)
+			p.recordSuccess(member, targetKey, connectDuration)
+			event := p.newTrafficEvent(ctx, member, destination.String(), network, attempt, requestStarted)
+			event.ConnectMS = connectDuration.Milliseconds()
+			event.Success = true
+			return p.wrapConn(conn, member, newTrafficSession(event, requestStarted)), nil
 		}
 		p.decActive(member)
+		trafficlog.Record(p.failedTrafficEvent(ctx, member, destination.String(), network, attempt, requestStarted, time.Since(dialStarted), err))
 		if p.closed.Load() {
 			return nil, errPoolClosed
 		}
@@ -460,6 +473,7 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 	}
 	stickyKey := p.stickyKeyFromContext(ctx)
 	targetKey := destinationLatencyKey(destination)
+	requestStarted := time.Now()
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		member, err := p.pickMemberExcludingForTarget(ctx, N.NetworkUDP, tried, stickyKey, targetKey)
@@ -480,10 +494,15 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 				p.decActive(member)
 				return nil, errPoolClosed
 			}
-			p.recordSuccess(member, targetKey, time.Since(dialStarted))
-			return p.wrapPacketConn(conn, member), nil
+			connectDuration := time.Since(dialStarted)
+			p.recordSuccess(member, targetKey, connectDuration)
+			event := p.newTrafficEvent(ctx, member, destination.String(), N.NetworkUDP, attempt, requestStarted)
+			event.ConnectMS = connectDuration.Milliseconds()
+			event.Success = true
+			return p.wrapPacketConn(conn, member, newTrafficSession(event, requestStarted)), nil
 		}
 		p.decActive(member)
+		trafficlog.Record(p.failedTrafficEvent(ctx, member, destination.String(), N.NetworkUDP, attempt, requestStarted, time.Since(dialStarted), err))
 		if p.closed.Load() {
 			return nil, errPoolClosed
 		}
@@ -960,16 +979,65 @@ func (p *poolOutbound) recordSuccess(member *memberState, targetKey string, late
 	}
 }
 
-func (p *poolOutbound) wrapConn(conn net.Conn, member *memberState) net.Conn {
-	return &trackedConn{Conn: conn, release: func() {
+func (p *poolOutbound) wrapConn(conn net.Conn, member *memberState, traffic *trafficSession) net.Conn {
+	return &trackedConn{Conn: conn, traffic: traffic, release: func() {
 		p.decActive(member)
 	}}
 }
 
-func (p *poolOutbound) wrapPacketConn(conn net.PacketConn, member *memberState) net.PacketConn {
-	return &trackedPacketConn{PacketConn: conn, release: func() {
+func (p *poolOutbound) wrapPacketConn(conn net.PacketConn, member *memberState, traffic *trafficSession) net.PacketConn {
+	return &trackedPacketConn{PacketConn: conn, traffic: traffic, release: func() {
 		p.decActive(member)
 	}}
+}
+
+func (p *poolOutbound) newTrafficEvent(ctx context.Context, member *memberState, destination, network string, attempt int, started time.Time) trafficlog.Event {
+	event := trafficlog.Event{
+		Timestamp: started.UTC(), Destination: destination, Network: network,
+		Attempt: attempt, Retried: attempt > 1,
+	}
+	if member != nil {
+		event.NodeID = member.tag
+	}
+	if profile := p.profileFromContext(ctx); profile != nil {
+		event.Profile = profile.name
+	}
+	if metadata := adapter.ContextFrom(ctx); metadata != nil {
+		event.Inbound = metadata.Inbound
+	}
+	return event
+}
+
+func (p *poolOutbound) failedTrafficEvent(ctx context.Context, member *memberState, destination, network string, attempt int, started time.Time, connectDuration time.Duration, err error) trafficlog.Event {
+	event := p.newTrafficEvent(ctx, member, destination, network, attempt, started)
+	event.ConnectMS = connectDuration.Milliseconds()
+	event.DurationMS = time.Since(started).Milliseconds()
+	event.ErrorCategory = trafficErrorCategory(err)
+	return event
+}
+
+func trafficErrorCategory(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	message := strings.ToLower(err.Error())
+	for _, category := range []struct{ token, label string }{
+		{"connection refused", "connection_refused"}, {"no such host", "dns"},
+		{"certificate", "tls"}, {"tls", "tls"}, {"authentication", "authentication"},
+		{"timeout", "timeout"}, {"network is unreachable", "network_unreachable"},
+		{"connection reset", "connection_reset"},
+	} {
+		if strings.Contains(message, category.token) {
+			return category.label
+		}
+	}
+	return "other"
 }
 
 func (p *poolOutbound) makeReleaseFunc(member *memberState) func() {
@@ -1126,11 +1194,33 @@ type trackedConn struct {
 	net.Conn
 	once    sync.Once
 	release func()
+	traffic *trafficSession
+}
+
+func (c *trackedConn) Read(buffer []byte) (int, error) {
+	count, err := c.Conn.Read(buffer)
+	if c.traffic != nil {
+		c.traffic.recordRead(count)
+	}
+	return count, err
+}
+
+func (c *trackedConn) Write(buffer []byte) (int, error) {
+	count, err := c.Conn.Write(buffer)
+	if c.traffic != nil {
+		c.traffic.upload.Add(int64(count))
+	}
+	return count, err
 }
 
 func (c *trackedConn) Close() error {
 	err := c.Conn.Close()
-	c.once.Do(c.release)
+	c.once.Do(func() {
+		if c.traffic != nil {
+			c.traffic.finish()
+		}
+		c.release()
+	})
 	return err
 }
 
@@ -1138,12 +1228,66 @@ type trackedPacketConn struct {
 	net.PacketConn
 	once    sync.Once
 	release func()
+	traffic *trafficSession
+}
+
+func (c *trackedPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
+	count, address, err := c.PacketConn.ReadFrom(buffer)
+	if c.traffic != nil {
+		c.traffic.recordRead(count)
+	}
+	return count, address, err
+}
+
+func (c *trackedPacketConn) WriteTo(buffer []byte, address net.Addr) (int, error) {
+	count, err := c.PacketConn.WriteTo(buffer, address)
+	if c.traffic != nil {
+		c.traffic.upload.Add(int64(count))
+	}
+	return count, err
 }
 
 func (c *trackedPacketConn) Close() error {
 	err := c.PacketConn.Close()
-	c.once.Do(c.release)
+	c.once.Do(func() {
+		if c.traffic != nil {
+			c.traffic.finish()
+		}
+		c.release()
+	})
 	return err
+}
+
+type trafficSession struct {
+	event    trafficlog.Event
+	started  time.Time
+	first    sync.Once
+	upload   atomic.Int64
+	download atomic.Int64
+	ttfbMS   atomic.Int64
+}
+
+func newTrafficSession(event trafficlog.Event, started time.Time) *trafficSession {
+	if !trafficlog.Enabled() {
+		return nil
+	}
+	return &trafficSession{event: event, started: started}
+}
+
+func (s *trafficSession) recordRead(count int) {
+	if count <= 0 {
+		return
+	}
+	s.download.Add(int64(count))
+	s.first.Do(func() { s.ttfbMS.Store(time.Since(s.started).Milliseconds()) })
+}
+
+func (s *trafficSession) finish() {
+	s.event.TTFBMS = s.ttfbMS.Load()
+	s.event.DurationMS = time.Since(s.started).Milliseconds()
+	s.event.UploadBytes = s.upload.Load()
+	s.event.DownloadBytes = s.download.Load()
+	trafficlog.Record(s.event)
 }
 
 func (p *poolOutbound) incActive(member *memberState) {

@@ -78,10 +78,11 @@ func Build(cfg *config.Config) (option.Options, error) {
 				meta.Password = cfg.MultiPort.Password
 			}
 		} else {
-			meta.ListenAddress = cfg.Listener.Address
-			meta.Port = cfg.Listener.Port
-			meta.Username = cfg.Listener.Username
-			meta.Password = cfg.Listener.Password
+			primary := cfg.PrimaryEndpoint()
+			meta.ListenAddress = primary.Address
+			meta.Port = primary.Port
+			meta.Username = primary.Username
+			meta.Password = primary.Password
 		}
 
 		// Exit IP and region are discovered only after the outbound is started.
@@ -125,13 +126,31 @@ func Build(cfg *config.Config) (option.Options, error) {
 		return option.Options{}, fmt.Errorf("unsupported mode %s", cfg.Mode)
 	}
 
-	// Build pool inbound (single entry point for all nodes).
+	// Build managed pool endpoints. Legacy configurations without an endpoint
+	// list keep the historical http-in tag and listener behavior.
+	endpointProfiles := make(map[string]string, len(cfg.Endpoints))
 	if enablePoolInbound {
-		inbound, err := buildPoolInbound(cfg)
-		if err != nil {
-			return option.Options{}, err
+		if len(cfg.Endpoints) == 0 {
+			inbound, err := buildPoolInbound(cfg)
+			if err != nil {
+				return option.Options{}, err
+			}
+			inbounds = append(inbounds, inbound)
+		} else {
+			for _, endpoint := range cfg.Endpoints {
+				if !endpoint.EnabledValue() {
+					continue
+				}
+				inbound, err := buildEndpointInbound(endpoint, cfg.Profiles)
+				if err != nil {
+					return option.Options{}, err
+				}
+				inbounds = append(inbounds, inbound)
+				if endpoint.Profile != "" {
+					endpointProfiles[inbound.Tag] = endpoint.Profile
+				}
+			}
 		}
-		inbounds = append(inbounds, inbound)
 	}
 
 	// Build multi-port inbounds (one port per node)
@@ -177,7 +196,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 	for index, profile := range cfg.Profiles {
 		profileOptions[index] = poolout.ProfileOptions{
 			Name: profile.Name, Regions: append([]string(nil), profile.Regions...),
-			NameRegex: profile.NameRegex, Protocols: append([]string(nil), profile.Protocols...),
+			NameRegex: profile.NameRegex, TagRules: profile.TagRules, Protocols: append([]string(nil), profile.Protocols...),
 			Sources: append([]string(nil), profile.Sources...), MinQuality: profile.MinQuality,
 		}
 	}
@@ -200,6 +219,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 		Profiles:         profileOptions,
 		FailOpen:         cfg.Pool.FailOpen,
 		DedicatedMembers: dedicatedMembers,
+		EndpointProfiles: endpointProfiles,
 	}
 	outbounds = append(outbounds, option.Outbound{
 		Type:    poolout.Type,
@@ -237,32 +257,50 @@ func Build(cfg *config.Config) (option.Options, error) {
 }
 
 func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {
-	listenAddr, err := parseAddr(cfg.Listener.Address)
+	endpoint := config.EndpointConfig{
+		Name: "default", Address: cfg.Listener.Address, Port: cfg.Listener.Port,
+		Username: cfg.Listener.Username, Password: cfg.Listener.Password,
+	}
+	return buildMixedPoolInbound("http-in", endpoint, cfg.Profiles)
+}
+
+func buildEndpointInbound(endpoint config.EndpointConfig, profiles []config.ProfileConfig) (option.Inbound, error) {
+	return buildMixedPoolInbound(config.EndpointInboundTag(endpoint.Name), endpoint, profiles)
+}
+
+func buildMixedPoolInbound(tag string, endpoint config.EndpointConfig, profiles []config.ProfileConfig) (option.Inbound, error) {
+	listenAddr, err := parseAddr(endpoint.Address)
 	if err != nil {
-		return option.Inbound{}, fmt.Errorf("parse listener address: %w", err)
+		return option.Inbound{}, fmt.Errorf("parse endpoint %q address: %w", endpoint.Name, err)
 	}
 	inboundOptions := &option.HTTPMixedInboundOptions{
 		ListenOptions: option.ListenOptions{
 			Listen:     listenAddr,
-			ListenPort: cfg.Listener.Port,
+			ListenPort: endpoint.Port,
 		},
 	}
-	if cfg.Listener.Username != "" {
-		inboundOptions.Users = make([]auth.User, 0, len(cfg.Profiles)+1)
+	if endpoint.Username != "" {
+		capacity := 1
+		if endpoint.Profile == "" {
+			capacity += len(profiles)
+		}
+		inboundOptions.Users = make([]auth.User, 0, capacity)
 		inboundOptions.Users = append(inboundOptions.Users, auth.User{
-			Username: cfg.Listener.Username,
-			Password: cfg.Listener.Password,
+			Username: endpoint.Username,
+			Password: endpoint.Password,
 		})
-		for _, profile := range cfg.Profiles {
-			inboundOptions.Users = append(inboundOptions.Users, auth.User{
-				Username: cfg.Listener.Username + "@" + profile.Name,
-				Password: cfg.Listener.Password,
-			})
+		if endpoint.Profile == "" {
+			for _, profile := range profiles {
+				inboundOptions.Users = append(inboundOptions.Users, auth.User{
+					Username: endpoint.Username + "@" + profile.Name,
+					Password: endpoint.Password,
+				})
+			}
 		}
 	}
 	inbound := option.Inbound{
 		Type:    C.TypeMixed,
-		Tag:     "http-in",
+		Tag:     tag,
 		Options: inboundOptions,
 	}
 	return inbound, nil
@@ -1506,13 +1544,23 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 	showMultiPort := cfg.Mode == "multi-port" || cfg.Mode == "hybrid"
 
 	if showPoolEntry {
-		// Pool mode: single entry point for all nodes
-		httpProxyURL := fmt.Sprintf("http://%s:%d", cfg.Listener.Address, cfg.Listener.Port)
-		socksProxyURL := fmt.Sprintf("socks5://%s:%d", cfg.Listener.Address, cfg.Listener.Port)
-		log.Printf("🌐 Pool Entry Point:")
-		log.Printf("   HTTP:   %s", httpProxyURL)
-		log.Printf("   SOCKS5: %s", socksProxyURL)
-		log.Printf("   Authentication: %s", authenticationLogStatus(cfg.Listener.Username != ""))
+		log.Printf("🌐 Pool Entry Points:")
+		for _, endpoint := range cfg.EffectiveEndpoints() {
+			if !endpoint.EnabledValue() {
+				log.Printf("   [%s] disabled", endpoint.Name)
+				continue
+			}
+			httpProxyURL := fmt.Sprintf("http://%s:%d", endpoint.Address, endpoint.Port)
+			socksProxyURL := fmt.Sprintf("socks5://%s:%d", endpoint.Address, endpoint.Port)
+			profile := endpoint.Profile
+			if profile == "" {
+				profile = "all nodes"
+			}
+			log.Printf("   [%s] profile=%s", endpoint.Name, profile)
+			log.Printf("       HTTP:   %s", httpProxyURL)
+			log.Printf("       SOCKS5: %s", socksProxyURL)
+			log.Printf("       Authentication: %s", authenticationLogStatus(endpoint.Username != ""))
+		}
 		log.Println("")
 		log.Printf("   Nodes in pool (%d):", len(metadata))
 		for _, meta := range metadata {

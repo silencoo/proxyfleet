@@ -32,6 +32,15 @@ log:
   compress: false
   rotate_interval: 0s
 
+# 可选的结构化连接历史。独立 SQLite 异步写入，默认关闭，不影响 runtime-state.db。
+# 队列拥塞时只丢弃日志，不阻塞代理流量；目的地址默认保存为稳定哈希。
+traffic_log:
+  enabled: false
+  file: traffic-log.db
+  retention: 24h
+  max_entries: 100000
+  redact_destination: true
+
 # 全局跳过 SSL 证书验证（默认 false，不建议在生产环境启用）
 skip_cert_verify: false
 
@@ -39,13 +48,19 @@ skip_cert_verify: false
 # external_ip: "your.public.ip"
 
 # ───────────────────────────────────────────────────────────────
-# 监听配置（Pool 模式入口，支持 HTTP/SOCKS5）
+# Endpoint 配置（Pool/Hybrid 模式入口，支持 HTTP/SOCKS5）
+# 多个 Endpoint 共享同一节点池和健康状态，不会重复探测。
+# profile 留空时使用全局池；设置后固定使用对应 Named Profile。
+# multi-port 模式下这些配置会保留，但 Endpoint 监听不会启动。
 # ───────────────────────────────────────────────────────────────
-listener:
-  address: 0.0.0.0      # 监听地址
-  port: 2323            # 监听端口
-  username: username    # 代理认证用户名
-  password: password    # 代理认证密码
+endpoints:
+  - name: default
+    enabled: true
+    address: 0.0.0.0      # 监听地址（IP）
+    port: 2323            # 监听端口
+    username: username    # 代理认证用户名
+    password: password    # 代理认证密码
+    # profile: hk-fast    # 可选：将入口固定到一个 Named Profile
 
 # ───────────────────────────────────────────────────────────────
 # 代理池配置
@@ -78,14 +93,18 @@ pool:
   health_state_file: health-state.yaml
   runtime_state_file: runtime-state.db
 
-# 命名子池（pool / hybrid）。连接用户名为 listener.username@profile 名称，密码不变。
-# 过滤视图在池构建时预计算，最低质量分会在选择时动态检查。
+# 命名子池（pool / hybrid）。Endpoint 可直接绑定 Profile，认证入口也可使用 username@profile。
+# tag_rules: any 至少命中一条、must 必须全部命中、must_not 命中任意一条即排除。
+# 旧 name_regex 仍兼容，并按额外的 must 规则处理。
 profiles:
   - name: hk-fast
     regions: [hk]
     protocols: [vless, hysteria2]
     sources: [subscription]
-    name_regex: "(?i)premium"
+    tag_rules:
+      any: ["(?i)HK|Hong Kong", "(?i)香港"]
+      must: ["(?i)premium|dedicated"]
+      must_not: ["(?i)expired|traffic left"]
     min_quality: 80
 
 # ───────────────────────────────────────────────────────────────
@@ -189,8 +208,17 @@ geoip:
 # 方式 1: 订阅链接（推荐，自动获取并写入 nodes.txt）
 # ───────────────────────────────────────────────────────────────
 # subscriptions:
-#   - "https://example.com/subscribe?token=xxx"
-#   - "https://another.com/api/v1/client/subscribe?token=yyy"
+#   - name: provider-a
+#     url: "https://example.com/subscribe?token=xxx"
+#     enabled: true
+#     refresh_interval: 30m  # 留空时继承 subscription_refresh.interval
+#     headers:               # 可选；Host/Authorization/Proxy-Authorization 被拒绝
+#       User-Agent: ProxyFleet
+#       X-Subscription-Key: replace-me
+#   - name: provider-b
+#     url: "https://another.com/api/v1/client/subscribe?token=yyy"
+#     enabled: false
+# 旧的字符串数组格式仍可直接读取，下一次从 WebUI 保存时会迁移为对象格式。
 
 # ───────────────────────────────────────────────────────────────
 # 方式 2: 节点文件（每行一个代理 URI）

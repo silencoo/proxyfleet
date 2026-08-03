@@ -391,6 +391,81 @@ func TestReloadBuildFailureLeavesExistingListenerRunning(t *testing.T) {
 	assertListenerAccepts(t, listenPort)
 }
 
+func TestEndpointReloadAddsListenerAndRollsBackBindFailure(t *testing.T) {
+	firstPort := findManagerTestPort(t)
+	secondPort := findManagerTestPort(t)
+	for secondPort == firstPort {
+		secondPort = findManagerTestPort(t)
+	}
+	cfg := &config.Config{
+		Mode: "pool",
+		Endpoints: []config.EndpointConfig{{
+			Name: "first", Address: "127.0.0.1", Port: firstPort,
+		}},
+		Pool: config.PoolConfig{Mode: "sequential"},
+		Nodes: []config.NodeConfig{{
+			Name: "upstream", URI: "socks5://127.0.0.1:9#upstream",
+		}},
+	}
+	cfg.SetFilePath(filepath.Join(t.TempDir(), "config.yaml"))
+	if err := cfg.NormalizeWithPortMap(nil); err != nil {
+		t.Fatalf("normalize config: %v", err)
+	}
+	cfg.SubscriptionRefresh.MinAvailableNodes = 0
+
+	manager := New(cfg, monitor.Config{Enabled: false})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("start manager: %v", err)
+	}
+	defer manager.Close()
+	assertListenerAccepts(t, firstPort)
+
+	replacement := cfg.Clone()
+	replacement.Endpoints = append(replacement.Endpoints, config.EndpointConfig{
+		Name: "second", Address: "127.0.0.1", Port: secondPort,
+	})
+	if err := replacement.NormalizeWithPortMap(manager.CurrentPortMap()); err != nil {
+		t.Fatalf("normalize replacement: %v", err)
+	}
+	replacement.SubscriptionRefresh.MinAvailableNodes = 0
+	if !canReloadNodesInPlace(cfg, replacement) {
+		t.Fatal("Endpoint-only change unexpectedly requires a full runtime handoff")
+	}
+	if err := manager.Reload(replacement); err != nil {
+		t.Fatalf("add Endpoint through runtime transaction: %v", err)
+	}
+	assertListenerAccepts(t, firstPort)
+	assertListenerAccepts(t, secondPort)
+	statuses := manager.EndpointStatuses()
+	if len(statuses) != 2 || statuses[0].Status != "running" || statuses[1].Status != "running" {
+		t.Fatalf("unexpected Endpoint runtime statuses: %#v", statuses)
+	}
+
+	blockedListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve blocked Endpoint port: %v", err)
+	}
+	defer blockedListener.Close()
+	blockedPort := uint16(blockedListener.Addr().(*net.TCPAddr).Port)
+	failed := replacement.Clone()
+	failed.Endpoints = append(failed.Endpoints, config.EndpointConfig{
+		Name: "blocked", Address: "127.0.0.1", Port: blockedPort,
+	})
+	if err := failed.NormalizeWithPortMap(manager.CurrentPortMap()); err != nil {
+		t.Fatalf("normalize blocked candidate: %v", err)
+	}
+	failed.SubscriptionRefresh.MinAvailableNodes = 0
+	if err := manager.Reload(failed); err == nil {
+		t.Fatal("expected occupied Endpoint port to reject the runtime transaction")
+	}
+	committed, _ := manager.ConfigSnapshot()
+	if len(committed.Endpoints) != 2 {
+		t.Fatalf("failed Endpoint bind changed committed config: %#v", committed.Endpoints)
+	}
+	assertListenerAccepts(t, firstPort)
+	assertListenerAccepts(t, secondPort)
+}
+
 func findManagerTestPort(t *testing.T) uint16 {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -21,6 +21,7 @@ import (
 	"easy_proxies/internal/geoip"
 	"easy_proxies/internal/monitor"
 	"easy_proxies/internal/outbound/pool"
+	"easy_proxies/internal/trafficlog"
 
 	"github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
@@ -278,6 +279,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Unlock()
 	if err := pool.ConfigureRuntimeState(cfg.RuntimeStatePath(), cfg.HealthStatePath()); err != nil {
 		return fmt.Errorf("load pool runtime state: %w", err)
+	}
+	if err := configureTrafficLog(cfg); err != nil {
+		return fmt.Errorf("configure traffic log: %w", err)
 	}
 	if len(cfg.Nodes) == 0 {
 		if !cfg.ManagementEnabled() {
@@ -756,6 +760,7 @@ func (m *Manager) commitManagementOnlyConfig(ctx context.Context, cfg *config.Co
 	committedCfg, monitorServer := m.adoptConfig(cfg, true)
 	markCommitted()
 	releaseCommitBarrier()
+	m.updateHealthPersistence(committedCfg)
 	if monitorServer != nil {
 		monitorServer.SetConfig(committedCfg)
 	}
@@ -768,11 +773,10 @@ func canReloadNodesInPlace(oldCfg, newCfg *config.Config) bool {
 	if oldCfg == nil || newCfg == nil || oldCfg.Mode != newCfg.Mode {
 		return false
 	}
-	// These settings are owned by immutable Box services or by listeners that
-	// are not node-scoped. Node credentials/ports and pool policy are handled by
-	// the runtime diff below.
-	if !reflect.DeepEqual(oldCfg.Listener, newCfg.Listener) ||
-		oldCfg.MultiPort.Address != newCfg.MultiPort.Address ||
+	// Listener and Endpoint Manager changes are handled transactionally by the
+	// runtime inbound diff below. Immutable Box services still require a full
+	// validated handoff.
+	if oldCfg.MultiPort.Address != newCfg.MultiPort.Address ||
 		oldCfg.LogLevel != newCfg.LogLevel ||
 		!reflect.DeepEqual(oldCfg.Log, newCfg.Log) ||
 		!reflect.DeepEqual(oldCfg.GeoIP, newCfg.GeoIP) ||
@@ -1788,6 +1792,9 @@ func (m *Manager) closeDetachedComponents() error {
 		if closeErr := pool.CloseRuntimeState(); closeErr != nil {
 			m.logger.Warnf("failed to close pool runtime state: %v", closeErr)
 		}
+		if closeErr := trafficlog.Close(); closeErr != nil {
+			m.logger.Warnf("failed to close traffic log: %v", closeErr)
+		}
 	}
 	var lookupErr error
 	if state.geoLookup != nil {
@@ -1880,6 +1887,20 @@ func (m *Manager) updateHealthPersistence(cfg *config.Config) {
 	if err := pool.PersistHealthStateNow(); err != nil {
 		m.logger.Warnf("failed to flush pool health state: %v", err)
 	}
+	if err := configureTrafficLog(cfg); err != nil {
+		m.logger.Warnf("failed to configure traffic log: %v", err)
+	}
+}
+
+func configureTrafficLog(cfg *config.Config) error {
+	if cfg == nil {
+		return trafficlog.Close()
+	}
+	return trafficlog.Configure(trafficlog.Config{
+		Enabled: cfg.TrafficLog.Enabled, Path: cfg.TrafficLogPath(),
+		Retention: cfg.TrafficLog.Retention, MaxEntries: cfg.TrafficLog.MaxEntries,
+		RedactDestination: cfg.TrafficLog.RedactDestinationValue(),
+	})
 }
 
 // MonitorManager returns the shared monitor manager.
@@ -1902,6 +1923,48 @@ func (m *Manager) ConfigSnapshot() (*config.Config, uint64) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.cfg.Clone(), m.revision
+}
+
+// EndpointStatuses returns a race-free view of managed pool listeners. Failed
+// mutations never become committed configuration, so a missing inbound in an
+// otherwise active runtime is reported as failed rather than guessed healthy.
+func (m *Manager) EndpointStatuses() []monitor.EndpointRuntimeStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.cfg == nil {
+		return nil
+	}
+	legacy := len(m.cfg.Endpoints) == 0
+	endpoints := m.cfg.EffectiveEndpoints()
+	statuses := make([]monitor.EndpointRuntimeStatus, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		status := monitor.EndpointRuntimeStatus{Name: endpoint.Name}
+		switch {
+		case !endpoint.EnabledValue():
+			status.Status = "disabled"
+			status.Message = "入口已停用"
+		case m.cfg.Mode != "pool" && m.cfg.Mode != "hybrid":
+			status.Status = "inactive"
+			status.Message = "当前运行模式不启用统一池入口"
+		case m.currentBox == nil || m.managementOnly:
+			status.Status = "waiting"
+			status.Message = "等待可用代理节点"
+		default:
+			tag := config.EndpointInboundTag(endpoint.Name)
+			if legacy {
+				tag = "http-in"
+			}
+			if _, exists := m.currentBox.Inbound().Get(tag); exists {
+				status.Status = "running"
+				status.Message = "监听正常"
+			} else {
+				status.Status = "failed"
+				status.Message = "运行时未找到对应监听器"
+			}
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
 }
 
 // ensureGeoIPRouter publishes a usable region-routing listener without first
@@ -2733,7 +2796,9 @@ func reassignConflictingPort(cfg *config.Config, conflictPort uint16) bool {
 	// Build set of used ports
 	usedPorts := make(map[uint16]bool)
 	if cfg.Mode == "hybrid" {
-		usedPorts[cfg.Listener.Port] = true
+		for _, endpoint := range cfg.EffectiveEndpoints() {
+			usedPorts[endpoint.Port] = true
+		}
 	}
 	for _, node := range cfg.Nodes {
 		usedPorts[node.Port] = true
@@ -2866,7 +2931,7 @@ func prepareNode(cfg *config.Config, node config.NodeConfig, currentIndex int) (
 				return config.NodeConfig{}, fmt.Errorf("%w: 分配稳定端口失败: %v", monitor.ErrInvalidNode, err)
 			}
 			node.Port = candidateCfg.Nodes[len(candidateCfg.Nodes)-1].Port
-		} else if portInUse(cfg, node.Port, currentIndex) || (cfg.Mode == "hybrid" && node.Port == cfg.Listener.Port) {
+		} else if portInUse(cfg, node.Port, currentIndex) || (cfg.Mode == "hybrid" && cfg.PoolEndpointUsesPort(node.Port)) {
 			return config.NodeConfig{}, fmt.Errorf("%w: 端口 %d 已被占用", monitor.ErrNodeConflict, node.Port)
 		}
 		if node.Username == "" {

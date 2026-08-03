@@ -184,7 +184,10 @@ func TestEmbeddedWebUIHasScalableNodeOperations(t *testing.T) {
 		`function renderConsoleLogs(payload)`,
 		`.log-warn`,
 		`.log-error`,
-		`class="setting-input sensitive-textarea masked"`,
+		`id="subscriptionSourcesMount"`,
+		`data-toggle-source-url`,
+		`id="trafficLogTableBody"`,
+		`function loadTrafficLogs()`,
 		`function toggleSensitiveField(fieldId, button)`,
 		`regionStatsCache = data.region_stats || {}`,
 		`regionHealthyCache = data.region_healthy || {}`,
@@ -212,6 +215,7 @@ func TestEmbeddedWebUIHasScalableNodeOperations(t *testing.T) {
 
 	forbidden := []string{
 		`<textarea id="consoleLogs"`,
+		`id="settingSubURLs"`,
 		`panel.hidden = true`,
 	}
 	for _, value := range forbidden {

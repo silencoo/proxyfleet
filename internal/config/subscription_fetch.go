@@ -55,14 +55,16 @@ type SubscriptionFetchOptions struct {
 	AllowPrivateNetworks bool
 	Client               *http.Client
 	Loggerf              func(format string, args ...any)
+	HeadersBySourceKey   map[string]map[string]string
 }
 
 // SubscriptionSourceResult is the result for one stable, unique URL identity.
 // Key is a one-way identifier and is safe to use as an in-memory cache key.
 type SubscriptionSourceResult struct {
-	Key   string
-	Nodes []NodeConfig
-	Err   error
+	Key      string
+	Nodes    []NodeConfig
+	Duration time.Duration
+	Err      error
 }
 
 type subscriptionURLSpec struct {
@@ -144,9 +146,10 @@ func FetchSubscriptionSources(ctx context.Context, urls []string, opts Subscript
 	}
 
 	type indexedResult struct {
-		index int
-		nodes []NodeConfig
-		err   error
+		index    int
+		nodes    []NodeConfig
+		duration time.Duration
+		err      error
 	}
 	jobs := make(chan int)
 	completed := make(chan indexedResult, len(specs))
@@ -156,8 +159,9 @@ func FetchSubscriptionSources(ctx context.Context, urls []string, opts Subscript
 		go func() {
 			defer workers.Done()
 			for index := range jobs {
-				nodes, err := fetchSubscriptionWithClient(ctx, client, specs[index].raw, timeout, opts.AllowPrivateNetworks)
-				completed <- indexedResult{index: index, nodes: nodes, err: err}
+				startedAt := time.Now()
+				nodes, err := fetchSubscriptionWithClientAndHeaders(ctx, client, specs[index].raw, timeout, opts.AllowPrivateNetworks, opts.HeadersBySourceKey[specs[index].key])
+				completed <- indexedResult{index: index, nodes: nodes, duration: time.Since(startedAt), err: err}
 			}
 		}()
 	}
@@ -174,9 +178,8 @@ func FetchSubscriptionSources(ctx context.Context, urls []string, opts Subscript
 	for result := range completed {
 		spec := specs[result.index]
 		results[result.index] = SubscriptionSourceResult{
-			Key:   spec.key,
-			Nodes: cloneSubscriptionNodes(result.nodes),
-			Err:   result.err,
+			Key: spec.key, Nodes: cloneSubscriptionNodes(result.nodes),
+			Duration: result.duration, Err: result.err,
 		}
 	}
 
@@ -515,6 +518,10 @@ func minSubscriptionDuration(first, second time.Duration) time.Duration {
 }
 
 func fetchSubscriptionWithClient(ctx context.Context, client *http.Client, rawURL string, timeout time.Duration, allowPrivateNetworks bool) ([]NodeConfig, error) {
+	return fetchSubscriptionWithClientAndHeaders(ctx, client, rawURL, timeout, allowPrivateNetworks, nil)
+}
+
+func fetchSubscriptionWithClientAndHeaders(ctx context.Context, client *http.Client, rawURL string, timeout time.Duration, allowPrivateNetworks bool, headers map[string]string) ([]NodeConfig, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -543,6 +550,9 @@ func fetchSubscriptionWithClient(ctx context.Context, client *http.Client, rawUR
 	}
 	request.Header.Set("User-Agent", "clash-verge/v2.2.3")
 	request.Header.Set("Accept", "*/*")
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
 
 	if client == nil {
 		client = newSubscriptionHTTPClient(timeout, allowPrivateNetworks)

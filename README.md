@@ -129,7 +129,7 @@ Transient network failures use a short cooldown instead of immediately increasin
 
 ### Named Pool Profiles
 
-Profiles precompute filtered views by region, protocol, source, node-name regex, and minimum quality. Connect with the normal password and username `base@profile`; the un-suffixed username continues to use the full pool. Profiles require unified listener authentication and are available in `pool`/`hybrid` modes. The WebUI Access Assistant generates copyable HTTP/SOCKS5 URIs and curl commands.
+Profiles precompute filtered views by region, protocol, source, composable node-name rules, and minimum quality. `tag_rules.any` requires at least one match, `must` requires every match, and `must_not` excludes any match. The legacy `name_regex` remains an additional `must` rule. A managed Endpoint can bind a Profile directly; authenticated shared endpoints can also use username `base@profile`. The WebUI shows live match counts, exclusion reasons, and safe samples before saving.
 
 ```yaml
 profiles:
@@ -137,8 +137,24 @@ profiles:
     regions: [hk]
     protocols: [vless, hysteria2]
     sources: [subscription]
-    name_regex: "(?i)premium"
+    tag_rules:
+      any: ["(?i)HK|Hong Kong", "(?i)香港"]
+      must: ["(?i)premium|dedicated"]
+      must_not: ["(?i)expired|traffic left"]
     min_quality: 80
+```
+
+### Structured Traffic History
+
+Connection history is optional and disabled by default. When enabled, TCP/UDP outcomes, selected node/Profile, retries, connect time, TTFB, duration, and byte counts are written asynchronously to a separate WAL-mode `traffic-log.db`. A bounded queue ensures logging cannot block proxy traffic. Destination addresses are hashed by default, and retention plus row count are both bounded.
+
+```yaml
+traffic_log:
+  enabled: false
+  file: traffic-log.db
+  retention: 24h
+  max_entries: 100000
+  redact_destination: true
 ```
 
 ### Minimal Config Example
@@ -146,11 +162,13 @@ profiles:
 ```yaml
 mode: pool
 
-listener:
-  address: 127.0.0.1
-  port: 2323
-  username: user
-  password: pass
+endpoints:
+  - name: default
+    enabled: true
+    address: 127.0.0.1
+    port: 2323
+    username: user
+    password: pass
 
 pool:
   mode: sequential    # sequential / random / balance / latency
@@ -348,7 +366,13 @@ One proxy URI per line. Lines starting with `#` are comments.
 
 ```yaml
 subscriptions:
-  - "https://provider.example/api?token=xxx"
+  - name: provider-a
+    url: "https://provider.example/api?token=xxx"
+    enabled: true
+    refresh_interval: 30m # omit to inherit the global interval
+  - name: provider-b
+    url: "https://backup.example/api?token=yyy"
+    enabled: false
 
 subscription_refresh:
   enabled: true
@@ -361,7 +385,7 @@ subscription_refresh:
   allow_private_networks: false # opt in only for trusted private subscription services
 ```
 
-Supports Base64, plain text, and Clash YAML formats. Subscription URLs are fetched with bounded concurrency, responses are strictly limited to 10 MB, and URL credentials/query data are redacted from errors and logs. Loopback, private, link-local, and metadata destinations (including redirects) are blocked by default; set `allow_private_networks: true` only when a trusted subscription service is intentionally hosted on such a network. Duplicate URLs and nodes are removed by stable identity. Runtime refreshes cache each URL independently so one failed provider can reuse only its own last known-good nodes; after a restart, `nodes_file` is the conservative aggregate fallback until every provider has refreshed successfully. Inline and WebUI-added nodes remain explicit configuration and are never overwritten by a subscription refresh. With the default `node_failure_policy: skip`, nodes requiring unavailable build capabilities or failing candidate construction are isolated by stable hash while the remaining pool commits; `strict` preserves all-or-nothing behavior.
+Supports Base64, plain text, and Clash YAML formats. Each named provider can be enabled, scheduled, inspected, and refreshed independently; the historical string-array format is still accepted and is migrated on the next WebUI save. Optional per-source request headers are supported, but authority-bearing `Host`/`Authorization` headers are rejected. Subscription URLs are fetched with bounded concurrency, responses are strictly limited to 10 MB, and URL credentials/query data are redacted from errors and logs. Loopback, private, link-local, and metadata destinations (including redirects) are blocked by default; set `allow_private_networks: true` only when a trusted subscription service is intentionally hosted on such a network. Duplicate URLs and nodes are removed by stable identity. Runtime refreshes cache each source independently so one failed provider can reuse only its own last known-good nodes; after a restart, `nodes_file` is the conservative aggregate fallback until every provider has refreshed successfully. Inline and WebUI-added nodes remain explicit configuration and are never overwritten by a subscription refresh. With the default `node_failure_policy: skip`, nodes requiring unavailable build capabilities or failing candidate construction are isolated by stable hash while the remaining pool commits; `strict` preserves all-or-nothing behavior.
 
 When subscriptions are configured, fetched nodes are written to `nodes_file`. A refresh is committed as one transaction across configuration, cache files, and runtime state. The WebUI first fetches a candidate and displays stable-identity added/removed/unchanged counts; risky removal ratios require a second explicit confirmation and a short-lived one-time preview token. Candidate nodes are built and health-checked before cutover; a failed fetch, strict-mode unsupported node, availability ratio violation, persistence error, or stale configuration revision rolls back without replacing the active pool. Unchanged nodes and listeners retain their connections, removed outbounds drain for the configured timeout, and dedicated ports are restored from `port-map.yaml`.
 
@@ -380,9 +404,11 @@ Features:
 - **Adaptive probes**: DIY healthy/retry/backoff/passive-grace intervals, batch concurrency, and a visible hourly traffic/performance budget
 - **Operations**: Bounded metric history, availability alerts, probe budget status, and administrator-only mutation audit
 - **Quality routing**: `pool.mode: quality` selects the best composite health/latency/stability score from a bounded sample
-- **Node Config**: Add/edit/delete inline nodes and manage subscription URLs without exposing credentials in list responses
+- **Node Config**: Add/edit/delete inline nodes and copy full URIs without exposing credentials in list responses
+- **Subscription Sources**: Named per-provider enable, interval, status, fallback visibility, masked URL, and independent refresh controls
 - **Subscription safety**: Candidate diff preview, risky-removal confirmation, availability-ratio preflight, and atomic cutover
 - **Diagnostics / Console**: Searchable diagnostics and clearable in-memory logs; disk logs support scheduled rotation and compression
+- **Traffic history**: Optional separate SQLite history with connect/TTFB/duration/bytes/retry fields, filtering, bounded retention, redaction, and administrator clear
 - **Settings**: Chinese/English switcher, system theme, masked secrets, Named Profiles, copyable proxy access commands, viewer/operator/admin passwords, and persistent configuration editing
 
 When all management role passwords are empty, loopback requests run as administrator without a login.
@@ -408,6 +434,9 @@ When all management role passwords are empty, loopback requests run as administr
 | `/api/audit` | GET | Administrator-only mutation audit |
 | `/api/subscription/status` | GET | Check subscription status |
 | `/api/subscription/refresh` | POST | Trigger manual refresh |
+| `/api/subscription/sources/refresh` | POST | Refresh one named source and compose it with other providers' caches |
+| `/api/traffic/logs` | GET | Query bounded structured connection history |
+| `/api/traffic/logs/clear` | DELETE | Administrator-only traffic history clear |
 | `/api/nodes/config` | GET, POST, PUT, DELETE | CRUD for node config |
 | `/api/reload` | POST | Reload sing-box instance |
 

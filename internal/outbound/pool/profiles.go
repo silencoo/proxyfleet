@@ -3,9 +3,9 @@ package pool
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
+	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -28,13 +28,11 @@ func compileProfiles(options []ProfileOptions, metadata map[string]MemberMeta) (
 		if _, exists := profiles[name]; exists {
 			return nil, fmt.Errorf("duplicate pool profile %q", name)
 		}
-		var namePattern *regexp.Regexp
-		var err error
-		if strings.TrimSpace(option.NameRegex) != "" {
-			namePattern, err = regexp.Compile(option.NameRegex)
-			if err != nil {
-				return nil, fmt.Errorf("compile pool profile %q: %w", name, err)
-			}
+		nameMatcher, err := config.CompileProfileNameMatcher(config.ProfileConfig{
+			Name: name, NameRegex: option.NameRegex, TagRules: option.TagRules,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("compile pool profile %q: %w", name, err)
 		}
 		profile := &compiledProfile{name: name, allowed: make(map[string]struct{}), minQuality: option.MinQuality}
 		regions := stringSet(option.Regions)
@@ -57,7 +55,7 @@ func compileProfiles(options []ProfileOptions, metadata map[string]MemberMeta) (
 					continue
 				}
 			}
-			if namePattern != nil && !namePattern.MatchString(member.Name) {
+			if !nameMatcher.Match(member.Name).Allowed {
 				continue
 			}
 			profile.allowed[tag] = struct{}{}
@@ -97,6 +95,9 @@ func (p *poolOutbound) profileFromContext(ctx context.Context) *compiledProfile 
 	metadata := adapter.ContextFrom(ctx)
 	if metadata == nil {
 		return nil
+	}
+	if profileName := strings.ToLower(strings.TrimSpace(p.options.EndpointProfiles[metadata.Inbound])); profileName != "" {
+		return p.profiles[profileName]
 	}
 	username := strings.TrimSpace(metadata.User)
 	separator := strings.LastIndexByte(username, '@')

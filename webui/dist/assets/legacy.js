@@ -1595,13 +1595,14 @@
         document.getElementById('settingProbeTimeout').value = formatDurationForInput(d.probe_timeout || '10s');
         document.getElementById('settingProbeBatchSize').value = d.probe_batch_size || 100;
         toggleProbePolicySettings();
-        // Listener
+        // Endpoint Manager (legacy listener is accepted as an API fallback)
         const ls = d.listener || {};
-        document.getElementById('settingListenerAddr').value = ls.address || '';
-        document.getElementById('settingListenerPort').value = ls.port || '';
-        document.getElementById('settingListenerUser').value = ls.username || '';
-        document.getElementById('settingListenerPass').value = ls.password || '';
         window.proxyFleetProfiles?.load(d.profiles || []);
+        const endpoints = Array.isArray(d.endpoints) && d.endpoints.length ? d.endpoints : [{
+          name: 'default', enabled: true, address: ls.address || '127.0.0.1', port: ls.port || 2323,
+          username: ls.username || '', password: ls.password || '', profile: '', status: 'waiting',
+        }];
+        window.proxyFleetEndpoints?.load(endpoints, d.profiles || []);
         // Multi-port
         const mp = d.multi_port || {};
         document.getElementById('settingMPAddr').value = mp.address || '';
@@ -1660,6 +1661,12 @@
         document.getElementById('settingLogMaxAge').value = logCfg.max_age || 7;
         document.getElementById('settingLogRotateInterval').value = !logCfg.rotate_interval || logCfg.rotate_interval === '0s' ? '0' : logCfg.rotate_interval;
         document.getElementById('settingLogCompress').checked = logCfg.compress || false;
+        const trafficLogCfg = d.traffic_log || {};
+        document.getElementById('settingTrafficLogEnabled').checked = trafficLogCfg.enabled === true;
+        document.getElementById('settingTrafficLogFile').value = trafficLogCfg.file || 'traffic-log.db';
+        document.getElementById('settingTrafficLogRetention').value = formatDurationForInput(trafficLogCfg.retention || '24h');
+        document.getElementById('settingTrafficLogMaxEntries').value = Number(trafficLogCfg.max_entries) || 100000;
+        document.getElementById('settingTrafficLogRedact').checked = trafficLogCfg.redact_destination !== false;
         toggleLogFileSettings();
         // Subscription
         try {
@@ -1680,8 +1687,11 @@
           document.getElementById('settingSubMinAvailableRatio').value = Number(sd.min_available_ratio) || 0;
           document.getElementById('settingSubQuarantine').checked = sd.quarantine_new_nodes !== false;
           document.getElementById('settingSubNodeFailurePolicy').value = sd.node_failure_policy === 'strict' ? 'strict' : 'skip';
-          document.getElementById('settingSubURLs').value = (sd.subscriptions || []).join('\n');
-          _savedSubSnapshot = JSON.stringify({urls: (sd.subscriptions || []).join('\n'), enabled: sd.enabled || false, interval: sel.value, fetch_concurrency: fetchConcurrency, allow_private_networks: sd.allow_private_networks === true, max_removed_ratio: Number(sd.max_removed_ratio) || 0.5, min_available_ratio: Number(sd.min_available_ratio) || 0, quarantine_new_nodes: sd.quarantine_new_nodes !== false, node_failure_policy: sd.node_failure_policy === 'strict' ? 'strict' : 'skip'});
+          const sourceStatusResponse = await fetch('/api/subscription/status');
+          const sourceStatus = await readAPIJSON(sourceStatusResponse, '订阅源状态加载失败');
+          const sources = Array.isArray(sd.sources) ? sd.sources : (sd.subscriptions || []).map((url, index) => ({name: `source-${index + 1}`, url, enabled: true, refresh_interval: ''}));
+          window.proxyFleetSubscriptions?.load(sources, sourceStatus.sources || []);
+          _savedSubSnapshot = JSON.stringify({sources: window.proxyFleetSubscriptions?.serialize() || sources, enabled: sd.enabled || false, interval: sel.value, fetch_concurrency: fetchConcurrency, allow_private_networks: sd.allow_private_networks === true, max_removed_ratio: Number(sd.max_removed_ratio) || 0.5, min_available_ratio: Number(sd.min_available_ratio) || 0, quarantine_new_nodes: sd.quarantine_new_nodes !== false, node_failure_policy: sd.node_failure_policy === 'strict' ? 'strict' : 'skip'});
           subscriptionSettingsLoaded = true;
         } catch(e){
           console.error('Failed to load subscription settings:', e);
@@ -1694,6 +1704,7 @@
     function _buildCoreSnapshot() {
       return JSON.stringify({
         profiles: window.proxyFleetProfiles?.serialize() || [],
+        endpoints: window.proxyFleetEndpoints?.serialize() || [],
         mode: document.getElementById('settingMode').value,
         external_ip: document.getElementById('settingExternalIP').value,
         probe_target: document.getElementById('settingProbeTarget').value,
@@ -1717,10 +1728,6 @@
         alert_min_ratio: document.getElementById('settingAlertMinRatio').value,
         alert_cooldown: document.getElementById('settingAlertCooldown').value,
         audit_file: document.getElementById('settingAuditFile').value,
-        listener_addr: document.getElementById('settingListenerAddr').value,
-        listener_port: document.getElementById('settingListenerPort').value,
-        listener_user: document.getElementById('settingListenerUser').value,
-        listener_pass: document.getElementById('settingListenerPass').value,
         mp_addr: document.getElementById('settingMPAddr').value,
         mp_base_port: document.getElementById('settingMPBasePort').value,
         mp_user: document.getElementById('settingMPUser').value,
@@ -1753,6 +1760,11 @@
         log_max_age: document.getElementById('settingLogMaxAge').value,
         log_rotate_interval: document.getElementById('settingLogRotateInterval').value,
         log_compress: document.getElementById('settingLogCompress').checked,
+        traffic_log_enabled: document.getElementById('settingTrafficLogEnabled').checked,
+        traffic_log_file: document.getElementById('settingTrafficLogFile').value,
+        traffic_log_retention: document.getElementById('settingTrafficLogRetention').value,
+        traffic_log_max_entries: document.getElementById('settingTrafficLogMaxEntries').value,
+        traffic_log_redact: document.getElementById('settingTrafficLogRedact').checked,
       });
     }
     const DURATION_UNIT_MS = Object.freeze({ h: 3600000, m: 60000, s: 1000, ms: 1 });
@@ -1874,13 +1886,15 @@
       e.preventDefault();
       if (!validateProbeDurationSettings()) return;
       if (window.proxyFleetProfiles && !window.proxyFleetProfiles.validate()) return;
+      if (window.proxyFleetEndpoints && !window.proxyFleetEndpoints.validate()) return;
+      if (window.proxyFleetSubscriptions && !window.proxyFleetSubscriptions.validate()) return;
       const saveBtn = e.target.querySelector('button[type="submit"]');
       const saveLabel = document.getElementById('settingsSaveLabel');
       const originalText = saveLabel.textContent;
 
       // Build current snapshots for change detection
       const currentCoreSnapshot = _buildCoreSnapshot();
-      const subURLs = document.getElementById('settingSubURLs').value.split('\n').map(s => s.trim()).filter(s => s);
+      const subSources = window.proxyFleetSubscriptions?.serialize() || [];
       const subEnabled = document.getElementById('settingSubEnabled').checked;
       const subInterval = document.getElementById('settingSubInterval').value;
       const subFetchConcurrency = parseInt(document.getElementById('settingSubFetchConcurrency').value) || 16;
@@ -1893,7 +1907,7 @@
         showToast(tr('订阅比例必须在 0 到 1 之间'), 'error');
         return;
       }
-      const currentSubSnapshot = JSON.stringify({urls: subURLs.join('\n'), enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate, max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio, quarantine_new_nodes: subQuarantine, node_failure_policy: subNodeFailurePolicy});
+      const currentSubSnapshot = JSON.stringify({sources: subSources, enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate, max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio, quarantine_new_nodes: subQuarantine, node_failure_policy: subNodeFailurePolicy});
 
       const coreChanged = currentCoreSnapshot !== _savedCoreSnapshot;
       const subChanged = subscriptionSettingsLoaded && currentSubSnapshot !== _savedSubSnapshot;
@@ -1928,6 +1942,7 @@
         saveBtn.disabled = true; saveLabel.textContent = tr('保存中...'); saveBtn.style.opacity = '0.6';
         const p = {
           profiles: window.proxyFleetProfiles?.serialize() || [],
+          endpoints: window.proxyFleetEndpoints?.serialize() || [],
           external_ip: document.getElementById('settingExternalIP').value,
           probe_target: document.getElementById('settingProbeTarget').value,
           skip_cert_verify: document.getElementById('settingSkipCertVerify').checked,
@@ -1937,12 +1952,6 @@
           probe_timeout: document.getElementById('settingProbeTimeout').value.trim() || '10s',
           probe_batch_size: parseInt(document.getElementById('settingProbeBatchSize').value) || 100,
           mode: document.getElementById('settingMode').value,
-          listener: {
-            address: document.getElementById('settingListenerAddr').value,
-            port: parseInt(document.getElementById('settingListenerPort').value) || 0,
-            username: document.getElementById('settingListenerUser').value,
-            password: document.getElementById('settingListenerPass').value,
-          },
           multi_port: {
             address: document.getElementById('settingMPAddr').value,
             base_port: parseInt(document.getElementById('settingMPBasePort').value) || 0,
@@ -1998,6 +2007,13 @@
             compress: document.getElementById('settingLogCompress').checked,
             rotate_interval: document.getElementById('settingLogRotateInterval').value.trim() || '0',
           },
+          traffic_log: {
+            enabled: document.getElementById('settingTrafficLogEnabled').checked,
+            file: document.getElementById('settingTrafficLogFile').value.trim() || 'traffic-log.db',
+            retention: document.getElementById('settingTrafficLogRetention').value.trim() || '24h',
+            max_entries: parseInt(document.getElementById('settingTrafficLogMaxEntries').value) || 100000,
+            redact_destination: document.getElementById('settingTrafficLogRedact').checked,
+          },
           geoip: {
             enabled: document.getElementById('settingGeoIPEnabled').checked,
             database_path: document.getElementById('settingGeoIPDBPath').value,
@@ -2034,7 +2050,7 @@
       if (subChanged) {
         saveBtn.disabled = true; saveLabel.textContent = tr('保存中...'); saveBtn.style.opacity = '0.6';
         const subPayload = {
-          subscriptions: subURLs, enabled: subEnabled, interval: subInterval,
+          sources: subSources, enabled: subEnabled, interval: subInterval,
           fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate,
           max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio,
           quarantine_new_nodes: subQuarantine, node_failure_policy: subNodeFailurePolicy,
@@ -2066,7 +2082,10 @@
           }
           const sd = await readAPIJSON(sr, '订阅配置保存失败');
           subscriptionETag = sr.headers.get('ETag') || subscriptionETag;
-          _savedSubSnapshot = currentSubSnapshot;
+          const statusResponse = await fetch('/api/subscription/status');
+          const statusData = await readAPIJSON(statusResponse, '订阅源状态加载失败');
+          window.proxyFleetSubscriptions?.load(sd.sources || subSources, statusData.sources || []);
+          _savedSubSnapshot = JSON.stringify({sources: window.proxyFleetSubscriptions?.serialize() || subSources, enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate, max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio, quarantine_new_nodes: subQuarantine, node_failure_policy: subNodeFailurePolicy});
           showToast(sd.node_count !== undefined ? tr('已保存，获取 {count} 个节点', {count: sd.node_count}) : tr('设置已保存'));
         } catch(e){ hideFullscreenLoading(); showToast(e.message || tr('订阅配置保存失败'), 'error'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
       } else if (coreChanged && !coreRestartRequired) {
@@ -2085,12 +2104,57 @@
     }
 
     let logPollInterval = null;
+    let trafficLogPollInterval = null;
     function startLogPolling() {
       pollLogs();
       if (!logPollInterval) logPollInterval = setInterval(pollLogs, 2000);
+      loadTrafficLogs();
+      if (!trafficLogPollInterval) trafficLogPollInterval = setInterval(loadTrafficLogs, 5000);
     }
     function stopLogPolling() {
       if (logPollInterval) { clearInterval(logPollInterval); logPollInterval = null; }
+      if (trafficLogPollInterval) { clearInterval(trafficLogPollInterval); trafficLogPollInterval = null; }
+    }
+
+    async function loadTrafficLogs() {
+      const body = document.getElementById('trafficLogTableBody');
+      const summary = document.getElementById('trafficLogSummary');
+      if (!body || !summary) return;
+      const success = document.getElementById('trafficLogSuccessFilter')?.value || '';
+      try {
+        const response = await fetch(`/api/traffic/logs?limit=200${success ? `&success=${success}` : ''}`);
+        const data = await readAPIJSON(response, '结构化流量日志加载失败');
+        const events = Array.isArray(data.events) ? data.events : [];
+        if (!data.enabled) {
+          summary.textContent = '当前未启用；可在设置 → 日志配置中开启。';
+          body.innerHTML = `<tr><td colspan="11" class="table-empty">结构化流量日志未启用</td></tr>`;
+          return;
+        }
+        summary.textContent = `最近 ${events.length} 条 · 写入队列累计丢弃 ${Number(data.dropped) || 0} 条`;
+        body.innerHTML = events.length ? events.map(event => `<tr>
+          <td>${formatDateTime(event.timestamp)}</td>
+          <td><span class="badge ${event.success ? 'badge-healthy' : 'badge-error'}">${event.success ? tr('成功') : tr('失败')}</span></td>
+          <td class="tt-mono">${escapeHtml(event.node_id || '-')}</td><td>${escapeHtml(event.profile || '-')}</td>
+          <td class="tt-mono traffic-log-destination" title="${escapeHtml(event.destination || '')}">${escapeHtml(event.destination || '-')}</td>
+          <td>${Number(event.connect_ms) || 0} ms</td><td>${Number(event.ttfb_ms) || 0} ms</td><td>${Number(event.duration_ms) || 0} ms</td>
+          <td class="tt-mono">${formatBytes(Number(event.upload_bytes) || 0)} / ${formatBytes(Number(event.download_bytes) || 0)}</td>
+          <td>${Number(event.attempt) || 1}${event.retried ? ' · retry' : ''}</td><td>${escapeHtml(event.error_category || '-')}</td>
+        </tr>`).join('') : `<tr><td colspan="11" class="table-empty">暂无流量记录</td></tr>`;
+      } catch (error) {
+        summary.textContent = error.message || '加载失败';
+        body.innerHTML = `<tr><td colspan="11" class="table-empty">${escapeHtml(error.message || '加载失败')}</td></tr>`;
+      }
+    }
+
+    async function clearTrafficLogs() {
+      const confirmed = await requestConfirmation(tr('清空记录'), '确定清空结构化流量日志？此操作会删除 SQLite 中的全部连接历史，无法恢复。', tr('清空记录'));
+      if (!confirmed) return;
+      try {
+        const response = await fetch('/api/traffic/logs/clear', {method:'DELETE'});
+        await readAPIJSON(response, '清空结构化流量日志失败');
+        await loadTrafficLogs();
+        showToast(tr('结构化流量日志已清空'));
+      } catch (error) { showToast(error.message || tr('请求失败'), 'error'); }
     }
 
     function classifyLogLine(line) {

@@ -86,6 +86,42 @@ func TestExportAddressRejectsInjectedExternalHost(t *testing.T) {
 	}
 }
 
+func TestExportIncludesAllEnabledPoolEndpoints(t *testing.T) {
+	manager, err := NewManager(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop()
+	disabled := false
+	server := &Server{
+		mgr: manager,
+		cfg: Config{ExternalIP: "198.51.100.8"},
+		cfgSrc: &config.Config{
+			Mode:       "pool",
+			ExternalIP: "198.51.100.8",
+			Endpoints: []config.EndpointConfig{
+				{Name: "public", Address: "0.0.0.0", Port: 2323, Username: "fleet", Password: "secret"},
+				{Name: "hk-only", Address: "127.0.0.1", Port: 2324, Profile: "hk-fast"},
+				{Name: "disabled", Enabled: &disabled, Address: "127.0.0.1", Port: 2325},
+			},
+		},
+	}
+	recorder := httptest.NewRecorder()
+	server.handleExport(recorder, httptest.NewRequest(http.MethodGet, "/api/export?scheme=http", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{"# Endpoint public", "fleet:secret@198.51.100.8:2323", "# Endpoint hk-only (profile=hk-fast)", "127.0.0.1:2324"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("export missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "2325") {
+		t.Fatalf("disabled endpoint was exported:\n%s", body)
+	}
+}
+
 func TestExportGeoIPUsesProxyUsernameRegionSelectors(t *testing.T) {
 	manager, err := NewManager(Config{})
 	if err != nil {

@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"easy_proxies/internal/config"
 )
 
 var ErrSubscriptionChangeGuard = errors.New("subscription change requires explicit confirmation")
 
 type SubscriptionPreviewRequest struct {
 	Subscriptions        []string
+	Sources              []config.SubscriptionSourceConfig
+	SourcesProvided      bool
 	Enabled              bool
 	Interval             time.Duration
 	FetchConcurrency     int

@@ -26,8 +26,12 @@ func selectGeoIPRouterPort(cfg *config.Config) (uint16, error) {
 		return 0, errors.New("select GeoIP router port: nil config")
 	}
 
-	reserved := make(map[uint16]struct{}, len(cfg.Nodes)+2)
-	reservePort(reserved, cfg.Listener.Port)
+	reserved := make(map[uint16]struct{}, len(cfg.Nodes)+len(cfg.Endpoints)+2)
+	if cfg.Mode == "pool" || cfg.Mode == "hybrid" {
+		for _, endpoint := range cfg.EffectiveEndpoints() {
+			reservePort(reserved, endpoint.Port)
+		}
+	}
 
 	if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
 		for _, node := range cfg.Nodes {

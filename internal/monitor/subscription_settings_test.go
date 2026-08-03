@@ -21,6 +21,7 @@ type subscriptionSettingsStub struct {
 	allowPrivateNetworks bool
 	expectedRevision     uint64
 	refreshErr           error
+	sourceName           string
 }
 
 func (s *subscriptionSettingsStub) RefreshNow() error { return nil }
@@ -40,6 +41,20 @@ func (s *subscriptionSettingsStub) UpdateConfigAndRefreshAtRevision(_ []string, 
 	s.allowPrivateNetworks = allowPrivateNetworks
 	s.expectedRevision = expectedRevision
 	return s.refreshErr
+}
+func (s *subscriptionSettingsStub) RefreshSource(name string) error {
+	s.sourceName = name
+	return s.refreshErr
+}
+
+func TestSubscriptionSourceRefreshHandler(t *testing.T) {
+	stub := &subscriptionSettingsStub{}
+	server := &Server{subRefresher: stub}
+	recorder := httptest.NewRecorder()
+	server.handleSubscriptionSourceRefresh(recorder, httptest.NewRequest(http.MethodPost, "/api/subscription/sources/refresh", strings.NewReader(`{"name":"Provider-A"}`)))
+	if recorder.Code != http.StatusOK || stub.sourceName != "provider-a" {
+		t.Fatalf("status=%d source=%q body=%s", recorder.Code, stub.sourceName, recorder.Body.String())
+	}
 }
 
 func loadSubscriptionSettingsConfig(t *testing.T, fetchConcurrency int) *config.Config {

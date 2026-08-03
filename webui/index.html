@@ -349,7 +349,7 @@
 
       <!-- Logs Tab -->
       <div id="logsTab" class="tab-content">
-        <div class="panel">
+        <div class="panel" style="margin-bottom:16px">
           <div class="panel-header">
             <div class="panel-title">控制台日志 (Console Logs)</div>
             <div style="display:flex; align-items:center; gap:12px;">
@@ -359,6 +359,17 @@
             </div>
           </div>
           <div id="consoleLogs" class="console-logs" role="log" aria-live="off" aria-label="控制台日志"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div><div class="panel-title">结构化流量日志</div><div class="field-help" id="trafficLogSummary">记录连接、TTFB、传输量与重试结果；默认关闭。</div></div>
+            <div class="traffic-log-actions">
+              <select id="trafficLogSuccessFilter" class="setting-input" onchange="loadTrafficLogs()" aria-label="结果筛选"><option value="">全部结果</option><option value="true">仅成功</option><option value="false">仅失败</option></select>
+              <button type="button" class="btn btn-sm btn-danger" data-min-role="admin" onclick="clearTrafficLogs()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空记录</span></button>
+              <button type="button" class="btn btn-sm" onclick="loadTrafficLogs()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新</span></button>
+            </div>
+          </div>
+          <div class="table-container"><table class="traffic-log-table"><thead><tr><th>时间</th><th>结果</th><th>节点</th><th>Profile</th><th>目标</th><th>连接</th><th>TTFB</th><th>总时长</th><th>流量 ↑ / ↓</th><th>尝试</th><th>失败分类</th></tr></thead><tbody id="trafficLogTableBody"><tr><td colspan="11" class="table-empty">正在加载…</td></tr></tbody></table></div>
         </div>
       </div>
 
@@ -456,15 +467,7 @@
               </div>
             </div>
 
-            <div class="panel" style="margin-bottom: 16px;">
-              <div class="panel-header"><div class="panel-title">监听配置 (Listener)</div></div>
-              <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                <div class="form-group"><label>监听地址</label><input type="text" id="settingListenerAddr" class="setting-input" placeholder="0.0.0.0" /></div>
-                <div class="form-group"><label>监听端口</label><input type="number" id="settingListenerPort" class="setting-input" min="1" max="65535" placeholder="7890" /></div>
-                <div class="form-group"><label>用户名 (可选)</label><input type="text" id="settingListenerUser" class="setting-input" /></div>
-                <div class="form-group"><label for="settingListenerPass">密码 (可选)</label><div class="sensitive-field"><input type="password" id="settingListenerPass" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingListenerPass', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div></div>
-              </div>
-            </div>
+            <div id="endpointSettingsMount"></div>
 
             <div class="panel" style="margin-bottom: 16px;">
               <div class="panel-header"><div class="panel-title">多端口配置 (Multi-Port)</div></div>
@@ -564,6 +567,15 @@
                   </div>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted); margin-top: 8px;">日志设置需重启服务生效</div>
+                <div class="traffic-log-settings">
+                  <div class="traffic-log-setting-head"><div><strong>结构化流量日志</strong><div class="field-help">独立 SQLite、异步批量写入；关闭时不创建数据库。适合按节点/Profile 排查连接质量。</div></div><div class="checkbox-row"><input type="checkbox" id="settingTrafficLogEnabled" /><label for="settingTrafficLogEnabled">启用</label></div></div>
+                  <div class="settings-grid traffic-log-setting-grid">
+                    <div class="form-group"><label for="settingTrafficLogFile">数据库文件</label><input type="text" id="settingTrafficLogFile" class="setting-input" placeholder="traffic-log.db" /></div>
+                    <div class="form-group"><label for="settingTrafficLogRetention">保留时长</label><input type="text" id="settingTrafficLogRetention" class="setting-input" placeholder="24h" /></div>
+                    <div class="form-group"><label for="settingTrafficLogMaxEntries">最多记录</label><input type="number" id="settingTrafficLogMaxEntries" class="setting-input" min="1" max="10000000" placeholder="100000" /></div>
+                    <div class="checkbox-row"><input type="checkbox" id="settingTrafficLogRedact" /><label for="settingTrafficLogRedact">哈希脱敏目标地址</label></div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -599,13 +611,7 @@
                   <div class="form-group"><label for="settingSubMinAvailableRatio">候选池最小可用比例</label><input type="number" id="settingSubMinAvailableRatio" class="setting-input" min="0" max="1" step="0.01" placeholder="0" /></div>
                 </div>
                 <div class="checkbox-row" style="margin-top:12px"><input type="checkbox" id="settingSubQuarantine" /><label for="settingSubQuarantine">新节点通过候选池预检后再切换（隔离验证）</label></div>
-                <div class="form-group" style="margin-top: 12px;">
-                  <label for="settingSubURLs">订阅链接 (每行一个 URL)</label>
-                  <div class="sensitive-field textarea-field">
-                    <textarea id="settingSubURLs" rows="4" class="setting-input sensitive-textarea masked" placeholder="https://example.com/subscribe?token=xxx" spellcheck="false" style="resize:vertical; font-size:12px;"></textarea>
-                    <button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingSubURLs', this)"><svg class="icon"><use href="#i-eye"></use></svg></button>
-                  </div>
-                </div>
+                <div id="subscriptionSourcesMount" class="subscription-sources-mount"></div>
                 <div style="font-size: 11px; color: var(--success); margin-top: 8px;">保存前会先拉取候选并显示新增/删除差异；默认拒绝回环、私网、链路本地和元数据地址</div>
               </div>
             </div>

@@ -375,6 +375,73 @@ func writeSubscriptionTestConfig(t *testing.T, cfg *config.Config) {
 	}
 }
 
+func TestRefreshSourceFetchesOnlySelectedProviderAndComposesCache(t *testing.T) {
+	var hitsA, hitsB atomic.Int32
+	var versionA atomic.Int32
+	versionA.Store(1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/a":
+			hitsA.Add(1)
+			_, _ = fmt.Fprintf(w, "trojan://pw@a%d.example:443#a\n", versionA.Load())
+		case "/b":
+			hitsB.Add(1)
+			_, _ = w.Write([]byte("trojan://pw@b1.example:443#b\n"))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+
+	cfg := newSubscriptionTestConfig(t, t.TempDir(), nil)
+	if err := cfg.SetSubscriptionSources([]config.SubscriptionSourceConfig{
+		{Name: "provider-a", URL: server.URL + "/a"},
+		{Name: "provider-b", URL: server.URL + "/b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg.SubscriptionRefresh.Interval = time.Hour
+	fake := newFakeBoxManager(cfg)
+	manager := New(cfg, fake)
+	defer manager.Stop()
+	if err := manager.RefreshNow(); err != nil {
+		t.Fatalf("full refresh: %v", err)
+	}
+
+	hitsA.Store(0)
+	hitsB.Store(0)
+	versionA.Store(2)
+	if err := manager.RefreshSource("provider-a"); err != nil {
+		t.Fatalf("source refresh: %v", err)
+	}
+	if hitsA.Load() != 1 || hitsB.Load() != 0 {
+		t.Fatalf("source hits A=%d B=%d", hitsA.Load(), hitsB.Load())
+	}
+	committed := fake.currentConfig()
+	joined := nodeURIs(committed.Nodes)
+	if !strings.Contains(joined, "a2.example") || !strings.Contains(joined, "b1.example") || strings.Contains(joined, "a1.example") {
+		t.Fatalf("selected refresh did not compose cached providers: %s", joined)
+	}
+}
+
+func TestFailedSourceScheduleUsesLatestAttempt(t *testing.T) {
+	cfg := newSubscriptionTestConfig(t, t.TempDir(), []string{"https://example.com/sub"})
+	cfg.SubscriptionRefresh.Interval = time.Hour
+	manager := New(cfg, newFakeBoxManager(cfg))
+	defer manager.Stop()
+	now := time.Now()
+	manager.mu.Lock()
+	manager.sourceStatus["source-1"] = monitor.SubscriptionSourceStatus{
+		Name: "source-1", Enabled: true,
+		LastSuccess: now.Add(-2 * time.Hour), LastAttempt: now.Add(-time.Minute), LastError: "failed",
+	}
+	statuses := manager.sourceStatusesLocked(now)
+	manager.mu.Unlock()
+	if len(statuses) != 1 || statuses[0].NextRefresh.Before(now.Add(58*time.Minute)) {
+		t.Fatalf("next refresh=%v, want latest attempt + interval", statuses)
+	}
+}
+
 func TestNodesModifiedRemainsLatchedUntilSuccessfulRefresh(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := newSubscriptionTestConfig(t, tempDir, nil)
