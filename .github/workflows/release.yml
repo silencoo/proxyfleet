@@ -1,4 +1,4 @@
-name: Release Windows executable
+name: Release binaries
 
 on:
   push:
@@ -77,7 +77,7 @@ jobs:
       - name: Run Chromium WebUI regression tests
         run: npx playwright install --with-deps chromium && npm run test:e2e
 
-      - name: Build and inspect official capabilities
+      - name: Build and inspect official binaries
         id: build
         shell: bash
         run: |
@@ -87,44 +87,56 @@ jobs:
           built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           ldflags="-s -w -X github.com/silencoo/proxyfleet/internal/buildinfo.Version=${{ steps.release.outputs.tag }} -X github.com/silencoo/proxyfleet/internal/buildinfo.Commit=${commit} -X github.com/silencoo/proxyfleet/internal/buildinfo.BuiltAt=${built_at}"
 
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -tags "${BUILD_TAGS}" -ldflags "${ldflags}" -o dist/proxyfleet-verify ./cmd/proxyfleet
-          dist/proxyfleet-verify -version-json | tee dist/build-info.json
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -tags "${BUILD_TAGS}" -ldflags "${ldflags}" -o dist/proxyfleet-linux-amd64 ./cmd/proxyfleet
+          dist/proxyfleet-linux-amd64 -version-json | tee dist/build-info-linux-amd64.json
           jq -e '
             .official_release_ready == true and
+            .goos == "linux" and
+            .goarch == "amd64" and
             .capabilities.quic == true and
             .capabilities.clash_api == true and
             .capabilities.grpc == true and
-            .capabilities.wireguard == true
-          ' dist/build-info.json >/dev/null
+            .capabilities.wireguard == true and
+            .capabilities.gvisor == true and
+            .capabilities.utls == true
+          ' dist/build-info-linux-amd64.json >/dev/null
 
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath -tags "${BUILD_TAGS}" -ldflags "${ldflags}" -o dist/proxyfleet.exe ./cmd/proxyfleet
-          sha256="$(sha256sum dist/proxyfleet.exe | awk '{print $1}')"
-          echo "sha256=${sha256}" >> "${GITHUB_OUTPUT}"
+          windows_sha256="$(sha256sum dist/proxyfleet.exe | awk '{print $1}')"
+          linux_sha256="$(sha256sum dist/proxyfleet-linux-amd64 | awk '{print $1}')"
+          echo "windows_sha256=${windows_sha256}" >> "${GITHUB_OUTPUT}"
+          echo "linux_sha256=${linux_sha256}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "${windows_sha256}  proxyfleet.exe"
+            echo "${linux_sha256}  proxyfleet-linux-amd64"
+          } > dist/SHA256SUMS.txt
           {
             echo "### ProxyFleet ${{ steps.release.outputs.tag }}"
-            echo "- Asset: proxyfleet.exe"
-            echo "- Platform: windows/amd64"
-            echo "- SHA256: \`${sha256}\`"
+            echo "- Windows amd64: \`proxyfleet.exe\` - \`${windows_sha256}\`"
+            echo "- Linux amd64: \`proxyfleet-linux-amd64\` - \`${linux_sha256}\`"
+            echo "- Checksums: \`SHA256SUMS.txt\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          RELEASE_SHA256: ${{ steps.build.outputs.sha256 }}
+          WINDOWS_SHA256: ${{ steps.build.outputs.windows_sha256 }}
+          LINUX_SHA256: ${{ steps.build.outputs.linux_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          Official ProxyFleet Windows amd64 build.
+          Official ProxyFleet Windows and Linux amd64 builds.
 
           - Full QUIC, gRPC, WireGuard, gVisor, uTLS and Clash API capabilities
-          - SHA256: \`${RELEASE_SHA256}\`
-          - The only uploaded release asset is \`proxyfleet.exe\`
+          - Windows amd64: \`proxyfleet.exe\` - SHA256 \`${WINDOWS_SHA256}\`
+          - Linux amd64: \`proxyfleet-linux-amd64\` - SHA256 \`${LINUX_SHA256}\`
+          - Checksums: \`SHA256SUMS.txt\`
           EOF
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" dist/proxyfleet.exe --clobber
+            gh release upload "${RELEASE_TAG}" dist/proxyfleet.exe dist/proxyfleet-linux-amd64 dist/SHA256SUMS.txt --clobber
             gh release edit "${RELEASE_TAG}" --title "ProxyFleet ${RELEASE_TAG}" --notes-file release-notes.md --latest
           else
-            gh release create "${RELEASE_TAG}" dist/proxyfleet.exe --verify-tag --title "ProxyFleet ${RELEASE_TAG}" --notes-file release-notes.md --generate-notes --latest
+            gh release create "${RELEASE_TAG}" dist/proxyfleet.exe dist/proxyfleet-linux-amd64 dist/SHA256SUMS.txt --verify-tag --title "ProxyFleet ${RELEASE_TAG}" --notes-file release-notes.md --generate-notes --latest
           fi
