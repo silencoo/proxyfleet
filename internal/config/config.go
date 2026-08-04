@@ -1646,7 +1646,7 @@ func (c *Config) normalizeGeoIPConfig() {
 }
 
 const (
-	defaultProbeMode                 = "all"
+	defaultProbeMode                 = "adaptive"
 	defaultProbeInterval             = 5 * time.Minute
 	defaultProbeTimeout              = 10 * time.Second
 	defaultProbeBatchSize            = 100

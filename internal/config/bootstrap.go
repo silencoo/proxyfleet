@@ -40,6 +40,7 @@ management:
   probe_failure_max_interval: 1h
   probe_passive_grace: 10m
   probe_max_per_hour: 600
+  probe_max_per_day: 5000
   history_enabled: true
   history_file: monitor-history.json
   history_retention: 24h

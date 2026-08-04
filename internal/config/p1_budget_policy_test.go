@@ -2,10 +2,13 @@ package config
 
 import "testing"
 
-func TestAdaptiveProbeBudgetsReceiveSafeDefaults(t *testing.T) {
-	cfg := &Config{Management: ManagementConfig{ProbeMode: "adaptive"}}
+func TestProbePolicyReceivesSafeAdaptiveDefaults(t *testing.T) {
+	cfg := &Config{}
 	if err := cfg.normalizeManagementProbeConfig(); err != nil {
 		t.Fatal(err)
+	}
+	if cfg.ProbeModeOrDefault() != "adaptive" {
+		t.Fatalf("unexpected default probe mode: %q", cfg.ProbeModeOrDefault())
 	}
 	if cfg.ProbeMaxPerHourOrDefault() != 600 || cfg.ProbeMaxPerDayOrDefault() != 5000 {
 		t.Fatalf("unexpected adaptive budgets: hour=%d day=%d", cfg.ProbeMaxPerHourOrDefault(), cfg.ProbeMaxPerDayOrDefault())

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-08-04
+
+### Changed
+- Made adaptive probing the default for omitted `management.probe_mode` values, with bounded hourly and daily active-probe budgets
+
 ## [3.2.1] - 2026-08-03
 
 ### Fixed
