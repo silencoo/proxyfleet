@@ -344,9 +344,9 @@
     .tt-mono { font-family: var(--font-mono); font-size: 12px; }
 
     /* Progress Bar */
-    .progress-wrapper { display: none; position: absolute; top: 0; left: 0; right: 0; z-index: 100; }
+    .progress-wrapper { display: none; position: relative; height: 0; z-index: 100; flex: none; }
     .progress-wrapper.show { display: block; }
-    .progress-bar { height: 4px; background: var(--border); }
+    .progress-bar { position: absolute; top: 0; left: 0; right: 0; height: 4px; background: var(--border); }
     .progress-fill { height: 100%; background: var(--success); width: 0%; transition: width 0.3s; }
     .progress-float {
       position: absolute; right: 24px; top: 12px; background: var(--bg-panel);
@@ -524,7 +524,7 @@
     /* Endpoint Manager */
     .endpoint-panel-header { align-items: flex-start; }
     .endpoint-mode-note {
-      margin: 0 16px; padding: 10px 12px; border: 1px solid var(--border);
+      margin: 16px 16px 0; padding: 10px 12px; border: 1px solid var(--border);
       border-radius: 7px; background: var(--bg-input); color: var(--text-muted);
       font-size: 11px; line-height: 1.5;
     }

@@ -1,4 +1,5 @@
 import { copyText, readJSON } from '../api';
+import { localizedAPIMessage, tr, translateTree } from '../i18n';
 
 export interface ProfileConfig {
   name: string;
@@ -140,7 +141,7 @@ class ProfileController implements ProfilesModule {
   }
 
   private invalid(message: string): false {
-    window.showToast?.(message, 'error');
+    window.showToast?.(tr(message), 'error');
     return false;
   }
 
@@ -166,6 +167,7 @@ class ProfileController implements ProfilesModule {
         <div class="settings-help" data-access-help>正在读取统一入口…</div>
       </section>`;
     this.renderRows();
+    translateTree(this.mount);
   }
 
   private renderRows(): void {
@@ -195,6 +197,7 @@ class ProfileController implements ProfilesModule {
         </div>`;
       }).join('');
     }
+    translateTree(list);
     this.renderProfileOptions();
     window.proxyFleetEndpoints?.setProfiles(this.serialize());
     queueMicrotask(() => this.mount.querySelectorAll<HTMLElement>('[data-profile-row]').forEach(row => { void this.loadPreview(row); }));
@@ -209,10 +212,12 @@ class ProfileController implements ProfilesModule {
       this.renderEndpointOptions();
       this.renderProfileOptions();
       this.renderAccessOutput();
+      translateTree(this.mount);
     } catch (error) {
       if (status) { status.textContent = '读取失败'; status.className = 'badge badge-error'; }
       const help = this.mount.querySelector<HTMLElement>('[data-access-help]');
-      if (help) help.textContent = error instanceof Error ? error.message : '无法读取访问配置';
+      if (help) help.textContent = localizedAPIMessage(error instanceof Error ? error.message : '', '无法读取访问配置');
+      translateTree(this.mount);
     }
   }
 
@@ -223,6 +228,7 @@ class ProfileController implements ProfilesModule {
     const profiles = this.serialize();
     select.innerHTML = '<option value="">全部节点</option>' + profiles.map(profile => `<option value="${escapeHTML(profile.name)}">${escapeHTML(profile.name)}</option>`).join('');
     if ([...select.options].some(option => option.value === selected)) select.value = selected;
+    translateTree(select);
   }
 
   private renderEndpointOptions(): void {
@@ -265,10 +271,10 @@ class ProfileController implements ProfilesModule {
     if (curlField) curlField.value = curl;
     const help = this.mount.querySelector<HTMLElement>('[data-access-help]');
     if (help) {
-      if (endpoint.profile) help.textContent = `Endpoint ${endpoint.name} 已固定到 Profile ${endpoint.profile}，客户端无需修改用户名。`;
-      else if (endpoint.username) help.textContent = '可选择 Profile；访问用户名会自动生成为 base@profile。';
-      else help.textContent = '该 Endpoint 未启用认证；如需客户端选择 Profile，请为入口配置用户名和密码，或将 Endpoint 固定到一个 Profile。';
-      if (endpoint.status !== 'running') help.textContent += ` 当前状态：${endpoint.status}${endpoint.message ? `（${endpoint.message}）` : ''}。`;
+      if (endpoint.profile) help.textContent = tr('Endpoint {endpoint} 已固定到 Profile {profile}，客户端无需修改用户名。', {endpoint: endpoint.name, profile: endpoint.profile});
+      else if (endpoint.username) help.textContent = tr('可选择 Profile；访问用户名会自动生成为 base@profile。');
+      else help.textContent = tr('该 Endpoint 未启用认证；如需客户端选择 Profile，请为入口配置用户名和密码，或将 Endpoint 固定到一个 Profile。');
+      if (endpoint.status !== 'running') help.textContent += tr(' 当前状态：{status}{message}。', {status: endpoint.status, message: endpoint.message ? ` (${localizedAPIMessage(endpoint.message, '状态异常')})` : ''});
     }
   }
 
@@ -301,7 +307,7 @@ class ProfileController implements ProfilesModule {
     const copy = target.closest<HTMLElement>('[data-copy]');
     if (copy) {
       const field = this.mount.querySelector<HTMLInputElement>(`[data-access-${copy.dataset.copy}]`);
-      if (field?.value) void copyText(field.value).then(() => window.showToast?.('已复制'));
+      if (field?.value) void copyText(field.value).then(() => window.showToast?.(tr('已复制')));
     }
     const preview = target.closest<HTMLElement>('[data-preview-profile]');
     if (preview) {
@@ -324,30 +330,32 @@ class ProfileController implements ProfilesModule {
     status.textContent = '计算中';
     status.className = 'badge badge-warning';
     output.innerHTML = '<div class="profile-preview-empty">正在按当前运行节点计算…</div>';
+    translateTree(row);
     try {
       const response = await fetch('/api/profiles/preview', {
         method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(this.serializeRow(row)),
       });
       const preview = await readJSON<ProfilePreview>(response);
       if (row.dataset.previewSequence !== sequence) return;
-      status.textContent = `${preview.matched}/${preview.total} 命中`;
+      status.textContent = tr('{matched}/{total} 命中', {matched: preview.matched, total: preview.total});
       status.className = preview.matched ? 'badge badge-healthy' : 'badge badge-warning';
       output.innerHTML = this.previewHTML(preview);
+      translateTree(output);
     } catch (error) {
       if (row.dataset.previewSequence !== sequence) return;
-      status.textContent = '预览失败';
+      status.textContent = tr('预览失败');
       status.className = 'badge badge-error';
-      output.innerHTML = `<div class="profile-preview-error" role="alert">${escapeHTML(error instanceof Error ? error.message : '无法计算匹配预览')}</div>`;
+      output.innerHTML = `<div class="profile-preview-error" role="alert">${escapeHTML(localizedAPIMessage(error instanceof Error ? error.message : '', '无法计算匹配预览'))}</div>`;
     }
   }
 
   private previewHTML(preview: ProfilePreview): string {
-    if (!preview.total) return '<div class="profile-preview-empty">当前运行配置中没有可预览节点。</div>';
+    if (!preview.total) return `<div class="profile-preview-empty">${tr('当前运行配置中没有可预览节点。')}</div>`;
     const reasonLabels: Record<string,string> = {region:'地域', protocol:'协议', source:'来源', tag_rule:'名称规则', quality:'质量'};
     const reasons = Object.entries(preview.excluded || {}).filter(([, count]) => count > 0)
-      .map(([reason, count]) => `<span class="profile-preview-chip">${escapeHTML(reasonLabels[reason] || reason)}排除 ${count}</span>`).join('');
-    const samples = (items: ProfilePreviewSample[], kind: string) => items.length ? `<div class="profile-preview-samples"><strong>${kind}</strong>${items.map(item => `<span title="${escapeHTML([item.region, item.protocol, item.source, `质量 ${item.quality.toFixed(0)}`, item.rule ? `${item.rule_group}: ${item.rule}` : ''].filter(Boolean).join(' · '))}">${escapeHTML(item.name)}</span>`).join('')}</div>` : '';
-    return `<div class="profile-preview-summary"><span><strong>${preview.matched}</strong> 命中</span><span><strong>${preview.total - preview.matched}</strong> 排除</span>${reasons}</div>${samples(preview.matched_samples || [], '命中样本')}${samples(preview.excluded_samples || [], '未命中样本')}`;
+      .map(([reason, count]) => `<span class="profile-preview-chip">${tr('{reason} excluded: {count}', {reason: tr(reasonLabels[reason] || reason), count})}</span>`).join('');
+    const samples = (items: ProfilePreviewSample[], kind: string) => items.length ? `<div class="profile-preview-samples"><strong>${tr(kind)}</strong>${items.map(item => `<span title="${escapeHTML([item.region, item.protocol, item.source, tr('质量 {quality}', {quality: item.quality.toFixed(0)}), item.rule ? `${item.rule_group}: ${item.rule}` : ''].filter(Boolean).join(' · '))}">${escapeHTML(item.name)}</span>`).join('')}</div>` : '';
+    return `<div class="profile-preview-summary"><span><strong>${preview.matched}</strong> ${tr('命中')}</span><span><strong>${preview.total - preview.matched}</strong> ${tr('排除')}</span>${reasons}</div>${samples(preview.matched_samples || [], '命中样本')}${samples(preview.excluded_samples || [], '未命中样本')}`;
   }
 }
 

@@ -1,1 +1,3 @@
 *.sh text eol=lf
+webui/index.html text eol=lf
+webui/dist/index.html text eol=lf

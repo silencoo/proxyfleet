@@ -76,15 +76,6 @@
 
   <!-- Main Content -->
   <main class="main">
-    <div class="progress-wrapper" id="probeProgress">
-      <div class="progress-bar"><div class="progress-fill" id="probeProgressFill"></div></div>
-      <div class="progress-float">
-        <span style="color:var(--text-main)">探测中: <span id="probeStats">0/0</span></span>
-        <span style="color:var(--success)">成功: <span id="probeSuccess">0</span></span>
-        <span style="color:var(--error)">失败: <span id="probeFail">0</span></span>
-      </div>
-    </div>
-
     <!-- Header -->
     <header class="header">
       <div class="header-left">
@@ -108,6 +99,15 @@
         <button type="button" class="btn" onclick="refresh()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新</span></button>
       </div>
     </header>
+
+    <div class="progress-wrapper" id="probeProgress">
+      <div class="progress-bar"><div class="progress-fill" id="probeProgressFill"></div></div>
+      <div class="progress-float">
+        <span style="color:var(--text-main)">探测中: <span id="probeStats">0/0</span></span>
+        <span style="color:var(--success)">成功: <span id="probeSuccess">0</span></span>
+        <span style="color:var(--error)">失败: <span id="probeFail">0</span></span>
+      </div>
+    </div>
 
     <div class="content">
       <!-- Dashboard Tab -->

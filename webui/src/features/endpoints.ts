@@ -1,4 +1,5 @@
 import type { ProfileConfig } from './profiles';
+import { tr, translateTree } from '../i18n';
 
 export interface EndpointConfig {
   name: string;
@@ -96,15 +97,15 @@ class EndpointController implements EndpointsModule {
     const profiles = new Set((window.proxyFleetProfiles?.serialize() || this.profiles).map(profile => profile.name));
     for (const endpoint of endpoints) {
       if (!endpointNamePattern.test(endpoint.name)) return this.invalid('Endpoint 名称需为 1–32 位小写字母、数字、点、下划线或连字符。');
-      if (names.has(endpoint.name)) return this.invalid(`Endpoint 名称重复：${endpoint.name}`);
+      if (names.has(endpoint.name)) return this.invalid(tr('Endpoint 名称重复：{name}', {name: endpoint.name}));
       names.add(endpoint.name);
-      if (!isIPAddress(endpoint.address)) return this.invalid(`Endpoint ${endpoint.name} 的监听地址必须是 IP 地址。`);
-      if (endpoint.port < 1 || endpoint.port > 65535) return this.invalid(`Endpoint ${endpoint.name} 的端口必须在 1 到 65535 之间。`);
+      if (!isIPAddress(endpoint.address)) return this.invalid(tr('Endpoint {name} 的监听地址必须是 IP 地址。', {name: endpoint.name}));
+      if (endpoint.port < 1 || endpoint.port > 65535) return this.invalid(tr('Endpoint {name} 的端口必须在 1 到 65535 之间。', {name: endpoint.name}));
       const socket = `${endpoint.address.toLowerCase()}:${endpoint.port}`;
-      if (sockets.has(socket)) return this.invalid(`监听地址与端口重复：${endpoint.address}:${endpoint.port}`);
+      if (sockets.has(socket)) return this.invalid(tr('监听地址与端口重复：{socket}', {socket: `${endpoint.address}:${endpoint.port}`}));
       sockets.add(socket);
-      if (Boolean(endpoint.username) !== Boolean(endpoint.password)) return this.invalid(`Endpoint ${endpoint.name} 的用户名和密码必须同时填写或同时留空。`);
-      if (endpoint.profile && !profiles.has(endpoint.profile)) return this.invalid(`Endpoint ${endpoint.name} 引用了不存在的 Profile：${endpoint.profile}`);
+      if (Boolean(endpoint.username) !== Boolean(endpoint.password)) return this.invalid(tr('Endpoint {name} 的用户名和密码必须同时填写或同时留空。', {name: endpoint.name}));
+      if (endpoint.profile && !profiles.has(endpoint.profile)) return this.invalid(tr('Endpoint {name} 引用了不存在的 Profile：{profile}', {name: endpoint.name, profile: endpoint.profile}));
     }
     return true;
   }
@@ -128,6 +129,7 @@ class EndpointController implements EndpointsModule {
         <div class="endpoint-mode-note">Endpoint 只在 pool / hybrid 模式启动；切换到 multi-port 时配置会保留，但监听保持停用。</div>
         <div class="endpoint-list" data-endpoint-list><div class="endpoint-empty">正在读取 Endpoint…</div></div>
       </section>`;
+    translateTree(this.mount);
   }
 
   private renderRows(): void {
@@ -135,6 +137,7 @@ class EndpointController implements EndpointsModule {
     if (!list) return;
     if (!this.endpoints.length) {
       list.innerHTML = '<div class="endpoint-empty">尚未配置 Endpoint。请添加一个池入口后保存。</div>';
+      translateTree(list);
       return;
     }
     list.innerHTML = this.endpoints.map((endpoint, index) => {
@@ -160,6 +163,7 @@ class EndpointController implements EndpointsModule {
           ${endpoint.message ? `<div class="endpoint-message">${escapeHTML(endpoint.message)}</div>` : ''}
         </article>`;
     }).join('');
+    translateTree(list);
   }
 
   private profileOptions(selected: string): string {
@@ -172,6 +176,7 @@ class EndpointController implements EndpointsModule {
       select.innerHTML = this.profileOptions(selected);
       if ([...select.options].some(option => option.value === selected)) select.value = selected;
     });
+    translateTree(this.mount);
   }
 
   private markDirty(event: Event): void {
@@ -188,6 +193,7 @@ class EndpointController implements EndpointsModule {
     const name = this.value(row, 'name');
     const heading = row.querySelector<HTMLElement>('.endpoint-identity strong');
     if (heading) heading.textContent = name || '未命名 Endpoint';
+    translateTree(row);
   }
 
   private async handleClick(event: Event): Promise<void> {
@@ -210,7 +216,7 @@ class EndpointController implements EndpointsModule {
       const current = this.serialize();
       const index = Number(remove.dataset.removeEndpoint);
       const endpoint = current[index];
-      const confirmed = await (window.requestConfirmation?.('删除 Endpoint', `确定删除 ${endpoint?.name || '这个 Endpoint'}？保存后该监听将立即停止，现有连接可能中断。`, '删除') ?? Promise.resolve(false));
+      const confirmed = await (window.requestConfirmation?.(tr('删除 Endpoint'), tr('确定删除 {name}？保存后该监听将立即停止，现有连接可能中断。', {name: endpoint?.name || tr('这个 Endpoint')}), tr('删除')) ?? Promise.resolve(false));
       if (!confirmed) return;
       this.endpoints = current.filter((_, itemIndex) => itemIndex !== index).map(item => ({...item, status:'dirty'}));
       this.renderRows();
@@ -223,8 +229,8 @@ class EndpointController implements EndpointsModule {
       const reveal = input.type === 'password';
       input.type = reveal ? 'text' : 'password';
       toggle.setAttribute('aria-pressed', String(reveal));
-      toggle.setAttribute('aria-label', reveal ? '隐藏密码' : '显示密码');
-      toggle.title = reveal ? '隐藏密码' : '显示密码';
+      toggle.setAttribute('aria-label', tr(reveal ? '隐藏密码' : '显示密码'));
+      toggle.title = tr(reveal ? '隐藏密码' : '显示密码');
     }
   }
 }

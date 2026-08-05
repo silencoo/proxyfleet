@@ -55,10 +55,10 @@ async function mockAPI(page) {
         probe_batch_size: 100,
         listener: { address: '127.0.0.1', port: 23230, username: 'fleet', password: 'secret-pass' },
         endpoints: [
-          { name: 'public', enabled: true, address: '127.0.0.1', port: 23230, username: 'fleet', password: 'secret-pass', profile: '', status: 'running' },
+          { name: 'public', enabled: true, address: '127.0.0.1', port: 23230, username: 'fleet', password: 'secret-pass', profile: '', status: 'running', message: '监听正常' },
           { name: 'hk-only', enabled: true, address: '127.0.0.1', port: 23231, username: 'hk', password: 'hk-secret', profile: 'hk-fast', status: 'running' }
         ],
-        multi_port: {}, pool: {}, geoip: {}, log: {},
+        multi_port: {}, pool: {}, geoip: { enabled: false, listen: '', port: 0, auto_update_enabled: false, auto_update_interval: '0s' }, log: {},
         traffic_log: { enabled: true, file: 'traffic-log.db', retention: '24h0m0s', max_entries: 100000, redact_destination: true },
         profiles: [{ name: 'hk-fast', regions: ['hk'], name_regex: '', tag_rules: { any: ['HK|Hong Kong'], must: ['Premium'], must_not: ['Expired'] }, protocols: ['vless'], sources: [], min_quality: 80 }],
         management: {
@@ -237,4 +237,72 @@ test('manages shared-pool endpoints with status, profile binding, and delete con
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(mount.locator('[data-add-endpoint]')).toBeVisible();
   await expect.poll(() => mount.locator('.endpoint-fields').first().evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1);
+});
+
+test('localizes dynamic settings content completely in English', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('uiLanguage', 'en'));
+  await page.goto('/');
+  await page.locator('.nav-item[data-tab="settings"]').click();
+
+  await expect(page).toHaveTitle('ProxyFleet - Control Center');
+  await expect(page.locator('#endpointSettingsMount')).toContainText('Endpoints start only in pool / hybrid mode.');
+  await expect(page.locator('#endpointSettingsMount')).toContainText('Listener is running normally');
+  await expect(page.locator('#profileSettingsMount')).toContainText('Access Assistant');
+  await expect(page.locator('#subscriptionSourcesMount')).toContainText('Source refresh interval');
+
+  const chineseByTab = {};
+  for (const tab of ['dashboard', 'manage', 'debug', 'operations', 'logs', 'settings']) {
+    await page.locator(`.nav-item[data-tab="${tab}"]`).click();
+    await page.waitForTimeout(100);
+    const visibleChinese = await page.locator('body').evaluate(element => element.innerText
+      .split(/\n+/)
+      .map(value => value.trim())
+      .filter(value => /[\u3400-\u9fff]/.test(value)));
+    if (visibleChinese.length) chineseByTab[tab] = [...new Set(visibleChinese)];
+  }
+  expect(chineseByTab).toEqual({});
+});
+
+test('keeps the Endpoint mode note separated from the panel header', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.nav-item[data-tab="settings"]').click();
+
+  const spacing = await page.locator('.endpoint-mode-note').evaluate(element => {
+    const note = element.getBoundingClientRect();
+    const header = element.previousElementSibling.getBoundingClientRect();
+    return { gap: note.top - header.bottom, marginTop: getComputedStyle(element).marginTop };
+  });
+  expect(spacing.marginTop).toBe('16px');
+  expect(spacing.gap).toBeGreaterThanOrEqual(16);
+});
+
+test('saves other settings when disabled GeoIP auto-update reports a zero interval', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.nav-item[data-tab="settings"]').click();
+
+  await expect(page.locator('#settingGeoIPAutoUpdate')).not.toBeChecked();
+  await expect(page.locator('#settingGeoIPUpdateInterval')).toHaveValue('24h');
+  await page.locator('#settingExternalIP').fill('198.51.100.8');
+  const requestPromise = page.waitForRequest(request => request.url().endsWith('/api/settings') && request.method() === 'PUT');
+  await page.locator('#settingsSaveLabel').click();
+  const request = await requestPromise;
+  const payload = request.postDataJSON();
+  expect(payload.geoip.auto_update_enabled).toBe(false);
+  expect(payload.geoip.auto_update_interval).toBe('');
+  await expect(page.locator('.toast').last()).toContainText(/保存|Saved/);
+});
+
+test('places probe progress details below the header actions', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('#probeProgress').evaluate(element => element.classList.add('show'));
+
+  const layout = await page.evaluate(() => {
+    const progress = document.querySelector('.progress-float').getBoundingClientRect();
+    const actions = document.querySelector('.header-actions').getBoundingClientRect();
+    const header = document.querySelector('.header').getBoundingClientRect();
+    const overlapsActions = !(progress.right <= actions.left || progress.left >= actions.right || progress.bottom <= actions.top || progress.top >= actions.bottom);
+    return { progressTop: progress.top, headerBottom: header.bottom, overlapsActions };
+  });
+  expect(layout.progressTop).toBeGreaterThanOrEqual(layout.headerBottom + 8);
+  expect(layout.overlapsActions).toBe(false);
 });

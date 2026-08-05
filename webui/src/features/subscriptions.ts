@@ -1,4 +1,5 @@
 import { copyText, readJSON } from '../api';
+import { localizedAPIMessage, tr, translateTree } from '../i18n';
 
 export interface SubscriptionSource {
   name: string;
@@ -123,7 +124,7 @@ class SubscriptionController implements SubscriptionsModule {
   }
 
   private invalid(message: string): false {
-    window.showToast?.(message, 'error');
+    window.showToast?.(tr(message), 'error');
     return false;
   }
 
@@ -138,6 +139,7 @@ class SubscriptionController implements SubscriptionsModule {
         <button type="button" class="btn btn-sm" data-add-source><svg class="icon"><use href="#i-plus"></use></svg><span>添加订阅源</span></button>
       </div>
       <div class="subscription-source-list" data-source-list><div class="subscription-source-empty">正在读取订阅源…</div></div>`;
+    translateTree(this.mount);
   }
 
   private renderRows(): void {
@@ -145,6 +147,7 @@ class SubscriptionController implements SubscriptionsModule {
     if (!list) return;
     if (!this.sources.length) {
       list.innerHTML = '<div class="subscription-source-empty">尚未配置订阅源。可以保留为空，仅使用手动节点。</div>';
+      translateTree(list);
       return;
     }
     list.innerHTML = this.sources.map((source, index) => {
@@ -168,9 +171,10 @@ class SubscriptionController implements SubscriptionsModule {
         <div class="subscription-source-status">
           <span>节点 <strong>${Number(status?.node_count) || 0}</strong></span><span>耗时 <strong>${Number(status?.duration_ms) >= 0 ? `${Number(status?.duration_ms) || 0} ms` : '—'}</strong></span><span>上次成功 <strong>${formatDate(status?.last_success)}</strong></span><span>下次刷新 <strong>${source.enabled ? formatDate(status?.next_refresh) : '—'}</strong></span>
         </div>
-        ${status?.last_error ? `<div class="subscription-source-error">${escapeHTML(status.last_error)}</div>` : ''}
+        ${status?.last_error ? `<div class="subscription-source-error">${escapeHTML(localizedAPIMessage(status.last_error, '订阅源刷新失败'))}</div>` : ''}
       </article>`;
     }).join('');
+    translateTree(list);
   }
 
   private markDirty(event: Event): void {
@@ -182,6 +186,7 @@ class SubscriptionController implements SubscriptionsModule {
     row.querySelector<HTMLButtonElement>('[data-refresh-source]')?.setAttribute('disabled', 'true');
     const heading = row.querySelector<HTMLElement>('.subscription-source-title strong');
     if (heading) heading.textContent = this.value(row, 'name') || '未命名订阅源';
+    translateTree(row);
   }
 
   private async handleClick(event: Event): Promise<void> {
@@ -203,7 +208,7 @@ class SubscriptionController implements SubscriptionsModule {
       const current = this.serialize();
       const index = Number(remove.dataset.removeSource);
       const source = current[index];
-      const confirmed = await (window.requestConfirmation?.('删除订阅源', `确定删除 ${source?.name || '这个订阅源'}？保存后该来源的缓存节点会从候选池移除。`, '删除') ?? Promise.resolve(false));
+      const confirmed = await (window.requestConfirmation?.(tr('删除订阅源'), tr('确定删除 {name}？保存后该来源的缓存节点会从候选池移除。', {name: source?.name || tr('这个订阅源')}), tr('删除')) ?? Promise.resolve(false));
       if (!confirmed) return;
       this.sources = current.filter((_, itemIndex) => itemIndex !== index);
       this.renderRows();
@@ -216,7 +221,7 @@ class SubscriptionController implements SubscriptionsModule {
       const reveal = input.type === 'password';
       input.type = reveal ? 'text' : 'password';
       toggle.setAttribute('aria-pressed', String(reveal));
-      toggle.title = reveal ? '隐藏 URL' : '显示 URL';
+      toggle.title = tr(reveal ? '隐藏 URL' : '显示 URL');
       toggle.setAttribute('aria-label', toggle.title);
       return;
     }
@@ -224,7 +229,7 @@ class SubscriptionController implements SubscriptionsModule {
     if (copy) {
       const value = copy.closest<HTMLElement>('[data-subscription-source]')?.querySelector<HTMLInputElement>('[data-field="url"]')?.value || '';
       if (!value) return;
-      try { await copyText(value); window.showToast?.('订阅 URL 已复制'); } catch { window.showToast?.('复制失败', 'error'); }
+      try { await copyText(value); window.showToast?.(tr('订阅 URL 已复制')); } catch { window.showToast?.(tr('复制失败'), 'error'); }
       return;
     }
     const refresh = target.closest<HTMLButtonElement>('[data-refresh-source]');
@@ -237,9 +242,9 @@ class SubscriptionController implements SubscriptionsModule {
         this.setStatusMap(result.sources || []);
         this.sources = this.serialize();
         this.renderRows();
-        window.showToast?.(`${name} 刷新成功`);
+        window.showToast?.(tr('{name} 刷新成功', {name}));
       } catch (error) {
-        window.showToast?.(error instanceof Error ? error.message : '订阅源刷新失败', 'error');
+        window.showToast?.(localizedAPIMessage(error instanceof Error ? error.message : '', '订阅源刷新失败'), 'error');
         refresh.disabled = false;
       }
     }
