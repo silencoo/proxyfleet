@@ -2,10 +2,13 @@
 /proxyfleet
 /proxyfleet-*
 *.exe
+# Local release output also contains runtime secrets; keep webui/dist tracked.
+/dist/
 
 # Configuration (contains sensitive data)
 config.yaml
 nodes.txt
+node-auth.yaml
 
 # GeoIP database (auto-downloaded)
 *.mmdb
@@ -21,6 +24,9 @@ data/
 *.db
 *.db-wal
 *.db-shm
+health-state.yaml
+port-map.yaml
+monitor-history.json
 
 # IDE and editor
 .idea/

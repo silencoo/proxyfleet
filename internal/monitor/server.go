@@ -2869,8 +2869,8 @@ func (s *Server) handleSubscriptionSourceRefresh(w http.ResponseWriter, r *http.
 func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		var urls []string
-		var sources []subscriptionSourceResponse
+		urls := make([]string, 0)
+		sources := make([]subscriptionSourceResponse, 0)
 		var enabled bool
 		var interval string
 		fetchConcurrency := config.NormalizeSubscriptionFetchConcurrency(0)
@@ -2889,7 +2889,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 			}
 		}
 		if cfg != nil {
-			urls = append([]string(nil), cfg.Subscriptions...)
+			urls = append(urls, cfg.Subscriptions...)
 			sources = subscriptionSourcesResponse(cfg)
 			enabled = cfg.SubscriptionRefresh.Enabled
 			interval = cfg.SubscriptionRefresh.Interval.String()
@@ -3033,11 +3033,11 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		responseMinAvailableRatio := 0.0
 		responseQuarantineNewNodes := true
 		responseNodeFailurePolicy := "skip"
-		var responseSources []subscriptionSourceResponse
+		responseSources := make([]subscriptionSourceResponse, 0)
 		if committed, committedRevision := nodeMgr.ConfigSnapshot(); committed != nil {
 			s.SetConfig(committed)
 			w.Header().Set("ETag", settingsETag(committedRevision))
-			cleanURLs = append([]string(nil), committed.Subscriptions...)
+			cleanURLs = append([]string{}, committed.Subscriptions...)
 			req.Enabled = committed.SubscriptionRefresh.Enabled
 			interval = committed.SubscriptionRefresh.Interval
 			fetchConcurrency = config.NormalizeSubscriptionFetchConcurrency(committed.SubscriptionRefresh.FetchConcurrency)

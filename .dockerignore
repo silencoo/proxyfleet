@@ -1,7 +1,30 @@
 .git
 Dockerfile
-config.yaml
-config*.yml
-*.md
+
+# Local binaries and runtime data. This is the root dist, not webui/dist.
+/dist/
+/proxyfleet
+/proxyfleet-*
+*.exe
 bin
+
+# Runtime files may also live beside a config outside the root dist directory.
+**/config.yaml
+config*.yml
+**/nodes.txt
+**/node-auth.yaml
+**/health-state.yaml
+**/port-map.yaml
+**/monitor-history.json
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.lock
+**/*.log
+**/logs/
+**/data/
+**/*.mmdb
+
+# Development-only files; the bundled webui/dist assets remain in the context.
+*.md
 **/node_modules

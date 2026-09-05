@@ -127,13 +127,13 @@ class ProfileController implements ProfilesModule {
     const names = new Set<string>();
     for (const profile of profiles) {
       if (!/^[a-z0-9][a-z0-9._-]{0,31}$/.test(profile.name)) return this.invalid('Profile 名称需为 1–32 位小写字母、数字、点、下划线或连字符。');
-      if (names.has(profile.name)) return this.invalid(`Profile 名称重复：${profile.name}`);
+      if (names.has(profile.name)) return this.invalid(tr('Profile 名称重复：{name}', {name: profile.name}));
       names.add(profile.name);
       if (profile.min_quality < 0 || profile.min_quality > 100) return this.invalid('最低质量分必须在 0 到 100 之间。');
       for (const [group, rules] of Object.entries(profile.tag_rules)) {
-        if (rules.length > 64) return this.invalid(`Profile ${profile.name} 的 ${group} 规则不能超过 64 条。`);
+        if (rules.length > 64) return this.invalid(tr('Profile {name} 的 {group} 规则不能超过 64 条。', {name: profile.name, group}));
         for (let index = 0; index < rules.length; index += 1) {
-          try { new RegExp(rules[index]); } catch { return this.invalid(`Profile ${profile.name} 的 ${group} 第 ${index + 1} 条正则无效。`); }
+          try { new RegExp(rules[index]); } catch { return this.invalid(tr('Profile {name} 的 {group} 第 {index} 条正则无效。', {name: profile.name, group, index: index + 1})); }
         }
       }
     }

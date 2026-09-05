@@ -83,12 +83,16 @@ async function mockAPI(page) {
         ]
       };
     } else if (path === '/api/subscription/config') {
+      if (route.request().method() === 'PUT') await new Promise(resolve => setTimeout(resolve, 200));
       headers = { ETag: '"config-1"' };
       body = {
         subscriptions: ['https://example.com/sub?token=secret'], sources: [{ name: 'provider-a', url: 'https://example.com/sub?token=secret', enabled: true, refresh_interval: '30m0s', has_headers: false }], enabled: true, interval: '1h0m0s', fetch_concurrency: 16,
         allow_private_networks: false, max_removed_ratio: 0.5, min_available_ratio: 0,
         quarantine_new_nodes: true, node_failure_policy: 'skip'
       };
+    } else if (path === '/api/subscription/preview') {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      body = { token: 'preview-1', candidate_total: 15, added: 2, removed: 1, unchanged: 13, removed_ratio: 0.0625, risky: false };
     } else if (path === '/api/profiles/preview') {
       body = { total: 100, matched: 42, excluded: { tag_rule: 41, region: 17 }, matched_samples: [{ name: 'HK Premium 01', region: 'hk', protocol: 'vless', source: 'subscription', quality: 91, matched: true }], excluded_samples: [{ name: 'HK Expired', region: 'hk', protocol: 'vless', source: 'subscription', quality: 80, matched: false, reason: 'tag_rule', rule_group: 'must_not', rule_index: 0, rule: 'Expired' }] };
     } else if (path === '/api/subscription/sources/refresh') {
@@ -261,6 +265,28 @@ test('localizes dynamic settings content completely in English', async ({ page }
     if (visibleChinese.length) chineseByTab[tab] = [...new Set(visibleChinese)];
   }
   expect(chineseByTab).toEqual({});
+});
+
+test('localizes the complete subscription save workflow in English', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('uiLanguage', 'en'));
+  await page.goto('/');
+  await page.locator('.nav-item[data-tab="settings"]').click();
+
+  await page.locator('#subscriptionSourcesMount [data-field="url"]').fill('https://example.com/sub?token=updated');
+  await page.locator('form').first().locator('button[type="submit"]').click();
+
+  await expect(page.locator('#fullscreenLoading')).toBeVisible();
+  await expect(page.locator('#fullscreenLoadingText')).toHaveText('Updating subscription...');
+  await expect(page.locator('#fullscreenLoadingSubtext')).toHaveText('Fetching candidate subscriptions and calculating changes.');
+
+  await expect(page.locator('#confirmOverlay')).toHaveClass(/show/);
+  await expect(page.locator('#confirmMessage')).toContainText('The candidate pool has 15 nodes');
+  await expect(page.locator('#confirmMessage')).not.toContainText(/[\u3400-\u9fff]/);
+  await page.locator('#confirmAccept').click();
+
+  await expect(page.locator('#fullscreenLoading')).toBeVisible();
+  await expect(page.locator('#fullscreenLoadingSubtext')).toHaveText('Validating the candidate pool before switching atomically.');
+  await expect(page.locator('#fullscreenLoading')).toBeHidden();
 });
 
 test('keeps the Endpoint mode note separated from the panel header', async ({ page }) => {

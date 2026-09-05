@@ -185,6 +185,9 @@ func (e *Engine) SaveSnapshot(ctx context.Context, health []HealthRecord, domain
 		return fmt.Errorf("begin runtime state snapshot: %w", err)
 	}
 	defer tx.Rollback()
+	// Prepare each statement on its first valid row and reuse it for the batch.
+	// Keep both batches in this transaction so a failure rolls back the entire snapshot.
+	var healthStatement *sql.Stmt
 	for _, record := range health {
 		if strings.TrimSpace(record.NodeID) == "" {
 			continue
@@ -195,7 +198,8 @@ func (e *Engine) SaveSnapshot(ctx context.Context, health []HealthRecord, domain
 		if record.UpdatedAt.IsZero() {
 			record.UpdatedAt = time.Now().UTC()
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO node_health (
+		if healthStatement == nil {
+			healthStatement, err = tx.PrepareContext(ctx, `INSERT INTO node_health (
 			node_id, failures, blacklisted_until_ns, manual_blacklist,
 			cooldown_until_ns, monitor_json, updated_at_ns
 		) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -205,7 +209,13 @@ func (e *Engine) SaveSnapshot(ctx context.Context, health []HealthRecord, domain
 			manual_blacklist=excluded.manual_blacklist,
 			cooldown_until_ns=excluded.cooldown_until_ns,
 			monitor_json=excluded.monitor_json,
-			updated_at_ns=excluded.updated_at_ns`,
+			updated_at_ns=excluded.updated_at_ns`)
+			if err != nil {
+				return fmt.Errorf("prepare node health snapshot: %w", err)
+			}
+			defer healthStatement.Close()
+		}
+		_, err = healthStatement.ExecContext(ctx,
 			record.NodeID, record.Failures, unixNano(record.BlacklistedUntil), record.ManualBlacklist,
 			unixNano(record.CooldownUntil), record.MonitorJSON, unixNano(record.UpdatedAt))
 		if err != nil {
@@ -217,6 +227,7 @@ func (e *Engine) SaveSnapshot(ctx context.Context, health []HealthRecord, domain
 	if _, err := tx.ExecContext(ctx, "DELETE FROM node_domain_latency"); err != nil {
 		return fmt.Errorf("replace domain latency snapshot: %w", err)
 	}
+	var domainStatement *sql.Stmt
 	for _, record := range domains {
 		if strings.TrimSpace(record.NodeID) == "" || strings.TrimSpace(record.Domain) == "" || record.EWMAMs <= 0 {
 			continue
@@ -227,13 +238,20 @@ func (e *Engine) SaveSnapshot(ctx context.Context, health []HealthRecord, domain
 		if record.LastAccess.IsZero() {
 			record.LastAccess = record.UpdatedAt
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO node_domain_latency (
+		if domainStatement == nil {
+			domainStatement, err = tx.PrepareContext(ctx, `INSERT INTO node_domain_latency (
 			node_id, domain, ewma_ms, updated_at_ns, last_access_ns
 		) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(node_id, domain) DO UPDATE SET
 			ewma_ms=excluded.ewma_ms,
 			updated_at_ns=excluded.updated_at_ns,
-			last_access_ns=excluded.last_access_ns`,
+			last_access_ns=excluded.last_access_ns`)
+			if err != nil {
+				return fmt.Errorf("prepare domain latency snapshot: %w", err)
+			}
+			defer domainStatement.Close()
+		}
+		_, err = domainStatement.ExecContext(ctx,
 			record.NodeID, record.Domain, record.EWMAMs, unixNano(record.UpdatedAt), unixNano(record.LastAccess))
 		if err != nil {
 			return fmt.Errorf("save domain latency %q/%q: %w", record.NodeID, record.Domain, err)

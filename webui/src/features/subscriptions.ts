@@ -97,18 +97,18 @@ class SubscriptionController implements SubscriptionsModule {
     const urls = new Set<string>();
     for (const source of sources) {
       if (!sourceNamePattern.test(source.name)) return this.invalid('订阅源名称需为 1–32 位小写字母、数字、点、下划线或连字符。');
-      if (names.has(source.name)) return this.invalid(`订阅源名称重复：${source.name}`);
+      if (names.has(source.name)) return this.invalid(tr('订阅源名称重复：{name}', {name: source.name}));
       names.add(source.name);
       try {
         const parsed = new URL(source.url);
         if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error();
         const key = parsed.toString();
-        if (urls.has(key)) return this.invalid(`订阅地址重复：${source.name}`);
+        if (urls.has(key)) return this.invalid(tr('订阅地址重复：{name}', {name: source.name}));
         urls.add(key);
-      } catch { return this.invalid(`订阅源 ${source.name} 的 URL 无效，仅支持 HTTP/HTTPS。`); }
+      } catch { return this.invalid(tr('订阅源 {name} 的 URL 无效，仅支持 HTTP/HTTPS。', {name: source.name})); }
       if (source.refresh_interval) {
         const duration = durationMilliseconds(source.refresh_interval);
-        if (!Number.isFinite(duration) || duration < 300_000) return this.invalid(`订阅源 ${source.name} 的独立周期格式无效或小于 5 分钟。`);
+        if (!Number.isFinite(duration) || duration < 300_000) return this.invalid(tr('订阅源 {name} 的独立周期格式无效或小于 5 分钟。', {name: source.name}));
       }
     }
     return true;

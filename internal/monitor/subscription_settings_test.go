@@ -90,6 +90,12 @@ func TestSubscriptionSettingsExposeAndForwardFetchConcurrency(t *testing.T) {
 	if got := int(getPayload["fetch_concurrency"].(float64)); got != 7 {
 		t.Fatalf("GET fetch_concurrency = %d, want 7", got)
 	}
+	if subscriptions, ok := getPayload["subscriptions"].([]any); !ok || len(subscriptions) != 0 {
+		t.Fatalf("GET subscriptions = %#v, want an empty JSON array", getPayload["subscriptions"])
+	}
+	if sources, ok := getPayload["sources"].([]any); !ok || len(sources) != 0 {
+		t.Fatalf("GET sources = %#v, want an empty JSON array", getPayload["sources"])
+	}
 	if getRecorder.Header().Get("Cache-Control") != "no-store, max-age=0" {
 		t.Fatalf("GET Cache-Control = %q", getRecorder.Header().Get("Cache-Control"))
 	}

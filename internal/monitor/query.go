@@ -243,33 +243,42 @@ func topNodes(snapshots []Snapshot, key string, limit int) []Snapshot {
 	if limit <= 0 {
 		return nil
 	}
-	copyOfSnapshots := append([]Snapshot(nil), snapshots...)
-	sort.SliceStable(copyOfSnapshots, func(i, j int) bool {
+	better := func(left, right Snapshot) bool {
 		if key == "score" {
-			return copyOfSnapshots[i].QualityScore > copyOfSnapshots[j].QualityScore
+			return left.QualityScore > right.QualityScore
 		}
-		left := copyOfSnapshots[i].LastLatencyMs
-		right := copyOfSnapshots[j].LastLatencyMs
-		if left <= 0 {
+		if left.LastLatencyMs <= 0 {
 			return false
 		}
-		if right <= 0 {
+		if right.LastLatencyMs <= 0 {
 			return true
 		}
-		return left < right
-	})
+		return left.LastLatencyMs < right.LastLatencyMs
+	}
+	// Dashboard cards need only a small top-k list. Keep those candidates in
+	// order without copying and sorting the full inventory for each card.
+	limit = min(limit, len(snapshots))
 	result := make([]Snapshot, 0, limit)
-	for _, snapshot := range copyOfSnapshots {
+	for _, snapshot := range snapshots {
 		if !nodeMatchesStatus(snapshot, "healthy") {
 			continue
 		}
 		if key == "latency" && snapshot.LastLatencyMs <= 0 {
 			continue
 		}
-		result = append(result, snapshot)
-		if len(result) == limit {
-			break
+		position := len(result)
+		// Insert after equal values to preserve the original stable-sort order.
+		for position > 0 && better(snapshot, result[position-1]) {
+			position--
 		}
+		if position >= limit {
+			continue
+		}
+		if len(result) < limit {
+			result = append(result, Snapshot{})
+		}
+		copy(result[position+1:], result[position:len(result)-1])
+		result[position] = snapshot
 	}
 	return result
 }

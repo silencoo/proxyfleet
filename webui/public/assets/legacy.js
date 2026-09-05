@@ -302,8 +302,13 @@
       '设置已被其他操作更新，已重新载入': 'Settings changed elsewhere and were reloaded.',
       '更新订阅中...': 'Updating subscription...',
       '正在拉取订阅并重载节点，请稍候': 'Fetching subscriptions and reloading nodes.',
+      '正在拉取候选订阅并计算节点差异': 'Fetching candidate subscriptions and calculating changes.',
+      '正在预检候选池并原子切换节点': 'Validating the candidate pool before switching atomically.',
+      '候选节点 {candidate} 个：新增 {added}、删除 {removed}、保留 {unchanged}。删除比例 {removedPercent}%。确认应用此候选池？': 'The candidate pool has {candidate} nodes: {added} added, {removed} removed, and {unchanged} unchanged. Removal ratio: {removedPercent}%. Apply this candidate pool?',
+      '候选节点 {candidate} 个：新增 {added}、删除 {removed}、保留 {unchanged}。删除比例 {removedPercent}%，已超过安全阈值。确认应用此候选池？': 'The candidate pool has {candidate} nodes: {added} added, {removed} removed, and {unchanged} unchanged. The {removedPercent}% removal ratio exceeds the safety threshold. Apply this candidate pool?',
       '订阅配置保存失败': 'Failed to save subscription settings',
       '订阅设置加载失败，请刷新页面后重试': 'Failed to load subscription settings. Refresh the page and try again.',
+      '订阅源状态加载失败': 'Failed to load subscription source status',
       '订阅已保存，但刷新失败：{error}': 'Subscription saved, but refresh failed: {error}',
       '已保存，获取 {count} 个节点': 'Saved and loaded {count} nodes',
       '设置已保存': 'Settings saved',
@@ -318,10 +323,22 @@
       '操作成功': 'Operation completed',
       '加载数据失败': 'Failed to load data',
       '加载日志失败': 'Failed to load logs',
+      '结构化流量日志加载失败': 'Failed to load structured traffic logs',
+      '清空结构化流量日志失败': 'Failed to clear structured traffic logs',
+      '探测状态加载失败': 'Failed to load probe status',
+      '指标历史加载失败': 'Failed to load metric history',
+      '告警加载失败': 'Failed to load alerts',
+      '审计记录加载失败': 'Failed to load audit events',
       '管理密码与订阅设置不能同时保存，请先保存订阅设置，再单独修改管理密码': 'The management password and subscription settings cannot be saved together. Save the subscription settings first, then change the management password separately.',
       '管理密码已更新，请使用新密码重新登录': 'The management password was updated. Sign in again with the new password.',
       '构建信息 (Build Info)': 'Build information',
       '完整发行构建': 'Full release build',
+      '功能受限构建': 'Limited-capability build',
+      '官方协议能力均已编译': 'All official protocol capabilities are compiled in',
+      '缺少编译能力': 'Missing build capabilities',
+      '部分编译能力不可用': 'Some build capabilities are unavailable',
+      '构建信息加载失败': 'Failed to load build information',
+      '无': 'None',
       '版本': 'Version',
       '目标平台': 'Target platform',
       '编译能力': 'Build capabilities',
@@ -354,6 +371,9 @@
       '审计文件': 'Audit file',
       '结构化流量日志': 'Structured traffic log',
       '独立 SQLite、异步批量写入；关闭时不创建数据库。适合按节点/Profile 排查连接质量。': 'Uses a separate SQLite database with asynchronous batch writes. No database is created while disabled. Useful for investigating connection quality by node or Profile.',
+      '当前未启用；可在设置 → 日志配置中开启。': 'Currently disabled. Enable it under Settings → Logging.',
+      '确定清空结构化流量日志？此操作会删除 SQLite 中的全部连接历史，无法恢复。': 'Clear all structured traffic logs? This permanently deletes every connection record from SQLite.',
+      '结构化流量日志已清空': 'Structured traffic logs cleared',
       '数据库文件': 'Database file',
       '保留时长': 'Retention',
       '最多记录': 'Maximum entries',
@@ -478,7 +498,14 @@
       '订阅源刷新失败': 'Subscription source refresh failed',
       '订阅源数量不能超过 128 个。': 'No more than 128 subscription sources are allowed.',
       '订阅源名称需为 1–32 位小写字母、数字、点、下划线或连字符。': 'Subscription source names must contain 1–32 lowercase letters, digits, dots, underscores, or hyphens.',
+      '订阅源名称重复：{name}': 'Duplicate subscription source name: {name}',
+      '订阅地址重复：{name}': 'Duplicate subscription URL: {name}',
+      '订阅源 {name} 的 URL 无效，仅支持 HTTP/HTTPS。': 'Subscription source {name} has an invalid URL. Only HTTP and HTTPS are supported.',
+      '订阅源 {name} 的独立周期格式无效或小于 5 分钟。': 'Subscription source {name} has an invalid refresh interval or one shorter than 5 minutes.',
       'Profile 名称需为 1–32 位小写字母、数字、点、下划线或连字符。': 'Profile names must contain 1–32 lowercase letters, digits, dots, underscores, or hyphens.',
+      'Profile 名称重复：{name}': 'Duplicate Profile name: {name}',
+      'Profile {name} 的 {group} 规则不能超过 64 条。': 'Profile {name} cannot have more than 64 {group} rules.',
+      'Profile {name} 的 {group} 第 {index} 条正则无效。': 'Profile {name} has an invalid regular expression at {group} rule {index}.',
       '最低质量分必须在 0 到 100 之间。': 'The minimum quality score must be between 0 and 100.',
       '结果': 'Result',
       '结果筛选': 'Filter by result',
@@ -497,6 +524,8 @@
       '角色': 'Role',
       '方法': 'Method',
       '路径': 'Path',
+      '活动': 'Active',
+      '已恢复': 'Recovered',
       '最近 {count} 条 · 写入队列累计丢弃 {dropped} 条': '{count} most recent · {dropped} dropped by the write queue'
     };
 
@@ -2246,7 +2275,15 @@
           const preview = await readAPIJSON(previewResponse, '订阅预览失败');
           hideFullscreenLoading();
           const removedPercent = ((Number(preview.removed_ratio) || 0) * 100).toFixed(1);
-          const previewMessage = `候选节点 ${preview.candidate_total || 0} 个：新增 ${preview.added || 0}、删除 ${preview.removed || 0}、保留 ${preview.unchanged || 0}。删除比例 ${removedPercent}%${preview.risky ? '，已超过安全阈值。' : '。'}确认应用此候选池？`;
+          const previewMessage = tr(preview.risky
+            ? '候选节点 {candidate} 个：新增 {added}、删除 {removed}、保留 {unchanged}。删除比例 {removedPercent}%，已超过安全阈值。确认应用此候选池？'
+            : '候选节点 {candidate} 个：新增 {added}、删除 {removed}、保留 {unchanged}。删除比例 {removedPercent}%。确认应用此候选池？', {
+            candidate: preview.candidate_total || 0,
+            added: preview.added || 0,
+            removed: preview.removed || 0,
+            unchanged: preview.unchanged || 0,
+            removedPercent,
+          });
           const confirmed = await requestConfirmation(preview.risky ? tr('高风险订阅变更') : tr('确认订阅变更'), previewMessage, preview.risky ? tr('确认高风险变更') : tr('应用候选池'));
           if (!confirmed) {
             saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return;
@@ -2327,7 +2364,7 @@
     }
 
     async function clearTrafficLogs() {
-      const confirmed = await requestConfirmation(tr('清空记录'), '确定清空结构化流量日志？此操作会删除 SQLite 中的全部连接历史，无法恢复。', tr('清空记录'));
+      const confirmed = await requestConfirmation(tr('清空记录'), tr('确定清空结构化流量日志？此操作会删除 SQLite 中的全部连接历史，无法恢复。'), tr('清空记录'));
       if (!confirmed) return;
       try {
         const response = await fetch('/api/traffic/logs/clear', {method:'DELETE'});
