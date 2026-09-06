@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"io"
+	"strings"
 	"sync"
 )
 
@@ -11,12 +12,15 @@ type LogBuffer struct {
 	mu   sync.Mutex
 	buf  []byte
 	size int
+	next int
+	used int
 }
 
 // NewLogBuffer creates a ring buffer that keeps the last `size` bytes of log output.
 func NewLogBuffer(size int) *LogBuffer {
+	size = max(0, size)
 	return &LogBuffer{
-		buf:  make([]byte, 0, size),
+		buf:  make([]byte, size),
 		size: size,
 	}
 }
@@ -26,10 +30,20 @@ func (lb *LogBuffer) Write(p []byte) (n int, err error) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 
-	lb.buf = append(lb.buf, p...)
-	if len(lb.buf) > lb.size {
-		lb.buf = lb.buf[len(lb.buf)-lb.size:]
+	if lb.size == 0 || len(p) == 0 {
+		return len(p), nil
 	}
+	// Retain only the tail of a large write without allocating for its prefix.
+	if len(p) >= lb.size {
+		copy(lb.buf, p[len(p)-lb.size:])
+		lb.next = 0
+		lb.used = lb.size
+		return len(p), nil
+	}
+	written := copy(lb.buf[lb.next:], p)
+	copy(lb.buf, p[written:])
+	lb.next = (lb.next + len(p)) % lb.size
+	lb.used = min(lb.size, lb.used+len(p))
 	return len(p), nil
 }
 
@@ -37,15 +51,25 @@ func (lb *LogBuffer) Write(p []byte) (n int, err error) {
 func (lb *LogBuffer) Content() string {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	return string(lb.buf)
+	if lb.used == 0 {
+		return ""
+	}
+	start := (lb.next - lb.used + lb.size) % lb.size
+	first := min(lb.used, lb.size-start)
+	var content strings.Builder
+	content.Grow(lb.used)
+	content.Write(lb.buf[start : start+first])
+	content.Write(lb.buf[:lb.used-first])
+	return content.String()
 }
 
 // Clear removes all buffered console output and returns the number of bytes removed.
 func (lb *LogBuffer) Clear() int {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	cleared := len(lb.buf)
-	lb.buf = lb.buf[:0]
+	cleared := lb.used
+	clear(lb.buf)
+	lb.next, lb.used = 0, 0
 	return cleared
 }
 

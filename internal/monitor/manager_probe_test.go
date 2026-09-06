@@ -40,6 +40,9 @@ func TestHTTPSProbeTargetKeepsTLSWhenVerificationSkipped(t *testing.T) {
 	if target.Host != "example.com" || target.Destination.Port != 443 {
 		t.Fatalf("unexpected HTTPS destination: %+v", target)
 	}
+	if target.RequestURI != "/check" {
+		t.Fatalf("HTTPS probe lost its request path: %+v", target)
+	}
 }
 
 func TestProbeTargetRejectsUnsupportedScheme(t *testing.T) {
@@ -489,8 +492,8 @@ func TestStopAndWaitWaitsForInflightProbe(t *testing.T) {
 	if err := manager.StopAndWait(finalCtx); err != nil {
 		t.Fatalf("StopAndWait after release: %v", err)
 	}
-	if err := <-probeDone; err != nil {
-		t.Fatalf("in-flight probe result: %v", err)
+	if err := <-probeDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown must cancel, not confirm a late successful probe: %v", err)
 	}
 }
 

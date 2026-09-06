@@ -62,6 +62,61 @@ func TestPermanentFailuresStillReachBlacklistThreshold(t *testing.T) {
 	}
 }
 
+func TestCooldownRecoverySeparatesRetryEligibilityFromHealth(t *testing.T) {
+	for _, recovery := range []string{"lazy-expiry", "timer-expiry", "traffic-success"} {
+		t.Run(recovery, func(t *testing.T) {
+			ResetSharedStateStore()
+			t.Cleanup(ResetSharedStateStore)
+			manager, err := monitor.NewManager(monitor.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(manager.Stop)
+			state := acquireSharedState("recovery")
+			handle := manager.Register(monitor.NodeInfo{Tag: "recovery"})
+			state.attachEntry(handle)
+			handle.MarkInitialCheckDone(true)
+			member := &memberState{tag: "recovery", shared: state, entry: handle}
+			proxyPool := newIndexedTestPool(member, Options{})
+			t.Cleanup(func() { _ = proxyPool.Close() })
+			state.recordFailure(context.DeadlineExceeded, 3, time.Hour, time.Hour)
+			if got := proxyPool.selectEligibleMember(""); got != nil {
+				t.Fatal("cooling node remained eligible")
+			}
+			if recovery == "traffic-success" {
+				state.recordSuccessWithLatency(time.Millisecond)
+			} else {
+				expired := time.Now().Add(-time.Second)
+				state.mu.Lock()
+				if state.cooldownTimer != nil {
+					state.cooldownTimer.Stop()
+					state.cooldownTimer = nil
+				}
+				state.cooldownUntil = expired
+				state.mu.Unlock()
+				if recovery == "timer-expiry" {
+					state.expireCooldown(expired)
+				} else {
+					state.isCoolingDown(time.Now())
+				}
+			}
+			if got := proxyPool.selectEligibleMember(""); got != member {
+				t.Fatal("recovered cooldown did not permit a retry")
+			}
+			snapshot := manager.Snapshot()[0]
+			if snapshot.Available != (recovery == "traffic-success") || snapshot.CoolingDown || snapshot.Blacklisted {
+				t.Fatalf("retry eligibility confused with confirmed health: %+v", snapshot)
+			}
+			if recovery != "traffic-success" {
+				state.recordSuccess()
+				if !manager.Snapshot()[0].Available {
+					t.Fatal("successful retry did not restore health")
+				}
+			}
+		})
+	}
+}
+
 func TestSuccessfulProbePreservesManualBlacklist(t *testing.T) {
 	ResetSharedStateStore()
 	t.Cleanup(ResetSharedStateStore)
@@ -78,6 +133,24 @@ func TestSuccessfulProbePreservesManualBlacklist(t *testing.T) {
 	state.mu.Unlock()
 	if !manual {
 		t.Fatal("manual blacklist origin was lost")
+	}
+}
+
+func TestTrafficRecoveryPreservesManualBlacklist(t *testing.T) {
+	ResetSharedStateStore()
+	t.Cleanup(ResetSharedStateStore)
+	manager, err := monitor.NewManager(monitor.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Stop)
+	state := acquireSharedState("manual-traffic")
+	state.attachEntry(manager.Register(monitor.NodeInfo{Tag: "manual-traffic"}))
+	blacklistSharedMember("manual-traffic", time.Hour)
+	state.recordSuccessWithLatency(time.Millisecond)
+	snapshot := manager.Snapshot()[0]
+	if !snapshot.Blacklisted || snapshot.Available || !state.blacklistedFast.Load() {
+		t.Fatalf("traffic success bypassed a manual blacklist: %+v", snapshot)
 	}
 }
 

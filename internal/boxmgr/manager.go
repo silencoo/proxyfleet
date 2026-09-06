@@ -1,7 +1,6 @@
 package boxmgr
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -21,6 +20,7 @@ import (
 	"github.com/silencoo/proxyfleet/internal/geoip"
 	"github.com/silencoo/proxyfleet/internal/monitor"
 	"github.com/silencoo/proxyfleet/internal/outbound/pool"
+	"github.com/silencoo/proxyfleet/internal/probetarget"
 	"github.com/silencoo/proxyfleet/internal/trafficlog"
 
 	"github.com/sagernet/sing-box"
@@ -158,8 +158,8 @@ type builtInstance struct {
 }
 
 type preflightProbeCall struct {
-	done chan struct{}
-	err  error
+	done   chan struct{}
+	result pool.ValidatedProbe
 }
 
 type exitIPProbeCall struct {
@@ -858,7 +858,8 @@ func (m *Manager) reloadNodesInPlace(
 		createdBaseTags = append(createdBaseTags, tag)
 	}
 
-	if err := m.preflightCandidateSet(ctx, instance, sortedMapKeys(desiredBase), newCfg); err != nil {
+	validatedProbes, err := m.preflightCandidateSet(ctx, instance, sortedMapKeys(desiredBase), newCfg)
+	if err != nil {
 		rollbackAddedBase()
 		return err
 	}
@@ -1011,7 +1012,18 @@ func (m *Manager) reloadNodesInPlace(
 	}
 	if m.monitorMgr != nil {
 		m.monitorMgr.RetainNodeURIs(nodeURISet(newCfg.Nodes))
-		m.syncCommittedHealth(newCfg)
+		if committedPool, ok := instance.Outbound().Outbound(pool.Tag); ok {
+			applied := pool.ApplyValidatedProbes(committedPool, validatedProbes)
+			if len(validatedProbes) > 0 {
+				m.logger.Infof("retained %d/%d candidate health results after commit", applied, len(validatedProbes))
+			}
+		}
+		// Validation already tested the candidate. Do not immediately repeat
+		// the same work in all/sample mode or consume an adaptive batch. Any
+		// skipped/superseded observations remain governed by the normal scheduler.
+		if len(validatedProbes) == 0 {
+			m.syncCommittedHealth(newCfg)
+		}
 	}
 
 	m.scheduleRuntimeDrains(instance, draining, oldBase, drainTimeout)
@@ -1093,23 +1105,23 @@ func removeRuntimeOutbounds(instance *box.Box, tags []string) {
 	}
 }
 
-func (m *Manager) preflightCandidateSet(ctx context.Context, instance *box.Box, tags []string, cfg *config.Config) error {
+func (m *Manager) preflightCandidateSet(ctx context.Context, instance *box.Box, tags []string, cfg *config.Config) ([]pool.ValidatedProbe, error) {
 	minimum := cfg.MinAvailableNodeThreshold(len(tags))
 	if minimum <= 0 {
-		return nil
+		return nil, nil
 	}
 	if len(tags) < minimum {
-		return fmt.Errorf("health check rejected candidate: %d nodes built (need >= %d)", len(tags), minimum)
+		return nil, fmt.Errorf("health check rejected candidate: %d nodes built (need >= %d)", len(tags), minimum)
 	}
 	if !cfg.SubscriptionQuarantineNewNodesValue() {
-		return nil
+		return nil, nil
 	}
 	target, configured, err := monitor.ResolveProbeTarget(cfg.Management.ProbeTarget, cfg.SkipCertVerify)
 	if err != nil {
-		return fmt.Errorf("health check rejected candidate probe target: %w", err)
+		return nil, fmt.Errorf("health check rejected candidate probe target: %w", err)
 	}
 	if !configured {
-		return nil
+		return nil, nil
 	}
 	timeout := cfg.SubscriptionRefresh.HealthCheckTimeout
 	if timeout <= 0 {
@@ -1121,7 +1133,7 @@ func (m *Manager) preflightCandidateSet(ctx context.Context, instance *box.Box, 
 		workerCount = len(tags)
 	}
 	jobs := make(chan string)
-	results := make(chan bool, len(tags))
+	results := make(chan pool.ValidatedProbe, len(tags))
 	var wg sync.WaitGroup
 	for worker := 0; worker < workerCount; worker++ {
 		wg.Add(1)
@@ -1130,16 +1142,17 @@ func (m *Manager) preflightCandidateSet(ctx context.Context, instance *box.Box, 
 			for tag := range jobs {
 				outbound, ok := instance.Outbound().Outbound(tag)
 				if !ok {
-					results <- false
+					results <- pool.ValidatedProbe{Tag: tag, Err: errors.New("candidate outbound not found")}
 					continue
 				}
 				probeCtx, cancel := context.WithTimeout(ctx, timeout)
 				flightKey := preflightProbeFlightKey(instance, tag, target, outbound)
-				err := m.runPreflightProbe(probeCtx, flightKey, func() error {
-					return probeOutboundConnection(probeCtx, outbound, target)
+				result := m.runMeasuredPreflightProbe(probeCtx, flightKey, func() (time.Duration, error) {
+					return probeOutboundConnectionMeasured(probeCtx, outbound, target)
 				})
 				cancel()
-				results <- err == nil
+				result.Tag, result.Outbound, result.Target = tag, outbound, target
+				results <- result
 			}
 		}()
 	}
@@ -1152,25 +1165,28 @@ func (m *Manager) preflightCandidateSet(ctx context.Context, instance *box.Box, 
 		close(results)
 	}()
 	available := 0
-	for success := range results {
-		if success {
+	validated := make([]pool.ValidatedProbe, 0, len(tags))
+	for result := range results {
+		validated = append(validated, result)
+		if result.Err == nil {
 			available++
 		}
 	}
 	if available < minimum {
-		return fmt.Errorf("health check rejected candidate before cutover: %d/%d nodes available (need >= %d)", available, len(tags), minimum)
+		return nil, fmt.Errorf("health check rejected candidate before cutover: %d/%d nodes available (need >= %d)", available, len(tags), minimum)
 	}
 	m.logger.Infof("candidate health check passed before cutover: %d/%d nodes available", available, len(tags))
-	return nil
+	return validated, nil
 }
 
 func preflightProbeFlightKey(instance *box.Box, tag string, target monitor.ProbeTarget, outbound adapter.Outbound) string {
 	return fmt.Sprintf(
-		"%p\x00%s\x00%s\x00%s\x00%t\x00%t\x00%T:%p",
+		"%p\x00%s\x00%s\x00%s\x00%s\x00%t\x00%t\x00%T:%p",
 		instance,
 		tag,
 		target.Destination.String(),
 		target.Host,
+		target.RequestURI,
 		target.TLS,
 		target.SkipCertVerify,
 		outbound,
@@ -1182,11 +1198,25 @@ func preflightProbeFlightKey(instance *box.Box, tag string, target monitor.Probe
 // goroutine per stable node tag. Later reloads join that flight instead of
 // starting another Dial that may ignore cancellation forever.
 func (m *Manager) runPreflightProbe(ctx context.Context, tag string, probe func() error) error {
+	if probe == nil {
+		return errors.New("preflight probe is not configured")
+	}
+	return m.runMeasuredPreflightProbe(ctx, tag, func() (time.Duration, error) {
+		start := time.Now()
+		err := probe()
+		return time.Since(start), err
+	}).Err
+}
+
+func (m *Manager) runMeasuredPreflightProbe(ctx context.Context, tag string, probe func() (time.Duration, error)) pool.ValidatedProbe {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if ctx.Err() != nil {
+		return pool.ValidatedProbe{Err: ctx.Err()}
+	}
 	if probe == nil {
-		return errors.New("preflight probe is not configured")
+		return pool.ValidatedProbe{Err: errors.New("preflight probe is not configured")}
 	}
 
 	m.preflightMu.Lock()
@@ -1205,7 +1235,7 @@ func (m *Manager) runPreflightProbe(ctx context.Context, tag string, probe func(
 	select {
 	case m.preflightSlots <- struct{}{}:
 	case <-ctx.Done():
-		return ctx.Err()
+		return pool.ValidatedProbe{Err: ctx.Err()}
 	}
 
 	m.preflightMu.Lock()
@@ -1214,7 +1244,7 @@ func (m *Manager) runPreflightProbe(ctx context.Context, tag string, probe func(
 		<-m.preflightSlots
 		return waitForPreflightProbe(ctx, call)
 	}
-	call = &preflightProbeCall{done: make(chan struct{})}
+	call = &preflightProbeCall{done: make(chan struct{}), result: pool.ValidatedProbe{StartedAt: time.Now()}}
 	m.preflightCalls[tag] = call
 	m.preflightMu.Unlock()
 	m.auxProbeWG.Add(1)
@@ -1222,17 +1252,19 @@ func (m *Manager) runPreflightProbe(ctx context.Context, tag string, probe func(
 		defer m.auxProbeWG.Done()
 		defer func() { <-m.preflightSlots }()
 		var probeErr error
+		var latency time.Duration
 		func() {
 			defer func() {
 				if recover() != nil {
 					probeErr = errors.New("preflight probe panicked")
 				}
 			}()
-			probeErr = probe()
+			latency, probeErr = probe()
 		}()
 
 		m.preflightMu.Lock()
-		call.err = probeErr
+		call.result.Latency, call.result.Err = latency, probeErr
+		call.result.CompletedAt = time.Now()
 		close(call.done)
 		if m.preflightCalls[tag] == call {
 			delete(m.preflightCalls, tag)
@@ -1243,12 +1275,14 @@ func (m *Manager) runPreflightProbe(ctx context.Context, tag string, probe func(
 	return waitForPreflightProbe(ctx, call)
 }
 
-func waitForPreflightProbe(ctx context.Context, call *preflightProbeCall) error {
+func waitForPreflightProbe(ctx context.Context, call *preflightProbeCall) pool.ValidatedProbe {
 	select {
 	case <-call.done:
-		return call.err
+		return call.result
 	case <-ctx.Done():
-		return ctx.Err()
+		// StartedAt is immutable once the call is published. Do not copy the
+		// whole result while an uncooperative callback may still be writing it.
+		return pool.ValidatedProbe{StartedAt: call.result.StartedAt, CompletedAt: time.Now(), Err: ctx.Err()}
 	}
 }
 
@@ -1267,15 +1301,22 @@ func (m *Manager) syncCommittedHealth(cfg *config.Config) {
 }
 
 func probeOutboundConnection(ctx context.Context, outbound adapter.Outbound, target monitor.ProbeTarget) error {
+	_, err := probeOutboundConnectionMeasured(ctx, outbound, target)
+	return err
+}
+
+func probeOutboundConnectionMeasured(ctx context.Context, outbound adapter.Outbound, target monitor.ProbeTarget) (time.Duration, error) {
+	start := time.Now()
 	connection, err := outbound.DialContext(ctx, N.NetworkTCP, target.Destination)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	watchDone := make(chan struct{})
+	rawConnection := connection
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = connection.Close()
+			_ = rawConnection.Close()
 		case <-watchDone:
 		}
 	}()
@@ -1292,20 +1333,26 @@ func probeOutboundConnection(ctx context.Context, outbound adapter.Outbound, tar
 			InsecureSkipVerify: target.SkipCertVerify, // Explicit global setting.
 		})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return fmt.Errorf("TLS handshake: %w", err)
+			return 0, fmt.Errorf("TLS handshake: %w", err)
 		}
 		connection = tlsConn
 	}
 	host := target.Host
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
 	if target.Destination.Port != 80 && target.Destination.Port != 443 {
 		host = target.Destination.AddrString()
 	}
-	request := fmt.Sprintf("GET /generate_204 HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host)
-	if _, err := connection.Write([]byte(request)); err != nil {
-		return err
+	setupDuration := time.Since(start)
+	responseLatency, err := probetarget.ProbeHTTP(ctx, connection, host, target.RequestURI)
+	if err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return 0, err
 	}
-	_, err = bufio.NewReader(connection).ReadByte()
-	return err
+	return setupDuration + responseLatency, nil
 }
 
 func (m *Manager) scheduleRuntimeDrains(
@@ -1884,6 +1931,18 @@ func (m *Manager) updateHealthPersistence(cfg *config.Config) {
 		m.logger.Warnf("failed to configure pool runtime state: %v", err)
 		return
 	}
+	active := make(map[string]struct{}, len(cfg.Nodes))
+	occurrences := make(map[string]int, len(cfg.Nodes))
+	for _, node := range cfg.Nodes {
+		base := "node-" + node.NodeKey()
+		occurrences[base]++
+		tag := base
+		if occurrences[base] > 1 {
+			tag = fmt.Sprintf("%s-%d", base, occurrences[base])
+		}
+		active[tag] = struct{}{}
+	}
+	pool.PruneRetiredRuntimeState(active)
 	if err := pool.PersistHealthStateNow(); err != nil {
 		m.logger.Warnf("failed to flush pool health state: %v", err)
 	}

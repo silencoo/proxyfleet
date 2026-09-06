@@ -26,6 +26,8 @@ func TestAdaptiveSelectionSkipsRecentPassiveSuccessAndHonorsBudget(t *testing.T)
 	passive.SetProbe(func(context.Context) (time.Duration, error) { return time.Millisecond, nil })
 	passive.ref.mu.Lock()
 	passive.ref.lastPassiveSuccess = now.Add(-time.Minute)
+	passive.ref.initialCheckDone = true
+	passive.ref.available = true
 	passive.ref.mu.Unlock()
 	first := manager.Register(NodeInfo{Tag: "first"})
 	first.SetProbe(func(context.Context) (time.Duration, error) { return time.Millisecond, nil })

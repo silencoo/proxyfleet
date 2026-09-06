@@ -31,6 +31,7 @@ type NodeSummary struct {
 	TotalNodes          int     `json:"total_nodes"`
 	HealthyNodes        int     `json:"healthy_nodes"`
 	UnavailableNodes    int     `json:"unavailable_nodes"`
+	UnknownNodes        int     `json:"unknown_nodes"`
 	BlacklistedNodes    int     `json:"blacklisted_nodes"`
 	ActiveConnections   int64   `json:"active_connections"`
 	AverageQualityScore float64 `json:"average_quality_score"`
@@ -142,13 +143,13 @@ func nodeMatchesStatus(snapshot Snapshot, status string) bool {
 	case "healthy":
 		return snapshot.InitialCheckDone && snapshot.Available && !snapshot.Blacklisted && !snapshot.CoolingDown
 	case "unavailable":
-		return snapshot.InitialCheckDone && (!snapshot.Available || snapshot.Blacklisted || snapshot.CoolingDown)
+		return snapshot.Blacklisted || snapshot.CoolingDown || (snapshot.InitialCheckDone && !snapshot.Available)
 	case "blacklisted":
 		return snapshot.Blacklisted
 	case "cooling":
 		return snapshot.CoolingDown
 	case "unknown":
-		return !snapshot.InitialCheckDone
+		return !snapshot.InitialCheckDone && !snapshot.Blacklisted && !snapshot.CoolingDown
 	default:
 		return true
 	}
@@ -224,8 +225,10 @@ func summarizeNodes(snapshots []Snapshot) NodeSummary {
 	for _, snapshot := range snapshots {
 		if snapshot.InitialCheckDone && snapshot.Available && !snapshot.Blacklisted && !snapshot.CoolingDown {
 			summary.HealthyNodes++
-		} else if snapshot.InitialCheckDone {
+		} else if snapshot.InitialCheckDone || snapshot.Blacklisted || snapshot.CoolingDown {
 			summary.UnavailableNodes++
+		} else {
+			summary.UnknownNodes++
 		}
 		if snapshot.Blacklisted || snapshot.CoolingDown {
 			summary.BlacklistedNodes++

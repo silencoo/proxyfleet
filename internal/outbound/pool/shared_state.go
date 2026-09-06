@@ -12,6 +12,7 @@ import (
 // This enables hybrid mode where pool and multi-port modes share the same node state.
 type sharedMemberState struct {
 	tag              string
+	owners           int // Pool references, protected by transitionMu.
 	transitionMu     sync.Mutex
 	mu               sync.Mutex
 	failures         int
@@ -32,22 +33,29 @@ type sharedMemberState struct {
 	cooldownTimer    *time.Timer
 }
 
-var sharedStateStore sync.Map // map[tag]*sharedMemberState
+var sharedStateStore sync.Map     // map[tag]*sharedMemberState
+var sharedStateStoreMu sync.Mutex // Serialize creation/restoration, never used on the traffic path.
 
 // acquireSharedState returns the shared state for a tag, creating if needed.
 func acquireSharedState(tag string) *sharedMemberState {
+	sharedStateStoreMu.Lock()
+	defer sharedStateStoreMu.Unlock()
 	for {
 		if v, ok := sharedStateStore.Load(tag); ok {
 			state := v.(*sharedMemberState)
+			state.transitionMu.Lock()
 			if !state.closed.Load() {
+				state.owners++
+				state.transitionMu.Unlock()
 				return state
 			}
+			state.transitionMu.Unlock()
 			sharedStateStore.CompareAndDelete(tag, state)
 			continue
 		}
 		break
 	}
-	state := &sharedMemberState{tag: tag}
+	state := &sharedMemberState{tag: tag, owners: 1}
 	if restored, ok := restoredMemberHealth(tag); ok {
 		state.failures = restored.Failures
 		state.restoredMonitor = restored.Monitor
@@ -62,23 +70,16 @@ func acquireSharedState(tag string) *sharedMemberState {
 			state.blacklistedFast.Store(true)
 		}
 	}
-	actual, loaded := sharedStateStore.LoadOrStore(tag, state)
-	result := actual.(*sharedMemberState)
-	if loaded && result.closed.Load() {
-		sharedStateStore.CompareAndDelete(tag, result)
-		return acquireSharedState(tag)
+	sharedStateStore.Store(tag, state)
+	state.transitionMu.Lock()
+	if state.blacklisted {
+		state.scheduleBlacklistExpiry(state.blacklistedUntil)
 	}
-	if result == state {
-		state.transitionMu.Lock()
-		if state.blacklisted {
-			state.scheduleBlacklistExpiry(state.blacklistedUntil)
-		}
-		if state.cooldownUntil.After(time.Now()) {
-			state.scheduleCooldownExpiry(state.cooldownUntil)
-		}
-		state.transitionMu.Unlock()
+	if state.cooldownUntil.After(time.Now()) {
+		state.scheduleCooldownExpiry(state.cooldownUntil)
 	}
-	return result
+	state.transitionMu.Unlock()
+	return state
 }
 
 // lookupSharedState returns the shared state if it exists.
@@ -92,12 +93,21 @@ func lookupSharedState(tag string) (*sharedMemberState, bool) {
 
 // ResetSharedStateStore clears all shared state (used during config reload).
 func ResetSharedStateStore() {
+	sharedStateStoreMu.Lock()
+	defer sharedStateStoreMu.Unlock()
 	sharedStateStore.Range(func(key, value any) bool {
 		value.(*sharedMemberState).close()
 		sharedStateStore.Delete(key)
 		return true
 	})
 	ResetDialerRegistry()
+	healthPersistence.mu.Lock()
+	if healthPersistence.path == "" && healthPersistence.engine == nil {
+		// A deliberate reset without durable storage also drops the ephemeral
+		// handoff cache. Ordinary pool replacement uses releaseOwner, not Reset.
+		healthPersistence.records = make(map[string]persistedMemberHealth)
+	}
+	healthPersistence.mu.Unlock()
 }
 
 func (s *sharedMemberState) attachEntry(entry *monitor.EntryHandle) {
@@ -134,18 +144,31 @@ func (s *sharedMemberState) entryHandle() *monitor.EntryHandle {
 }
 
 type failureDecision struct {
-	Failures    int
-	Blacklisted bool
-	Cooldown    bool
-	Until       time.Time
+	Failures               int
+	Blacklisted            bool
+	Cooldown               bool
+	Until                  time.Time
+	ExistingBlacklistUntil time.Time
 }
 
 // recordFailure separates short-lived transport faults from durable protocol
 // failures. Transient failures immediately remove the node from pooled
 // selection for cooldown, but never advance the long blacklist threshold.
 func (s *sharedMemberState) recordFailure(cause error, threshold int, blacklistDuration, transientCooldown time.Duration) failureDecision {
+	return s.recordFailureWithSource(cause, threshold, blacklistDuration, transientCooldown, true)
+}
+
+func (s *sharedMemberState) recordProbeFailure(cause error, blacklistDuration, transientCooldown time.Duration) failureDecision {
+	return s.recordFailureWithSource(cause, 1, blacklistDuration, transientCooldown, false)
+}
+
+func (s *sharedMemberState) recordFailureWithSource(cause error, threshold int, blacklistDuration, transientCooldown time.Duration, traffic bool) failureDecision {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
+	return s.recordFailureWithSourceLocked(cause, threshold, blacklistDuration, transientCooldown, traffic)
+}
+
+func (s *sharedMemberState) recordFailureWithSourceLocked(cause error, threshold int, blacklistDuration, transientCooldown time.Duration, traffic bool) failureDecision {
 	if s.closed.Load() {
 		return failureDecision{}
 	}
@@ -164,21 +187,44 @@ func (s *sharedMemberState) recordFailure(cause error, threshold int, blacklistD
 	decision := failureDecision{}
 	s.mu.Lock()
 	wasBlocked := s.blacklisted || s.cooldownUntil.After(now)
+	// A timer may be waiting for transitionMu. Apply an elapsed ban before
+	// classifying this new fault so a timeout cannot revive the old ban.
+	expiredBlacklist := s.blacklisted && !s.blacklistedUntil.After(now)
+	if expiredBlacklist {
+		s.blacklisted = false
+		s.blacklistedUntil = time.Time{}
+		s.manualBlacklist = false
+		if s.blacklistTimer != nil {
+			s.blacklistTimer.Stop()
+			s.blacklistTimer = nil
+		}
+	}
 	if s.blacklisted && s.manualBlacklist && s.blacklistedUntil.After(now) {
-		s.failures++
+		if !transient {
+			s.failures++
+		}
 		decision.Failures = s.failures
 		decision.Blacklisted = true
 		decision.Until = s.blacklistedUntil
+		decision.ExistingBlacklistUntil = s.blacklistedUntil
 		s.mu.Unlock()
 		if entry := s.entry.Load(); entry != nil {
-			entry.RecordFailure(cause)
+			if traffic {
+				entry.RecordFailure(cause)
+			}
 			entry.Blacklist(decision.Until)
 		}
 		s.persistTransitionLocked()
 		return decision
 	}
-	if transient && !s.blacklisted {
+	if transient {
+		// Keep any existing automatic blacklist and its original timer, but
+		// never renew it or add a permanent-failure strike for a transient
+		// error. A separate cooldown covers failures close to the ban's end.
 		decision.Failures = s.failures
+		if s.blacklisted {
+			decision.ExistingBlacklistUntil = s.blacklistedUntil
+		}
 		decision.Cooldown = true
 		decision.Until = now.Add(transientCooldown)
 		if decision.Until.After(s.cooldownUntil) {
@@ -207,9 +253,10 @@ func (s *sharedMemberState) recordFailure(cause error, threshold int, blacklistD
 		}
 	}
 	isBlocked := s.blacklisted || s.cooldownUntil.After(now)
+	s.blacklistedFast.Store(isBlocked)
 	s.mu.Unlock()
-	if isBlocked && !wasBlocked {
-		s.publishBlacklist(true)
+	if isBlocked != wasBlocked {
+		s.publishBlacklist(isBlocked)
 	}
 	if decision.Blacklisted {
 		s.scheduleBlacklistExpiry(decision.Until)
@@ -218,9 +265,15 @@ func (s *sharedMemberState) recordFailure(cause error, threshold int, blacklistD
 	}
 
 	if entry := s.entry.Load(); entry != nil {
-		entry.RecordFailure(cause)
+		if expiredBlacklist {
+			entry.ClearBlacklist()
+		}
+		if traffic {
+			entry.RecordFailure(cause)
+		}
 		if decision.Blacklisted {
 			entry.Blacklist(decision.Until)
+			entry.ClearCooldown() // The durable ban replaced the shared cooldown.
 		} else if decision.Cooldown {
 			entry.Cooldown(decision.Until)
 		}
@@ -255,14 +308,15 @@ func (s *sharedMemberState) recordSuccessWithLatency(latency time.Duration) {
 	}
 
 	if entry := s.entry.Load(); entry != nil {
+		entry.ClearCooldown()
 		if latency > 0 {
 			entry.RecordSuccessWithLatency(latency)
 		} else {
 			entry.RecordSuccess()
 		}
-		if hadCooldown {
-			entry.ClearCooldown()
-		}
+		// Real traffic supplies new evidence of recovery. Cooldown expiry alone
+		// only restores routing eligibility, and a blacklist stays authoritative.
+		entry.MarkInitialCheckDone(!blocked)
 	}
 	if hadCooldown && !blocked {
 		s.publishBlacklist(false)
@@ -387,6 +441,10 @@ func (s *sharedMemberState) forceRelease() {
 func (s *sharedMemberState) releaseAfterProbe() {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
+	s.releaseAfterProbeLocked()
+}
+
+func (s *sharedMemberState) releaseAfterProbeLocked() {
 	if s.closed.Load() {
 		return
 	}
@@ -433,10 +491,53 @@ func (s *sharedMemberState) incActive() {
 }
 
 func (s *sharedMemberState) decActive() {
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
 	s.active.Add(-1)
 	if entry := s.entry.Load(); entry != nil {
 		entry.DecActive()
 	}
+	s.retireIfUnusedLocked()
+}
+
+// releaseOwner is called exactly once per acquired pool membership, including
+// failed initialization. In-flight client connections retain the state to drain.
+func (s *sharedMemberState) releaseOwner() {
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+	if s.owners > 0 {
+		s.owners--
+	}
+	s.retireIfUnusedLocked()
+}
+
+func (s *sharedMemberState) retireIfUnusedLocked() {
+	if s.closed.Load() || s.owners != 0 || s.active.Load() != 0 {
+		return
+	}
+	s.watchMu.Lock()
+	watching := len(s.watchers) != 0
+	s.watchMu.Unlock()
+	if watching {
+		return
+	}
+	// Keep only restart-safe values, never a closure pointing back into a pool.
+	s.persistTransitionLocked()
+	if entry := s.entry.Swap(nil); entry != nil {
+		entry.ClearRuntimeCallbacks()
+	}
+	s.closed.Store(true)
+	s.mu.Lock()
+	if s.blacklistTimer != nil {
+		s.blacklistTimer.Stop()
+		s.blacklistTimer = nil
+	}
+	if s.cooldownTimer != nil {
+		s.cooldownTimer.Stop()
+		s.cooldownTimer = nil
+	}
+	s.mu.Unlock()
+	sharedStateStore.CompareAndDelete(s.tag, s)
 }
 
 func (s *sharedMemberState) activeCount() int32 {

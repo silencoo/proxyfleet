@@ -1,7 +1,6 @@
 package pool
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/silencoo/proxyfleet/internal/config"
 	"github.com/silencoo/proxyfleet/internal/monitor"
+	"github.com/silencoo/proxyfleet/internal/probetarget"
 	"github.com/silencoo/proxyfleet/internal/trafficlog"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -155,6 +155,7 @@ func (s *memberSet) remove(member *memberState) {
 	replacement := s.items[last]
 	s.items[idx] = replacement
 	s.index[replacement] = idx
+	s.items[last] = nil
 	s.items = s.items[:last]
 	delete(s.index, member)
 }
@@ -222,12 +223,15 @@ func newPool(ctx context.Context, _ adapter.Router, logger singlog.ContextLogger
 	return p, nil
 }
 
-// Close only releases the external dialer registration. Connections already
+// Close releases registrations and shared-state ownership. Connections already
 // handed out by this pool keep their member/outbound references and can drain
 // naturally after the runtime manager swaps in a replacement pool.
 func (p *poolOutbound) Close() error {
 	p.healthMu.Lock()
-	p.closed.Store(true)
+	if p.closed.Swap(true) {
+		p.healthMu.Unlock()
+		return nil
+	}
 	p.healthMu.Unlock()
 	p.mu.Lock()
 	members := append([]*memberState(nil), p.members...)
@@ -235,6 +239,9 @@ func (p *poolOutbound) Close() error {
 	for _, member := range members {
 		if member.unwatch != nil {
 			member.unwatch()
+		}
+		if member.shared != nil {
+			member.shared.releaseOwner()
 		}
 	}
 	unregisterDialer(p.Tag(), p)
@@ -356,6 +363,9 @@ func (p *poolOutbound) initializeMembersLocked() error {
 			}
 			delete(p.memberByTag, member.tag)
 		}
+		for _, member := range members {
+			member.shared.releaseOwner()
+		}
 	}()
 
 	for _, member := range members {
@@ -389,9 +399,7 @@ func (p *poolOutbound) initializeMembersLocked() error {
 				member.entry = entry
 				entry.SetRelease(p.makeReleaseFunc(member))
 				entry.SetBlacklistFn(p.makeBlacklistByTagFunc(member.tag))
-				if probe := p.makeProbeFunc(member); probe != nil {
-					entry.SetProbe(probe)
-				}
+				p.registerProbe(member)
 			}
 		}
 	}
@@ -436,11 +444,11 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 				return nil, errPoolClosed
 			}
 			connectDuration := time.Since(dialStarted)
-			p.recordSuccess(member, targetKey, connectDuration)
 			event := p.newTrafficEvent(ctx, member, destination.String(), network, attempt, requestStarted)
 			event.ConnectMS = connectDuration.Milliseconds()
-			event.Success = true
-			return p.wrapConn(conn, member, newTrafficSession(event, requestStarted)), nil
+			event.ErrorCategory = "unconfirmed"
+			traffic := newTrafficSession(event, requestStarted)
+			return p.wrapConn(conn, member, traffic, p.newTrafficObservation(ctx, member, targetKey, dialStarted, traffic)), nil
 		}
 		p.decActive(member)
 		trafficlog.Record(p.failedTrafficEvent(ctx, member, destination.String(), network, attempt, requestStarted, time.Since(dialStarted), err))
@@ -495,11 +503,11 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 				return nil, errPoolClosed
 			}
 			connectDuration := time.Since(dialStarted)
-			p.recordSuccess(member, targetKey, connectDuration)
 			event := p.newTrafficEvent(ctx, member, destination.String(), N.NetworkUDP, attempt, requestStarted)
 			event.ConnectMS = connectDuration.Milliseconds()
-			event.Success = true
-			return p.wrapPacketConn(conn, member, newTrafficSession(event, requestStarted)), nil
+			event.ErrorCategory = "unconfirmed"
+			traffic := newTrafficSession(event, requestStarted)
+			return p.wrapPacketConn(conn, member, traffic, p.newTrafficObservation(ctx, member, targetKey, dialStarted, traffic)), nil
 		}
 		p.decActive(member)
 		trafficlog.Record(p.failedTrafficEvent(ctx, member, destination.String(), N.NetworkUDP, attempt, requestStarted, time.Since(dialStarted), err))
@@ -925,26 +933,34 @@ func (p *poolOutbound) recordFailure(member *memberState, cause error) {
 	}
 	safeCause := monitor.SanitizeProbeError(cause)
 	if member.shared == nil {
-		p.logger.Warn("proxy ", member.tag, " failure (no shared state): ", safeCause)
+		if p.logger != nil {
+			p.logger.Warn("proxy ", member.tag, " failure (no shared state): ", safeCause)
+		}
 		return
 	}
 	decision := member.shared.recordFailure(cause, p.options.FailureThreshold, p.options.BlacklistDuration, p.options.TransientCooldown)
-	if decision.Cooldown {
-		if p.logger != nil {
-			p.logger.Warn("proxy ", member.tag, " cooling down for ", p.options.TransientCooldown, ": ", safeCause)
-		}
-		log.Printf("[pool] %s cooling down for %s: %s", member.tag, p.options.TransientCooldown, safeCause)
-	} else if decision.Blacklisted {
-		if p.logger != nil {
-			p.logger.Warn("proxy ", member.tag, " blacklisted for ", p.options.BlacklistDuration, ": ", safeCause)
-		}
-		log.Printf("[pool] %s blacklisted for %s: %s", member.tag, p.options.BlacklistDuration, safeCause)
-	} else {
-		if p.logger != nil {
-			p.logger.Warn("proxy ", member.tag, " failure ", decision.Failures, "/", p.options.FailureThreshold, ": ", safeCause)
-		}
-		log.Printf("[pool] %s failure %d/%d: %s", member.tag, decision.Failures, p.options.FailureThreshold, safeCause)
+	summary := failureDecisionSummary(decision, p.options.FailureThreshold)
+	if p.logger != nil {
+		p.logger.Warn("proxy ", member.tag, " ", summary, ": ", safeCause)
 	}
+	log.Printf("[pool] %s %s: %s", member.tag, summary, safeCause)
+}
+
+func failureDecisionSummary(decision failureDecision, threshold int) string {
+	if !decision.ExistingBlacklistUntil.IsZero() {
+		summary := "existing blacklist unchanged until " + decision.ExistingBlacklistUntil.Format(time.RFC3339)
+		if decision.Cooldown {
+			summary += "; cooldown until " + decision.Until.Format(time.RFC3339)
+		}
+		return summary
+	}
+	if decision.Cooldown {
+		return "cooling down until " + decision.Until.Format(time.RFC3339)
+	}
+	if decision.Blacklisted {
+		return "blacklisted until " + decision.Until.Format(time.RFC3339)
+	}
+	return fmt.Sprintf("failure %d/%d", decision.Failures, threshold)
 }
 
 func (p *poolOutbound) recordProbeFailure(member *memberState, cause error) {
@@ -953,15 +969,10 @@ func (p *poolOutbound) recordProbeFailure(member *memberState, cause error) {
 	if p.closed.Load() {
 		return
 	}
-	if member.entry != nil {
-		member.entry.MarkInitialCheckDone(false)
-	}
 	if member.shared != nil {
 		// An explicit active probe is authoritative; exclude the node from the
 		// shared pool immediately instead of waiting for traffic failures.
-		member.shared.recordFailure(cause, 1, p.options.BlacklistDuration, p.options.TransientCooldown)
-	} else if member.entry != nil {
-		member.entry.RecordFailure(cause)
+		member.shared.recordProbeFailure(cause, p.options.BlacklistDuration, p.options.TransientCooldown)
 	}
 }
 
@@ -979,14 +990,14 @@ func (p *poolOutbound) recordSuccess(member *memberState, targetKey string, late
 	}
 }
 
-func (p *poolOutbound) wrapConn(conn net.Conn, member *memberState, traffic *trafficSession) net.Conn {
-	return &trackedConn{Conn: conn, traffic: traffic, release: func() {
+func (p *poolOutbound) wrapConn(conn net.Conn, member *memberState, traffic *trafficSession, health *trafficObservation) net.Conn {
+	return &trackedConn{Conn: conn, traffic: traffic, health: health, release: func() {
 		p.decActive(member)
 	}}
 }
 
-func (p *poolOutbound) wrapPacketConn(conn net.PacketConn, member *memberState, traffic *trafficSession) net.PacketConn {
-	return &trackedPacketConn{PacketConn: conn, traffic: traffic, release: func() {
+func (p *poolOutbound) wrapPacketConn(conn net.PacketConn, member *memberState, traffic *trafficSession, health *trafficObservation) net.PacketConn {
+	return &trackedPacketConn{PacketConn: conn, traffic: traffic, health: health, release: func() {
 		p.decActive(member)
 	}}
 }
@@ -1063,51 +1074,29 @@ func upgradeProbeConn(ctx context.Context, conn net.Conn, target monitor.ProbeTa
 	return tlsConn, nil
 }
 
-// httpProbe performs an HTTP probe through the connection and measures TTFB.
-func httpProbe(ctx context.Context, conn net.Conn, host string) (time.Duration, error) {
-	// Build HTTP request
-	req := fmt.Sprintf("GET /generate_204 HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nUser-Agent: Mozilla/5.0\r\n\r\n", host)
-
-	deadline := time.Now().Add(10 * time.Second)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
-	}
-	_ = conn.SetDeadline(deadline)
-
-	// Record time just before sending request
-	start := time.Now()
-
-	// Send HTTP request
-	if _, err := conn.Write([]byte(req)); err != nil {
-		return 0, fmt.Errorf("write request: %w", err)
-	}
-
-	// Read first byte (TTFB - Time To First Byte)
-	reader := bufio.NewReader(conn)
-	_, err := reader.ReadByte()
-	if err != nil {
-		return 0, fmt.Errorf("read response: %w", err)
-	}
-
-	// Calculate TTFB
-	ttfb := time.Since(start)
-	return ttfb, nil
-}
-
 // probeMember force-closes the raw connection when the deadline fires. Some
 // sing-box wrappers ignore SetDeadline; closing the underlying connection is
 // what releases blocked reads/handshakes and their file descriptors.
-func (p *poolOutbound) probeMember(ctx context.Context, member *memberState, target monitor.ProbeTarget) (time.Duration, error) {
+func (p *poolOutbound) probeMember(ctx context.Context, member *memberState, target monitor.ProbeTarget) (latency time.Duration, probeErr error) {
 	start := time.Now()
 	if !p.admitProbe() {
 		return 0, errPoolClosed
 	}
+	defer func() {
+		if probeErr == nil || errors.Is(probeErr, errPoolClosed) {
+			return
+		}
+		// The watchdog closes connections to interrupt legacy transports. Keep
+		// the context cause instead of treating net.ErrClosed as a durable fault.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			probeErr = ctxErr
+		}
+	}()
 	rawConn, err := member.outbound.DialContext(ctx, N.NetworkTCP, target.Destination)
 	if err != nil {
 		if p.closed.Load() {
 			return 0, errPoolClosed
 		}
-		p.recordProbeFailure(member, err)
 		return 0, err
 	}
 	if p.closed.Load() {
@@ -1120,33 +1109,68 @@ func (p *poolOutbound) probeMember(ctx context.Context, member *memberState, tar
 
 	conn, err := upgradeProbeConn(ctx, rawConn, target)
 	if err != nil {
-		p.recordProbeFailure(member, err)
 		return 0, err
 	}
 	host := target.Host
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
 	if target.Destination.Port != 80 && target.Destination.Port != 443 {
 		host = target.Destination.AddrString()
 	}
-	if _, err = httpProbe(ctx, conn, host); err != nil {
-		p.recordProbeFailure(member, err)
+	setupDuration := time.Since(start)
+	responseLatency, err := probetarget.ProbeHTTP(ctx, conn, host, target.RequestURI)
+	if err != nil {
 		return 0, err
 	}
 
-	duration := time.Since(start)
+	duration := setupDuration + responseLatency
 	p.healthMu.RLock()
 	defer p.healthMu.RUnlock()
 	if p.closed.Load() {
 		return 0, errPoolClosed
 	}
-	if member.entry != nil {
-		member.entry.RecordSuccessWithLatency(duration)
-	}
-	if member.shared != nil {
-		// Recover automatic failures without overriding an administrator's
-		// explicit blacklist.
-		member.shared.releaseAfterProbe()
-	}
+	// Transport measurement only. Routing and monitor state are published
+	// together after generation and passive-observation freshness checks.
 	return duration, nil
+}
+
+func (p *poolOutbound) registerProbe(member *memberState) {
+	if member.entry != nil && p.monitor != nil {
+		member.entry.SetProbeForRuntimeWithPublisher(probeRuntimeIdentity(member.outbound), p.makeProbeFunc(member), p.makeProbePublisher(member))
+	}
+}
+
+func (p *poolOutbound) makeProbePublisher(member *memberState) monitor.ProbePublisher {
+	return func(_ time.Duration, err error, publish func(func()) bool) bool {
+		p.healthMu.RLock()
+		defer p.healthMu.RUnlock()
+		if p.closed.Load() || errors.Is(err, errPoolClosed) {
+			return false
+		}
+		s := member.shared
+		if s == nil {
+			return publish(nil)
+		}
+		s.transitionMu.Lock()
+		defer s.transitionMu.Unlock()
+		if s.closed.Load() {
+			return false
+		}
+		changed := false
+		applied := publish(func() {
+			changed = true
+			if err == nil {
+				s.releaseAfterProbeLocked()
+			} else {
+				s.recordFailureWithSourceLocked(err, 1, p.options.BlacklistDuration, p.options.TransientCooldown, false)
+			}
+		})
+		if changed {
+			s.persistTransitionLocked()
+		}
+		return applied
+	}
 }
 
 // admitProbe linearizes probe admission against Close. The read lock is
@@ -1195,10 +1219,12 @@ type trackedConn struct {
 	once    sync.Once
 	release func()
 	traffic *trafficSession
+	health  *trafficObservation
 }
 
 func (c *trackedConn) Read(buffer []byte) (int, error) {
 	count, err := c.Conn.Read(buffer)
+	c.health.observe(count > 0, err)
 	if c.traffic != nil {
 		c.traffic.recordRead(count)
 	}
@@ -1207,6 +1233,7 @@ func (c *trackedConn) Read(buffer []byte) (int, error) {
 
 func (c *trackedConn) Write(buffer []byte) (int, error) {
 	count, err := c.Conn.Write(buffer)
+	c.health.observe(false, err)
 	if c.traffic != nil {
 		c.traffic.upload.Add(int64(count))
 	}
@@ -1214,6 +1241,7 @@ func (c *trackedConn) Write(buffer []byte) (int, error) {
 }
 
 func (c *trackedConn) Close() error {
+	c.health.close()
 	err := c.Conn.Close()
 	c.once.Do(func() {
 		if c.traffic != nil {
@@ -1229,10 +1257,12 @@ type trackedPacketConn struct {
 	once    sync.Once
 	release func()
 	traffic *trafficSession
+	health  *trafficObservation
 }
 
 func (c *trackedPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 	count, address, err := c.PacketConn.ReadFrom(buffer)
+	c.health.observe(err == nil || count > 0, err) // Empty UDP datagrams are valid responses.
 	if c.traffic != nil {
 		c.traffic.recordRead(count)
 	}
@@ -1241,6 +1271,7 @@ func (c *trackedPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 
 func (c *trackedPacketConn) WriteTo(buffer []byte, address net.Addr) (int, error) {
 	count, err := c.PacketConn.WriteTo(buffer, address)
+	c.health.observe(false, err)
 	if c.traffic != nil {
 		c.traffic.upload.Add(int64(count))
 	}
@@ -1248,6 +1279,7 @@ func (c *trackedPacketConn) WriteTo(buffer []byte, address net.Addr) (int, error
 }
 
 func (c *trackedPacketConn) Close() error {
+	c.health.close()
 	err := c.PacketConn.Close()
 	c.once.Do(func() {
 		if c.traffic != nil {
@@ -1260,6 +1292,7 @@ func (c *trackedPacketConn) Close() error {
 
 type trafficSession struct {
 	event    trafficlog.Event
+	resultMu sync.Mutex
 	started  time.Time
 	first    sync.Once
 	upload   atomic.Int64
@@ -1283,11 +1316,14 @@ func (s *trafficSession) recordRead(count int) {
 }
 
 func (s *trafficSession) finish() {
-	s.event.TTFBMS = s.ttfbMS.Load()
-	s.event.DurationMS = time.Since(s.started).Milliseconds()
-	s.event.UploadBytes = s.upload.Load()
-	s.event.DownloadBytes = s.download.Load()
-	trafficlog.Record(s.event)
+	s.resultMu.Lock()
+	event := s.event
+	s.resultMu.Unlock()
+	event.TTFBMS = s.ttfbMS.Load()
+	event.DurationMS = time.Since(s.started).Milliseconds()
+	event.UploadBytes = s.upload.Load()
+	event.DownloadBytes = s.download.Load()
+	trafficlog.Record(event)
 }
 
 func (p *poolOutbound) incActive(member *memberState) {

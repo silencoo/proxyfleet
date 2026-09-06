@@ -2,6 +2,7 @@ package builder
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -9,6 +10,43 @@ import (
 	"github.com/silencoo/proxyfleet/internal/config"
 	poolout "github.com/silencoo/proxyfleet/internal/outbound/pool"
 )
+
+func TestStartupNodeInventoryIsBoundedUnlessVerbose(t *testing.T) {
+	for _, mode := range []string{"pool", "multi-port", "hybrid"} {
+		for _, level := range []string{"", "info", "DEBUG", "trace"} {
+			t.Run(mode+"/"+level, func(t *testing.T) {
+				var output bytes.Buffer
+				previous := log.Writer()
+				log.SetOutput(&output)
+				t.Cleanup(func() { log.SetOutput(previous) })
+				cfg := &config.Config{Mode: mode, LogLevel: level}
+				metadata := make(map[string]poolout.MemberMeta)
+				for index := 0; index < 421; index++ {
+					name := fmt.Sprintf("test-node-%03d", index)
+					metadata[name] = poolout.MemberMeta{Name: name}
+					cfg.Nodes = append(cfg.Nodes, config.NodeConfig{Name: name, Port: uint16(24000 + index)})
+				}
+				printProxyLinks(cfg, metadata)
+				logged := output.String()
+				want := startupNodeLogLimit
+				if level == "DEBUG" || level == "trace" {
+					want = 421
+				} else if !strings.Contains(logged, "401 more") {
+					t.Fatal("summary omitted the remaining node count")
+				}
+				if mode == "hybrid" {
+					want *= 2
+				}
+				if got := strings.Count(logged, "test-node-"); got != want {
+					t.Fatalf("printed %d nodes, want %d", got, want)
+				}
+				if mode != "multi-port" && strings.Index(logged, "test-node-000") > strings.Index(logged, "test-node-001") {
+					t.Fatal("pool inventory is not in a deterministic order")
+				}
+			})
+		}
+	}
+}
 
 func TestPrintProxyLinksOmitsCredentials(t *testing.T) {
 	var output bytes.Buffer

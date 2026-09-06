@@ -132,6 +132,18 @@ func ConfigureRuntimeState(databasePath, legacyHealthPath string) error {
 	healthPersistence.domains = domains
 	healthPersistence.dirty = healthPersistence.dirty || (pathChanged && len(healthPersistence.records) > 0)
 	healthPersistence.domainDirty = healthPersistence.domainDirty || (pathChanged && len(healthPersistence.domains) > 0)
+	if pathChanged {
+		// The new database needs the complete merged state once. Enumerate now
+		// so concurrent traffic cannot accidentally turn this into a partial copy.
+		healthPersistence.dirtyNodes = make(map[string]struct{}, len(records))
+		for tag := range records {
+			healthPersistence.dirtyNodes[tag] = struct{}{}
+		}
+		healthPersistence.dirtyDomains = make(map[string]struct{}, len(domains))
+		for tag := range domains {
+			healthPersistence.dirtyDomains[tag] = struct{}{}
+		}
+	}
 	needsFlush := healthPersistence.dirty || healthPersistence.domainDirty
 	healthPersistence.mu.Unlock()
 	healthPersistence.writeMu.Unlock()
@@ -205,6 +217,10 @@ func decodeRuntimeHealth(row runtimestate.HealthRecord) (persistedMemberHealth, 
 }
 
 func saveRuntimeSnapshot(ctx context.Context, engine *runtimestate.Engine, records map[string]persistedMemberHealth, domains map[string]map[string]domainLatencyValue) error {
+	return saveRuntimeChanges(ctx, engine, records, domains, nil, nil, true)
+}
+
+func saveRuntimeChanges(ctx context.Context, engine *runtimestate.Engine, records map[string]persistedMemberHealth, domains map[string]map[string]domainLatencyValue, domainNodes, removedNodes []string, full bool) error {
 	if engine == nil {
 		return nil
 	}
@@ -232,7 +248,10 @@ func saveRuntimeSnapshot(ctx context.Context, engine *runtimestate.Engine, recor
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return engine.SaveSnapshot(ctx, healthRows, domainRows)
+	if full {
+		return engine.SaveSnapshot(ctx, healthRows, domainRows)
+	}
+	return engine.SaveChanges(ctx, healthRows, domainRows, domainNodes, removedNodes)
 }
 
 func cloneDomainLatencyState(source map[string]map[string]domainLatencyValue) map[string]map[string]domainLatencyValue {
@@ -291,6 +310,10 @@ func recordDomainLatency(tag, domain string, latency time.Duration) {
 	values[domain] = value
 	pruneDomainLatencyState(map[string]map[string]domainLatencyValue{tag: values})
 	healthPersistence.domainDirty = true
+	if healthPersistence.dirtyDomains == nil {
+		healthPersistence.dirtyDomains = make(map[string]struct{})
+	}
+	healthPersistence.dirtyDomains[tag] = struct{}{}
 	if healthPersistence.engine != nil && healthPersistence.timer == nil {
 		healthPersistence.timer = time.AfterFunc(healthWriteDelay, func() {
 			if err := FlushHealthState(); err != nil {

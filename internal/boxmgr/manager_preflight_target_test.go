@@ -1,8 +1,11 @@
 package boxmgr
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
+	M "github.com/sagernet/sing/common/metadata"
 )
 
 type preflightIdentityOutbound struct {
@@ -92,6 +96,11 @@ func TestPreflightFlightKeySeparatesTargetAndInstance(t *testing.T) {
 	keyA := preflightProbeFlightKey(instanceA, "node", targetA, outbound)
 	keyTargetB := preflightProbeFlightKey(instanceA, "node", targetB, outbound)
 	keyInstanceB := preflightProbeFlightKey(instanceB, "node", targetA, outbound)
+	targetPath := targetA
+	targetPath.RequestURI = "/different?check=1"
+	if keyA == preflightProbeFlightKey(instanceA, "node", targetPath, outbound) {
+		t.Fatal("different request paths produced the same preflight flight key")
+	}
 	if keyA == keyTargetB {
 		t.Fatal("different probe targets produced the same preflight flight key")
 	}
@@ -141,6 +150,48 @@ func TestPreflightFlightKeySeparatesTargetAndInstance(t *testing.T) {
 		manager.preflightMu.Unlock()
 		return remaining == 0
 	}, "preflight flight did not clean up")
+}
+
+type responsePreflightOutbound struct {
+	adapter.Outbound
+	response string
+	paths    chan string
+}
+
+func (o *responsePreflightOutbound) DialContext(context.Context, string, M.Socksaddr) (net.Conn, error) {
+	client, server := net.Pipe()
+	go func() {
+		defer server.Close()
+		request, err := http.ReadRequest(bufio.NewReader(server))
+		if err != nil {
+			return
+		}
+		o.paths <- request.RequestURI
+		_, _ = io.WriteString(server, o.response)
+	}()
+	return client, nil
+}
+
+func TestPreflightValidatesHTTPStatusAndConfiguredPath(t *testing.T) {
+	for _, code := range []int{204, 302, 403, 503} {
+		outbound := &responsePreflightOutbound{
+			response: fmt.Sprintf("HTTP/1.1 %d %s\r\n\r\n", code, http.StatusText(code)),
+			paths:    make(chan string, 1),
+		}
+		target, _, err := monitor.ResolveProbeTarget("http://example.test/health?ping=1", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err = probeOutboundConnection(ctx, outbound, target)
+		cancel()
+		if (err == nil) != (code < 400) {
+			t.Fatalf("status %d: %v", code, err)
+		}
+		if path := <-outbound.paths; path != "/health?ping=1" {
+			t.Fatalf("preflight ignored configured path: %q", path)
+		}
+	}
 }
 
 func newPreflightTargetConfig(t *testing.T, probeTarget string) *config.Config {

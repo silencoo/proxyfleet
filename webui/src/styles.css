@@ -263,6 +263,8 @@
     .stat-title { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; font-weight: 600; }
     .stat-value { font-size: 28px; font-weight: 300; font-family: var(--font-mono); }
     .stat-sub { font-size: 12px; color: var(--success); margin-top: 4px; display: flex; justify-content: space-between;}
+    #healthyNodeRate { color: var(--text-muted); overflow-wrap: anywhere; }
+    .metric-explanation { margin: 0 0 16px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 
     /* Table */
     .panel {
@@ -593,7 +595,7 @@
       .nav-item { width: auto; min-width: max-content; padding: 9px 12px; border-right: 0; border-bottom: 2px solid transparent; }
       .nav-item.active { border-bottom-color: var(--text-main); }
       .main { min-height: 0; overflow: visible; }
-      .header { min-height: 60px; height: auto; padding: 10px 16px; align-items: flex-start; gap: 12px; }
+      .header { min-height: 60px; height: auto; flex-shrink: 0; padding: 10px 16px; align-items: flex-start; gap: 12px; }
       .header-actions { justify-content: flex-end; flex-wrap: wrap; }
       .content { overflow: visible; padding: 16px; }
       .charts-grid { grid-template-columns: 1fr; }

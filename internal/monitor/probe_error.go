@@ -5,15 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/sagernet/ws"
+	"github.com/silencoo/proxyfleet/internal/probetarget"
 )
 
 var probeURLPattern = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^\s]+`)
 var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b(password|passwd|token|auth|authorization|uuid|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+`)
 var userInfoPattern = regexp.MustCompile(`[^\s/@:]+:[^\s/@]+@`)
 var longOpaqueValuePattern = regexp.MustCompile(`\b[A-Za-z0-9_-]{32,}={0,2}\b`)
+var websocketProbeStatusPattern = regexp.MustCompile(`(?i)\bunexpected HTTP response status:\s*([1-5][0-9]{2})\b`)
 
 const maxSanitizedProbeErrorLength = 512
 
@@ -70,38 +76,87 @@ func classifyProbeError(err error) (category, summary string) {
 	if err == nil {
 		return "", ""
 	}
+	// The probe target's response and the proxy's WebSocket handshake are
+	// different stages. Prefer their typed causes before inspecting wrappers.
+	var targetStatus *probetarget.HTTPStatusError
+	if errors.As(err, &targetStatus) {
+		return "http_status", "Probe target returned " + probeHTTPStatusLabel(targetStatus.Code)
+	}
+	var websocketStatus ws.StatusError
+	if errors.As(err, &websocketStatus) {
+		return "transport_handshake", websocketProbeStatusSummary(int(websocketStatus))
+	}
+	// Some transport wrappers flatten the original error instead of using %w.
+	if match := websocketProbeStatusPattern.FindStringSubmatch(err.Error()); match != nil {
+		code, _ := strconv.Atoi(match[1])
+		return "transport_handshake", websocketProbeStatusSummary(code)
+	}
 	var netErr net.Error
 	lower := strings.ToLower(err.Error())
 	switch {
+	case errors.Is(err, ws.ErrHandshakeBadStatus):
+		return "transport_handshake", "WebSocket handshake returned an unexpected HTTP status; check the proxy server or CDN"
+	case strings.Contains(lower, "unexpected http status"):
+		return "http_status", "Probe target returned an unsuccessful HTTP status"
 	case strings.Contains(lower, "127.127.127.1"):
-		return "addr_invalid", "节点地址无效（可能是订阅解析异常或占位地址）"
+		return "addr_invalid", "Invalid node address (possibly a subscription placeholder or parsing error)"
 	case strings.Contains(lower, "http-upgrade"), strings.Contains(lower, "httpupgrade"),
 		strings.Contains(lower, "unexpected status"), strings.Contains(lower, "v2ray-"):
-		return "transport_handshake", "传输层握手失败（节点服务端异常或被 CDN 拦截）"
+		return "transport_handshake", "Transport handshake failed (possible server or CDN rejection)"
 	case strings.Contains(lower, "tls:"), strings.Contains(lower, "tls handshake"),
 		strings.Contains(lower, "certificate"), strings.Contains(lower, "x509:"):
-		return "tls_failed", "TLS 握手或证书验证失败"
+		return "tls_failed", tlsProbeErrorSummary(lower)
 	case strings.Contains(lower, "unknown version"), strings.Contains(lower, "malformed"):
-		return "proto_mismatch", "协议响应不符合预期"
+		return "proto_mismatch", "Unexpected protocol response"
 	case strings.Contains(lower, "connection refused"):
-		return "dial_refused", "节点端口拒绝连接"
+		return "dial_refused", "Node port refused the connection"
 	case strings.Contains(lower, "no route to host"), strings.Contains(lower, "network is unreachable"):
-		return "dial_no_route", "节点网络不可达"
+		return "dial_no_route", "Node network is unreachable"
 	case strings.Contains(lower, "dial tcp"), strings.Contains(lower, "dial udp"):
 		if errors.As(err, &netErr) && netErr.Timeout() || strings.Contains(lower, "timeout") {
-			return "dial_timeout", "连接节点超时"
+			return "dial_timeout", "Connection to the node timed out"
 		}
-		return "dial_failed", "连接节点失败"
+		return "dial_failed", "Connection to the node failed"
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout(),
 		strings.Contains(lower, "i/o timeout"), strings.Contains(lower, "deadline exceeded"):
-		return "read_timeout", "节点响应超时或链路不稳定"
+		return "read_timeout", "Node response timed out or the connection is unstable"
 	case strings.Contains(lower, "eof"), strings.Contains(lower, "reset by peer"),
 		strings.Contains(lower, "broken pipe"), strings.Contains(lower, "connection reset"):
-		return "conn_reset", "探测连接被对端中断"
+		return "conn_reset", "Probe connection was closed by the peer"
 	case errors.Is(err, context.Canceled):
-		return "cancelled", "探测被取消"
+		return "cancelled", "Probe was cancelled"
 	default:
-		return "other", "探测失败（未知原因）"
+		return "other", "Probe failed (unclassified error)"
+	}
+}
+
+func probeHTTPStatusLabel(code int) string {
+	label := fmt.Sprintf("HTTP %d", code)
+	if reason := http.StatusText(code); reason != "" {
+		label += " (" + reason + ")"
+	}
+	return label
+}
+
+func websocketProbeStatusSummary(code int) string {
+	return "WebSocket handshake rejected with " + probeHTTPStatusLabel(code) + "; check the proxy server or CDN"
+}
+
+func tlsProbeErrorSummary(message string) string {
+	switch {
+	case strings.Contains(message, "legacy common name"):
+		return "Certificate lacks subject alternative names (SANs); the provider must replace it"
+	case strings.Contains(message, "doesn't contain any ip sans"):
+		return "Certificate does not cover the node IP; check the configured TLS server name (SNI)"
+	case strings.Contains(message, "not valid for any names"),
+		strings.Contains(message, "certificate is valid for"):
+		return "Certificate hostname mismatch; check the configured TLS server name (SNI) and provider certificate"
+	case strings.Contains(message, "expired or is not yet valid"):
+		return "Certificate is expired or not yet valid; check the system clock and provider certificate"
+	case strings.Contains(message, "unknown authority"):
+		return "Certificate issuer is not trusted; check the provider certificate chain or configured trust roots"
+	default:
+		return "TLS handshake or certificate verification failed"
 	}
 }
 

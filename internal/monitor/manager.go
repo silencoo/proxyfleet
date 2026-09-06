@@ -69,6 +69,7 @@ type NodeInfo struct {
 // TimelineEvent represents a single usage event for debug tracking.
 type TimelineEvent struct {
 	Time      time.Time `json:"time"`
+	Source    string    `json:"source,omitempty"`
 	Success   bool      `json:"success"`
 	LatencyMs int64     `json:"latency_ms"`
 	Error     string    `json:"error,omitempty"`
@@ -76,7 +77,8 @@ type TimelineEvent struct {
 
 const maxTimelineSize = 20
 
-// Snapshot is a runtime view of a proxy node.
+// Snapshot is a runtime view of a proxy node. SuccessCount and FailureCount
+// record real traffic; active checks have separate probe state and timelines.
 type Snapshot struct {
 	NodeInfo
 	FailureCount             int             `json:"failure_count"`
@@ -128,6 +130,11 @@ type PersistedHealthState struct {
 type probeFunc func(ctx context.Context) (time.Duration, error)
 type releaseFunc func()
 
+// ProbePublisher serializes routing transitions around publish. Routing changes
+// must be passed into publish, which runs them only if the observation is still
+// current. Lock order is routing transition -> probe -> entry state.
+type ProbePublisher func(latency time.Duration, err error, publish func(applyRouting func()) bool) bool
+
 type EntryHandle struct {
 	ref *entry
 }
@@ -152,6 +159,8 @@ type entry struct {
 	ewmaLatencyMs         float64
 	active                atomic.Int32
 	probe                 probeFunc
+	probePublisher        ProbePublisher
+	probeIdentity         string
 	release               releaseFunc
 	blacklistFn           func(time.Duration)
 	initialCheckDone      bool
@@ -160,6 +169,10 @@ type entry struct {
 	mu                    sync.RWMutex
 	probeMu               sync.Mutex
 	probeGeneration       uint64
+	probeNextID           uint64
+	probeAppliedID        uint64
+	probeAppliedSuccess   bool
+	probeCompletedAt      time.Time
 	probeCall             *inFlightProbe
 	probeSlots            chan struct{}
 	probeLifecycleMu      *sync.RWMutex
@@ -173,9 +186,21 @@ type probeOutcome struct {
 }
 
 type inFlightProbe struct {
-	generation uint64
-	done       chan struct{}
-	result     probeOutcome
+	generation  uint64
+	id          uint64
+	done        chan struct{}
+	result      probeOutcome
+	startedAt   time.Time
+	publisher   ProbePublisher
+	publication sync.Once
+}
+
+type probeResultVersion struct {
+	generation  uint64
+	id          uint64
+	startedAt   time.Time
+	completedAt time.Time
+	publisher   ProbePublisher
 }
 
 type probeSweepRequest struct {
@@ -204,6 +229,7 @@ var (
 type ProbeTarget struct {
 	Destination    M.Socksaddr
 	Host           string
+	RequestURI     string
 	TLS            bool
 	SkipCertVerify bool
 }
@@ -233,6 +259,9 @@ type Manager struct {
 	probeBudgetUsed      int
 	probeBudgetDay       time.Time
 	probeBudgetDailyUsed int
+	probeBudgetTokens    float64
+	probeBudgetRefilled  time.Time
+	adaptivePickCursor   atomic.Uint64
 	adaptiveEligible     atomic.Int32
 	adaptiveDue          atomic.Int32
 	adaptivePassiveSkip  atomic.Int32
@@ -274,6 +303,7 @@ func resolveProbeTarget(value string, skipCertVerify bool) (ProbeTarget, bool, e
 	return ProbeTarget{
 		Destination:    M.ParseSocksaddrHostPort(parsed.Host, parsed.Port),
 		Host:           parsed.Host,
+		RequestURI:     parsed.RequestURI,
 		TLS:            parsed.TLS,
 		SkipCertVerify: skipCertVerify,
 	}, true, nil
@@ -339,10 +369,22 @@ func (m *Manager) SetProbeTarget(value string, skipCertVerify bool) error {
 		return err
 	}
 	m.mu.Lock()
+	changed := m.probeTarget != target || m.probeReady != ready
 	m.cfg.ProbeTarget = value
 	m.cfg.SkipCertVerify = skipCertVerify
 	m.probeTarget = target
 	m.probeReady = ready
+	if changed {
+		for _, e := range m.nodes {
+			e.probeMu.Lock()
+			e.mu.Lock()
+			e.probeGeneration++
+			e.initialCheckDone = false
+			e.available = false
+			e.mu.Unlock()
+			e.probeMu.Unlock()
+		}
+	}
 	m.mu.Unlock()
 	return nil
 }
@@ -703,26 +745,21 @@ func (m *Manager) runProbeSweep(operationCtx context.Context, timeout time.Durat
 					m.probeSweepDone.Add(1)
 					continue
 				}
-				entry.probeMu.Lock()
 				entry.mu.RLock()
 				probeFn := entry.probe
 				tag := entry.info.Tag
 				uri := entry.info.URI
 				entry.mu.RUnlock()
-				probeGeneration := entry.probeGeneration
-				entry.probeMu.Unlock()
 
 				if probeFn == nil {
-					if entry.markProbeResultGeneration(probeGeneration, 0, nil) {
-						availableCount.Add(1)
-						m.probeSweepOK.Add(1)
-					}
+					// No live transport means no new evidence, including during a
+					// callback handoff. Never manufacture a successful observation.
 					m.probeSweepDone.Add(1)
 					continue
 				}
 
 				probeCtx, cancel := context.WithTimeout(sweepCtx, perProbe)
-				latency, err, probeGeneration := entry.executeProbeGeneration(probeCtx, sweepCtx, perProbe)
+				latency, err, probeGeneration := entry.executeProbeGeneration(probeCtx, probeCtx, perProbe)
 				cancel()
 				if operationCtx.Err() != nil {
 					m.probeSweepDone.Add(1)
@@ -923,12 +960,10 @@ func (m *Manager) Probe(ctx context.Context, tag string) (time.Duration, error) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, defaultProbeTimeout)
-		defer cancel()
-	}
-	latency, err, probeGeneration := e.executeProbeGeneration(ctx, m.ctx, defaultProbeTimeout)
+	timeout := m.ProbeTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	latency, err, probeGeneration := e.executeProbeGeneration(ctx, m.ctx, timeout)
 	if !e.markProbeResultGeneration(probeGeneration, latency, err) {
 		return 0, errProbeSuperseded
 	}
@@ -936,6 +971,13 @@ func (m *Manager) Probe(ctx context.Context, tag string) (time.Duration, error) 
 		return 0, err
 	}
 	return latency, nil
+}
+
+// ProbeTimeout returns the configured per-node limit, including for manual probes.
+func (m *Manager) ProbeTimeout() time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return probeTimeout(m.cfg.ProbeTimeout)
 }
 
 // Release clears blacklist state for the given node.
@@ -1111,8 +1153,13 @@ func (e *entry) recordSuccessWithLatency(latency time.Duration) {
 }
 
 func (e *entry) appendTimelineLocked(success bool, latencyMs int64, errStr string) {
+	e.appendTimelineWithSourceLocked("traffic", success, latencyMs, errStr)
+}
+
+func (e *entry) appendTimelineWithSourceLocked(source string, success bool, latencyMs int64, errStr string) {
 	evt := TimelineEvent{
 		Time:      time.Now(),
+		Source:    source,
 		Success:   success,
 		LatencyMs: latencyMs,
 		Error:     errStr,
@@ -1151,9 +1198,8 @@ func (e *entry) clearCooldown() {
 	e.mu.Lock()
 	e.coolingDown = false
 	e.cooldownUntil = time.Time{}
-	if e.initialCheckDone && !e.blacklist {
-		e.available = true
-	}
+	// Expiry permits another routing attempt; it is not evidence of recovery.
+	// Only a successful probe or real connection can confirm availability.
 	e.mu.Unlock()
 }
 
@@ -1166,17 +1212,30 @@ func (e *entry) decActive() {
 }
 
 func (e *entry) setProbe(fn probeFunc) {
+	e.setProbeForRuntime("", fn)
+}
+
+func (e *entry) setProbeForRuntime(identity string, fn probeFunc) {
+	e.setProbePublisher(identity, fn, nil)
+}
+
+func (e *entry) setProbePublisher(identity string, fn probeFunc, publisher ProbePublisher) {
 	e.probeMu.Lock()
 	defer e.probeMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	unchanged := identity != "" && identity == e.probeIdentity
 	e.probe = fn
+	e.probePublisher = publisher
+	e.probeIdentity = identity
 	e.probeGeneration++
-	// A callback replacement represents a new runtime generation. Persisted or
-	// previously observed availability is not evidence that the replacement is
-	// healthy, and an older in-flight callback may not carry that state across.
-	e.initialCheckDone = false
-	e.available = false
+	// Every callback replacement has a new generation, but only a different
+	// underlying transport invalidates established health. Persisted state has
+	// no live identity and therefore still requires validation after restart.
+	if !unchanged {
+		e.initialCheckDone = false
+		e.available = false
+	}
 }
 
 func (e *entry) setRelease(fn releaseFunc) {
@@ -1192,10 +1251,23 @@ func (e *entry) recordProbeLatency(d time.Duration) {
 }
 
 func (e *entry) markProbeResult(latency time.Duration, err error) {
-	now := time.Now()
+	e.markProbeResultAt(time.Now(), latency, err)
+}
+
+func (e *entry) markProbeResultAt(now time.Time, latency time.Duration, err error) {
+	if errors.Is(err, context.Canceled) {
+		return // Cancellation is not evidence that the node failed.
+	}
 	e.mu.Lock()
 	e.initialCheckDone = true
 	e.lastProbeAt = now
+	e.diagnosticsVisible = true
+	latencyMs := latency.Milliseconds()
+	if latency > 0 && latencyMs == 0 {
+		latencyMs = 1
+	}
+	e.appendTimelineWithSourceLocked("probe", err == nil, latencyMs, SanitizeProbeError(err))
+	e.timeline[len(e.timeline)-1].Time = now
 	if err != nil {
 		e.lastError = SanitizeProbeError(err)
 		e.lastFail = now
@@ -1214,14 +1286,49 @@ func (e *entry) markProbeResult(latency time.Duration, err error) {
 	e.mu.Unlock()
 }
 
-func (e *entry) markProbeResultGeneration(generation uint64, latency time.Duration, err error) bool {
-	e.probeMu.Lock()
-	defer e.probeMu.Unlock()
-	if generation != e.probeGeneration {
+func (e *entry) markProbeResultGeneration(version probeResultVersion, latency time.Duration, err error) bool {
+	if errors.Is(err, errProbeSuperseded) {
 		return false
 	}
-	e.markProbeResult(latency, err)
-	return true
+	publish := func(applyRouting func()) bool {
+		e.probeMu.Lock()
+		defer e.probeMu.Unlock()
+		if version.generation != e.probeGeneration {
+			return false
+		}
+		if (version.id == 0 && err != nil) || errors.Is(err, context.Canceled) {
+			return true // Waiting/cancellation is not a transport observation.
+		}
+		if version.id > 0 && (version.id < e.probeAppliedID ||
+			(version.id == e.probeAppliedID && (e.probeAppliedSuccess || err != nil))) {
+			return true // Multiple waiters must not reapply one transport outcome.
+		}
+		if !version.startedAt.IsZero() {
+			e.mu.RLock()
+			newer := !e.lastPassiveSuccess.Before(version.startedAt) || !e.lastPassiveFailure.Before(version.startedAt)
+			e.mu.RUnlock()
+			if newer {
+				return false
+			}
+		}
+		if applyRouting != nil {
+			applyRouting()
+		}
+		completedAt := version.completedAt
+		if completedAt.IsZero() {
+			completedAt = time.Now()
+		}
+		e.markProbeResultAt(completedAt, latency, err)
+		if version.id > 0 {
+			e.probeAppliedID = version.id
+			e.probeAppliedSuccess = err == nil
+		}
+		return true
+	}
+	if version.publisher != nil {
+		return version.publisher(latency, err, publish)
+	}
+	return publish(nil)
 }
 
 // executeProbe deduplicates concurrent probes for one entry and races the
@@ -1237,7 +1344,7 @@ func (e *entry) executeProbeGeneration(
 	waitCtx context.Context,
 	runBase context.Context,
 	runTimeout time.Duration,
-) (time.Duration, error, uint64) {
+) (time.Duration, error, probeResultVersion) {
 	if waitCtx == nil {
 		waitCtx = context.Background()
 	}
@@ -1257,7 +1364,7 @@ func (e *entry) executeProbeGeneration(
 			if acquiredSlot {
 				<-e.probeSlots
 			}
-			return 0, errors.New("probe not available for this node"), generation
+			return 0, errors.New("probe not available for this node"), probeResultVersion{generation: generation}
 		}
 		generation := e.probeGeneration
 		call := e.probeCall
@@ -1277,7 +1384,7 @@ func (e *entry) executeProbeGeneration(
 				acquiredSlot = true
 				continue
 			case <-waitCtx.Done():
-				return 0, waitCtx.Err(), generation
+				return 0, waitCtx.Err(), probeResultVersion{generation: generation}
 			}
 		}
 
@@ -1294,7 +1401,7 @@ func (e *entry) executeProbeGeneration(
 				if acquiredSlot {
 					<-e.probeSlots
 				}
-				return 0, errProbeManagerStopped, generation
+				return 0, errProbeManagerStopped, probeResultVersion{generation: generation}
 			}
 			if e.probeWG != nil {
 				e.probeWG.Add(1)
@@ -1303,7 +1410,8 @@ func (e *entry) executeProbeGeneration(
 			e.probeLifecycleMu.RUnlock()
 		}
 
-		call = &inFlightProbe{generation: generation, done: make(chan struct{})}
+		e.probeNextID++
+		call = &inFlightProbe{generation: generation, id: e.probeNextID, done: make(chan struct{}), startedAt: time.Now(), publisher: e.probePublisher}
 		e.probeCall = call
 		e.probeMu.Unlock()
 		runCtx, cancel := context.WithTimeout(runBase, runTimeout)
@@ -1315,6 +1423,29 @@ func (e *entry) executeProbeGeneration(
 			if releaseSlot {
 				defer func() { <-e.probeSlots }()
 			}
+			// Publish the configured deadline even if a broken transport ignores
+			// cancellation. It keeps its admission slot until it actually exits;
+			// repeated waiters neither leak callbacks nor multiply failure counts.
+			publish := func(outcome probeOutcome) {
+				call.publication.Do(func() {
+					if runCtx.Err() != nil {
+						outcome.err = runCtx.Err()
+					}
+					completedAt := time.Now()
+					version := probeResultVersion{generation: call.generation, id: call.id, startedAt: call.startedAt, completedAt: completedAt, publisher: call.publisher}
+					if !e.markProbeResultGeneration(version, outcome.latency, outcome.err) {
+						outcome.err = errProbeSuperseded
+					}
+					e.probeMu.Lock()
+					call.result = outcome
+					if call.generation == e.probeGeneration {
+						e.probeCompletedAt = completedAt
+					}
+					e.probeMu.Unlock()
+				})
+			}
+			stopDeadline := context.AfterFunc(runCtx, func() { publish(probeOutcome{err: runCtx.Err()}) })
+			defer stopDeadline()
 			outcome := probeOutcome{}
 			func() {
 				defer func() {
@@ -1324,8 +1455,8 @@ func (e *entry) executeProbeGeneration(
 				}()
 				outcome.latency, outcome.err = probe(runCtx)
 			}()
+			publish(outcome)
 			e.probeMu.Lock()
-			call.result = outcome
 			close(call.done)
 			if e.probeCall == call {
 				e.probeCall = nil
@@ -1336,18 +1467,21 @@ func (e *entry) executeProbeGeneration(
 	}
 }
 
-func (e *entry) waitForProbeCall(ctx context.Context, call *inFlightProbe) (time.Duration, error, uint64) {
+func (e *entry) waitForProbeCall(ctx context.Context, call *inFlightProbe) (time.Duration, error, probeResultVersion) {
+	version := probeResultVersion{generation: call.generation, id: call.id}
 	select {
 	case <-call.done:
 		e.probeMu.Lock()
 		current := call.generation == e.probeGeneration
 		e.probeMu.Unlock()
 		if !current {
-			return 0, errProbeSuperseded, call.generation
+			return 0, errProbeSuperseded, version
 		}
-		return call.result.latency, call.result.err, call.generation
+		return call.result.latency, call.result.err, version
 	case <-ctx.Done():
-		return 0, ctx.Err(), call.generation
+		// The shared callback publishes its actual result when it finishes. A
+		// shorter-lived waiter must not mark the node down or apply a penalty.
+		return 0, ctx.Err(), probeResultVersion{generation: call.generation}
 	}
 }
 
@@ -1508,6 +1642,66 @@ func (h *EntryHandle) SetProbe(fn func(ctx context.Context) (time.Duration, erro
 		return
 	}
 	h.ref.setProbe(fn)
+}
+
+// SetProbeForRuntime replaces a callback without discarding health when the
+// underlying outbound is identical. Identity must distinguish live outbound
+// instances, not merely subscription tags. Older callback results are still
+// invalidated even for a metadata-only replacement.
+func (h *EntryHandle) SetProbeForRuntime(identity string, fn func(context.Context) (time.Duration, error)) {
+	if h != nil && h.ref != nil {
+		h.ref.setProbeForRuntime(identity, fn)
+	}
+}
+
+// SetProbeForRuntimeWithPublisher installs a transport-only probe and its atomic
+// routing/monitor publication. The publisher must not retain publish after return.
+func (h *EntryHandle) SetProbeForRuntimeWithPublisher(identity string, fn func(context.Context) (time.Duration, error), publisher ProbePublisher) {
+	if h != nil && h.ref != nil {
+		h.ref.setProbePublisher(identity, fn, publisher)
+	}
+}
+
+// ClearRuntimeCallbacks releases references to a retired pool while retaining
+// weak health metadata and identity for a replacement using the same outbound.
+func (h *EntryHandle) ClearRuntimeCallbacks() {
+	if h == nil || h.ref == nil {
+		return
+	}
+	e := h.ref
+	e.probeMu.Lock()
+	defer e.probeMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.probeGeneration++
+	e.probe, e.probePublisher, e.release, e.blacklistFn = nil, nil, nil, nil
+}
+
+// ApplyValidatedProbe imports a completed candidate check after commit. The
+// caller serializes shared routing transitions and supplies their update as
+// applyRouting. Never overwrite a newer observation or an in-flight probe.
+func (h *EntryHandle) ApplyValidatedProbe(identity string, startedAt, completedAt time.Time, latency time.Duration, err error, applyRouting func()) bool {
+	if h == nil || h.ref == nil || identity == "" || startedAt.IsZero() || completedAt.Before(startedAt) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	e := h.ref
+	e.probeMu.Lock()
+	defer e.probeMu.Unlock()
+	if e.probeIdentity != identity || e.probeCall != nil || !e.probeCompletedAt.Before(startedAt) {
+		return false
+	}
+	e.mu.RLock()
+	newer := !e.lastProbeAt.Before(startedAt) || !e.lastPassiveSuccess.Before(startedAt) || !e.lastPassiveFailure.Before(startedAt)
+	e.mu.RUnlock()
+	if newer {
+		return false
+	}
+	e.probeGeneration++
+	if applyRouting != nil {
+		applyRouting()
+	}
+	e.markProbeResultAt(completedAt, latency, err)
+	return true
 }
 
 // SetRelease assigns a release function.

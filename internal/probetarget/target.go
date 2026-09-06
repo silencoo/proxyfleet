@@ -11,11 +11,12 @@ import (
 	"strings"
 )
 
-// Target is the validated network portion of a health-check destination.
+// Target is a validated HTTP health-check destination.
 type Target struct {
-	Host string
-	Port uint16
-	TLS  bool
+	Host       string
+	Port       uint16
+	TLS        bool
+	RequestURI string
 }
 
 // Parse accepts an HTTP(S) URL or an explicit host:port. An empty value is a
@@ -33,6 +34,7 @@ func Parse(value string) (target Target, ready bool, err error) {
 
 	host := ""
 	portText := ""
+	target.RequestURI = "/"
 	if strings.Contains(value, "://") {
 		parsed, parseErr := url.Parse(value)
 		if parseErr != nil {
@@ -50,6 +52,7 @@ func Parse(value string) (target Target, ready bool, err error) {
 		}
 		host = parsed.Hostname()
 		portText = parsed.Port()
+		target.RequestURI = parsed.RequestURI()
 		if strings.HasSuffix(parsed.Host, ":") {
 			return Target{}, false, errors.New("probe target has an empty port")
 		}

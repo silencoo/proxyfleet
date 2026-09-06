@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -917,13 +918,25 @@ func buildAnyTLSOptions(u *url.URL, skipCertVerify bool) (option.AnyTLSOutboundO
 	} else if tlsOptions != nil {
 		opts.OutboundTLSOptionsContainer = option.OutboundTLSOptionsContainer{TLS: tlsOptions}
 	} else {
-		// AnyTLS defaults to TLS enabled
+		// AnyTLS always uses TLS, including links emitted by our Clash
+		// converter without security=tls. Preserve handshake metadata while
+		// retaining the existing verification policy for this implicit mode.
+		tlsOptions := &option.OutboundTLSOptions{
+			Enabled:    true,
+			ServerName: server,
+			Insecure:   skipCertVerify,
+		}
+		if sni := query.Get("sni"); sni != "" {
+			tlsOptions.ServerName = sni
+		}
+		if alpn := query.Get("alpn"); alpn != "" {
+			tlsOptions.ALPN = badoption.Listable[string](strings.Split(alpn, ","))
+		}
+		if fp := query.Get("fp"); fp != "" {
+			tlsOptions.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: fp}
+		}
 		opts.OutboundTLSOptionsContainer = option.OutboundTLSOptionsContainer{
-			TLS: &option.OutboundTLSOptions{
-				Enabled:    true,
-				ServerName: server,
-				Insecure:   skipCertVerify,
-			},
+			TLS: tlsOptions,
 		}
 	}
 
@@ -1534,8 +1547,12 @@ func atoiDefault(value string) int {
 	return v
 }
 
-// printProxyLinks prints all proxy connection information at startup
+const startupNodeLogLimit = 20
+
+// printProxyLinks summarizes entry points without flooding the console with a
+// large node inventory. Debug/trace logging retains the complete listing.
 func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta) {
+	verbose := strings.EqualFold(cfg.LogLevel, "debug") || strings.EqualFold(cfg.LogLevel, "trace")
 	log.Println("")
 	log.Println("📡 Proxy Links:")
 	log.Println("═══════════════════════════════════════════════════════════════")
@@ -1563,8 +1580,20 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 		}
 		log.Println("")
 		log.Printf("   Nodes in pool (%d):", len(metadata))
-		for _, meta := range metadata {
-			log.Printf("   • %s", meta.Name)
+		tags := make([]string, 0, len(metadata))
+		for tag := range metadata {
+			tags = append(tags, tag)
+		}
+		sort.Strings(tags)
+		shown := len(tags)
+		if !verbose {
+			shown = min(shown, startupNodeLogLimit)
+		}
+		for _, tag := range tags[:shown] {
+			log.Printf("   • %s", metadata[tag].Name)
+		}
+		if shown < len(tags) {
+			log.Printf("   ... %d more nodes; see the WebUI or set log_level: debug for the full startup list", len(tags)-shown)
 		}
 		if showMultiPort {
 			log.Println("")
@@ -1575,7 +1604,11 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 		// Multi-port mode: each node has its own port
 		log.Printf("🔌 Multi-Port Entry Points (%d nodes):", len(cfg.Nodes))
 		log.Println("")
-		for _, node := range cfg.Nodes {
+		shown := len(cfg.Nodes)
+		if !verbose {
+			shown = min(shown, startupNodeLogLimit)
+		}
+		for _, node := range cfg.Nodes[:shown] {
 			authConfigured := node.Username != "" || cfg.MultiPort.Username != ""
 			httpProxyURL := fmt.Sprintf("http://%s:%d", cfg.MultiPort.Address, node.Port)
 			socksProxyURL := fmt.Sprintf("socks5://%s:%d", cfg.MultiPort.Address, node.Port)
@@ -1583,6 +1616,9 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 			log.Printf("       HTTP:   %s", httpProxyURL)
 			log.Printf("       SOCKS5: %s", socksProxyURL)
 			log.Printf("       Authentication: %s", authenticationLogStatus(authConfigured))
+		}
+		if shown < len(cfg.Nodes) {
+			log.Printf("   ... %d more node entry points; see the WebUI or set log_level: debug for the full startup list", len(cfg.Nodes)-shown)
 		}
 	}
 

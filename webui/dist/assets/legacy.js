@@ -61,6 +61,12 @@
       '暂无告警': 'No alerts',
       '暂无审计记录': 'No audit events',
       '健康节点': 'Healthy nodes',
+      '等待健康数据': 'Waiting for health data',
+      '暂无节点': 'No nodes',
+      '全部节点的 {rate}% · {unknown} 个未知': '{rate}% of all nodes · {unknown} unknown',
+      '历史记录成功率': 'Recorded success rate',
+      '保留的诊断计数，不代表当前健康节点比例。旧记录可能包含健康探测。': 'Retained diagnostic counters, not the current healthy-node percentage. Older records may include health probes.',
+      '暂无记录': 'No recorded attempts',
       '异常节点': 'Unavailable nodes',
       '只读': 'Read only',
       '高风险订阅变更': 'High-risk subscription change',
@@ -607,7 +613,7 @@
     function getNodeStatusRank(node) {
       if (node.blacklisted) return 3;
       if (node.cooling_down) return 2.5;
-      if (!node.initial_check_done || (node.last_latency_ms || -1) < 0) return 2;
+      if (!node.initial_check_done) return 2;
       if (!node.available) return 1;
       return 0;
     }
@@ -715,6 +721,7 @@
     let trafficTime = [];
     let regionStatsCache = {};
     let regionHealthyCache = {};
+    let debugSummaryCache = {success_rate: 0, total_calls: 0};
 
     // Resize observer for charts
     window.addEventListener('resize', () => {
@@ -979,10 +986,17 @@
 
     function updateDashboardStats(data) {
       const summary = data.summary || nodeSummaryCache || {};
+      const total = Number(summary.total_nodes) || 0;
+      const healthy = Number(summary.healthy_nodes) || 0;
+      const unavailable = Number(summary.unavailable_nodes ?? summary.blacklisted_nodes) || 0;
+      const unknown = Number(summary.unknown_nodes ?? Math.max(0, total - healthy - unavailable)) || 0;
+      document.getElementById('healthyNodeRate').textContent = total > 0
+        ? tr('全部节点的 {rate}% · {unknown} 个未知', {rate: (100 * healthy / total).toFixed(1), unknown})
+        : tr('暂无节点');
       document.getElementById('totalNodes').textContent = Number(summary.total_nodes) || 0;
       document.getElementById('healthyNodes').textContent = Number(summary.healthy_nodes) || 0;
       document.getElementById('activeConnections').textContent = Number(summary.active_connections) || 0;
-      document.getElementById('blacklistedNodes').textContent = Number(summary.unavailable_nodes) || Number(summary.blacklisted_nodes) || 0;
+      document.getElementById('blacklistedNodes').textContent = unavailable;
 
       if(document.getElementById('dashboardTab').classList.contains('active')) {
         updateDashboardCharts();
@@ -1228,7 +1242,7 @@
         let badge = '', statusText = '';
         if (n.blacklisted) { badge = 'badge-error'; statusText = tr('拉黑 Blocked'); }
         else if (n.cooling_down) { badge = 'badge-warning'; statusText = tr('冷却 Cooling'); }
-        else if (!n.initial_check_done || ms < 0) { badge = 'badge-offline'; statusText = tr('未测试 Unknown'); }
+        else if (!n.initial_check_done) { badge = 'badge-offline'; statusText = tr('未测试 Unknown'); }
         else if (!n.available) { badge = 'badge-error'; statusText = tr('异常 Error'); }
         else { badge = 'badge-healthy'; statusText = tr('在线 Healthy'); }
         const actions = canOperate ? `
@@ -1668,31 +1682,27 @@
         const d = await readAPIJSON(res, '加载数据失败');
         document.getElementById('debugTotalCalls').textContent = d.total_calls||0;
         document.getElementById('debugTotalSuccess').textContent = d.total_success||0;
-        document.getElementById('debugSuccessRate').textContent = (d.success_rate||0).toFixed(1)+'%';
+        document.getElementById('debugSuccessRate').textContent = d.total_calls > 0 ? (d.success_rate||0).toFixed(1)+'%' : '—';
         window._debugNodes = d.nodes || [];
+        debugSummaryCache = {success_rate: Number(d.success_rate) || 0, total_calls: Number(d.total_calls) || 0};
         renderDebugNodes();
-        updateDebugCharts(d.success_rate || 0);
+        updateDebugCharts();
 
       } catch(e){ showToast(e.message, 'error'); }
     }
 
-    function updateDebugCharts(globalRate) {
+    function updateDebugCharts() {
       if(!successRateChartInst) successRateChartInst = initEchart('successRateChart');
       if(!failureChartInst) failureChartInst = initEchart('failureChart');
 
-      // Global Success Rate Gauge
-      let rate = globalRate;
-      if (typeof rate === 'undefined' || rate === null || isNaN(rate)) {
-         if (window._debugNodes && window._debugNodes.length > 0) {
-           let suc = 0, fail = 0;
-           window._debugNodes.forEach(n => { suc += (n.success_count||0); fail += (n.failure_count||0); });
-           rate = (suc+fail) > 0 ? (suc / (suc+fail)) * 100 : 0;
-         } else {
-           rate = 0;
-         }
-      }
+      // Delayed tab/theme redraws must use the same server summary as the
+      // numeric card, including its no-attempts state.
+      const rate = debugSummaryCache.success_rate;
+      const hasAttempts = debugSummaryCache.total_calls > 0;
+      const animate = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
       successRateChartInst && successRateChartInst.setOption({
+        animation: animate,
         backgroundColor: 'transparent',
         textStyle: { fontFamily: CHART_FONT_FAMILY },
         series: [{
@@ -1706,8 +1716,8 @@
           splitLine: { length: 20, lineStyle: { color: 'auto', width: 3 } },
           axisLabel: { color: getCssVar('--text-muted'), fontSize: 10, distance: -50 },
           title: { offsetCenter: [0, '-20%'], fontSize: 14, color: getCssVar('--text-muted') },
-          detail: { fontSize: 36, offsetCenter: [0, '0%'], valueAnimation: true, formatter: function (value) { return Math.round(value) + '%'; }, color: 'auto' },
-          data: [{ value: rate, name: tr('成功率') }]
+          detail: { fontSize: 36, offsetCenter: [0, '0%'], valueAnimation: animate, formatter: function (value) { return hasAttempts ? Math.round(value) + '%' : '—'; }, color: 'auto' },
+          data: [{ value: rate, name: tr(hasAttempts ? '成功率' : '暂无记录') }]
         }]
       });
 

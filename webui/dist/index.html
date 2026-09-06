@@ -25,8 +25,8 @@
       document.documentElement.setAttribute('data-theme', visual);
     })();
   </script>
-  <script type="module" crossorigin src="/assets/index-D4dWb7NK.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-BCFeE8bf.css">
+  <script type="module" crossorigin src="/assets/index-CKyq5k7n.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-BNTc6F8G.css">
 </head>
 <body>
 
@@ -123,7 +123,7 @@
           <div class="stat-panel">
             <div class="stat-title">健康在线</div>
             <div class="stat-value" style="color: var(--success);" id="healthyNodes">0</div>
-            <div class="stat-sub">活跃且就绪</div>
+            <div class="stat-sub" id="healthyNodeRate">等待健康数据</div>
           </div>
           <div class="stat-panel">
             <div class="stat-title">活跃连接数</div>
@@ -266,6 +266,7 @@
 
       <!-- Debug Tab -->
       <div id="debugTab" class="tab-content">
+        <p class="metric-explanation" id="diagnosticRateHelp">保留的诊断计数，不代表当前健康节点比例。旧记录可能包含健康探测。</p>
         <div class="overview-grid">
           <div class="stat-panel">
             <div class="stat-title">总调用次数</div>
@@ -283,7 +284,7 @@
 
         <div class="charts-grid">
           <div class="chart-panel">
-            <div class="chart-title">全局质量分数 (Overall Health Score)</div>
+            <div class="chart-title">历史记录成功率</div>
             <div class="chart-container" id="successRateChart"></div>
           </div>
           <div class="chart-panel">

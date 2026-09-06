@@ -1054,7 +1054,7 @@ func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
 			writeJSONMethodNotAllowed(w, http.MethodPost)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), s.mgr.ProbeTimeout())
 		defer cancel()
 		latency, err := s.mgr.Probe(ctx, tag)
 		if err != nil {
@@ -1149,7 +1149,7 @@ func (s *Server) handleProbeAll(w http.ResponseWriter, r *http.Request) {
 
 	done := make(chan struct{})
 	go func() {
-		s.mgr.ProbeAllNow(defaultProbeTimeout)
+		s.mgr.ProbeAllNow(s.mgr.ProbeTimeout())
 		close(done)
 	}()
 

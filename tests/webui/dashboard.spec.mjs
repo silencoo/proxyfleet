@@ -112,6 +112,65 @@ test.beforeEach(async ({ page }) => {
   await mockAPI(page);
 });
 
+for (const locale of ['en', 'zh']) {
+  for (const width of [390, 1280]) {
+    test(`health metrics distinguish availability from recorded success (${locale}, ${width})`, async ({ page }, testInfo) => {
+      const pageErrors = [];
+      page.on('pageerror', error => pageErrors.push(error.message));
+      await page.setViewportSize({width, height: 900});
+      await page.emulateMedia({reducedMotion:'reduce'});
+      await page.addInitScript(({locale, width}) => {
+        localStorage.setItem('uiLanguage', locale);
+        localStorage.setItem('themeMode', width === 390 ? 'dark' : 'light');
+      }, {locale, width});
+      const nodes = [
+        {tag:'healthy-1', name:'Healthy fixture', initial_check_done:true, available:true, last_latency_ms:12},
+        {tag:'healthy-2', name:'Healthy without latency', initial_check_done:true, available:true, last_latency_ms:-1},
+        {tag:'failed', name:'Failed without latency', initial_check_done:true, available:false, last_latency_ms:-1},
+        {tag:'blocked', name:'Blocked fixture', initial_check_done:false, available:false, blacklisted:true},
+        {tag:'cooling', name:'Cooling fixture', initial_check_done:true, available:false, cooling_down:true},
+        {tag:'unknown', name:'Unknown fixture', initial_check_done:false, available:false}
+      ];
+      await page.route('**/api/nodes**', route => route.fulfill({json:{nodes,
+        pagination:{page:1,page_size:50,total_items:6,total_pages:1},
+        summary:{total_nodes:6,healthy_nodes:2,unavailable_nodes:3,unknown_nodes:1,blacklisted_nodes:2,active_connections:0},
+        region_stats:{},region_healthy:{},top_latency_nodes:[],top_quality_nodes:[]
+      }}));
+      await page.route('**/api/debug', route => route.fulfill({json:{nodes:[],total_calls:2028,total_success:801,success_rate:39.497}}));
+      await page.goto('/');
+      await expect(page.locator('#healthyNodeRate')).toHaveText(locale==='en'?'33.3% of all nodes · 1 unknown':'全部节点的 33.3% · 1 个未知');
+      await expect(page.locator('#blacklistedNodes')).toHaveText('3');
+      await expect(page.locator('#nodesTableBody .badge-healthy')).toHaveCount(2);
+      await expect(page.locator('#nodesTableBody .badge-offline')).toHaveCount(1);
+      await expect(page.locator('#nodesTableBody .badge-error')).toHaveCount(2);
+      const rate = page.locator('#healthyNodeRate');
+      expect(await rate.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+      await page.screenshot({path:testInfo.outputPath('health-dashboard.png'),fullPage:true});
+      await page.locator('.nav-item[data-tab="debug"]').click();
+      await expect(page.locator('#debugSuccessRate')).toHaveText('39.5%');
+      await expect(page.locator('#debugTab .chart-title').first()).toHaveText(locale==='en'?'Recorded success rate':'历史记录成功率');
+      await expect(page.locator('#diagnosticRateHelp')).toContainText(locale==='en'?'not the current healthy-node percentage':'不代表当前健康节点比例');
+      await page.waitForTimeout(150); // Include the delayed tab redraw.
+      await expect.poll(()=>page.evaluate(()=>window.echarts.getInstanceByDom(document.getElementById('successRateChart')).getOption().series[0].data[0].value)).toBe(39.497);
+      const helpBox = await page.locator('#diagnosticRateHelp').boundingBox();
+      const actionsBox = await page.locator('.header-actions').boundingBox();
+      expect(helpBox.y).toBeGreaterThanOrEqual(actionsBox.y + actionsBox.height);
+      await page.screenshot({path:testInfo.outputPath('health-diagnostics.png'),fullPage:true});
+      expect(pageErrors).toEqual([]);
+    });
+  }
+}
+
+test('empty health metrics do not claim a zero-percent failure rate', async ({page})=>{
+  await page.addInitScript(()=>localStorage.setItem('uiLanguage','en'));
+  await page.goto('/');
+  await expect(page.locator('#healthyNodeRate')).toHaveText('No nodes');
+  await page.locator('.nav-item[data-tab="debug"]').click();
+  await page.waitForTimeout(150);
+  await expect(page.locator('#debugSuccessRate')).toHaveText('—');
+  await expect.poll(()=>page.evaluate(()=>window.echarts.getInstanceByDom(document.getElementById('successRateChart')).getOption().series[0].data[0].name)).toBe('No recorded attempts');
+});
+
 test('keeps all three dashboard charts visible with an empty pool and no traffic', async ({ page }) => {
   const pageErrors = [];
   const consoleErrors = [];

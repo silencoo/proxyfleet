@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"math"
 	"sort"
 	"time"
 )
@@ -22,12 +23,15 @@ type ProbeBudgetStatus struct {
 	Eligible       int       `json:"eligible"`
 	Due            int       `json:"due"`
 	PassiveSkipped int       `json:"passive_skipped"`
+	AvailableNow   int       `json:"available_now"`
+	PacingBurst    int       `json:"pacing_burst"`
 }
 
 type adaptiveProbeCandidate struct {
 	entry    *entry
 	priority int
 	last     time.Time
+	tag      string
 }
 
 func (m *Manager) ProbeBudgetStatus() ProbeBudgetStatus {
@@ -35,13 +39,14 @@ func (m *Manager) ProbeBudgetStatus() ProbeBudgetStatus {
 		return ProbeBudgetStatus{}
 	}
 	m.mu.RLock()
-	mode := m.cfg.ProbeMode
-	limit := m.cfg.ProbeMaxPerHour
-	dailyLimit := m.cfg.ProbeMaxPerDay
+	cfg := m.cfg
 	m.mu.RUnlock()
+	limit, dailyLimit := cfg.ProbeMaxPerHour, cfg.ProbeMaxPerDay
 	now := time.Now()
 	m.probeBudgetMu.Lock()
 	m.resetProbeBudgetLocked(now)
+	burst, rate := m.refillProbeBudgetLocked(cfg, now)
+	available := m.probeAllowanceLocked(cfg, rate)
 	window := m.probeBudgetWindow
 	used := m.probeBudgetUsed
 	day := m.probeBudgetDay
@@ -62,7 +67,7 @@ func (m *Manager) ProbeBudgetStatus() ProbeBudgetStatus {
 		}
 	}
 	return ProbeBudgetStatus{
-		Mode:           mode,
+		Mode:           cfg.ProbeMode,
 		Limit:          limit,
 		Used:           used,
 		Remaining:      remaining,
@@ -76,20 +81,66 @@ func (m *Manager) ProbeBudgetStatus() ProbeBudgetStatus {
 		Eligible:       int(m.adaptiveEligible.Load()),
 		Due:            int(m.adaptiveDue.Load()),
 		PassiveSkipped: int(m.adaptivePassiveSkip.Load()),
+		AvailableNow:   min(available, burst),
+		PacingBurst:    burst,
 	}
 }
 
 func (m *Manager) resetProbeBudgetLocked(now time.Time) {
 	window := now.Truncate(time.Hour)
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	if m.probeBudgetWindow.IsZero() || !m.probeBudgetWindow.Equal(window) {
+	if m.probeBudgetWindow.IsZero() || window.After(m.probeBudgetWindow) {
 		m.probeBudgetWindow = window
 		m.probeBudgetUsed = 0
 	}
-	if m.probeBudgetDay.IsZero() || !m.probeBudgetDay.Equal(day) {
+	if m.probeBudgetDay.IsZero() || day.After(m.probeBudgetDay) {
 		m.probeBudgetDay = day
 		m.probeBudgetDailyUsed = 0
 	}
+}
+
+// A single startup/idle batch is available immediately. Thereafter refill at
+// the stricter hourly/daily rate, without reissuing a burst at window resets.
+// The fixed-window caps still apply independently of this pacing bucket.
+func (m *Manager) refillProbeBudgetLocked(cfg Config, now time.Time) (burst int, rate float64) {
+	burst = cfg.ProbeBatchSize
+	if burst <= 0 {
+		burst = defaultAutomaticProbeBatch
+	}
+	if cfg.ProbeMaxPerHour > 0 {
+		burst = min(burst, cfg.ProbeMaxPerHour)
+		rate = float64(cfg.ProbeMaxPerHour) / time.Hour.Seconds()
+	}
+	if cfg.ProbeMaxPerDay > 0 {
+		burst = min(burst, cfg.ProbeMaxPerDay)
+		dailyRate := float64(cfg.ProbeMaxPerDay) / (24 * time.Hour).Seconds()
+		if rate == 0 || dailyRate < rate {
+			rate = dailyRate
+		}
+	}
+	if m.probeBudgetRefilled.IsZero() {
+		m.probeBudgetTokens = float64(burst)
+		m.probeBudgetRefilled = now
+	} else if now.After(m.probeBudgetRefilled) {
+		m.probeBudgetTokens += now.Sub(m.probeBudgetRefilled).Seconds() * rate
+		m.probeBudgetRefilled = now
+	}
+	m.probeBudgetTokens = min(float64(burst), m.probeBudgetTokens)
+	return burst, rate
+}
+
+func (m *Manager) probeAllowanceLocked(cfg Config, rate float64) int {
+	available := int(^uint(0) >> 1)
+	if rate > 0 {
+		available = int(math.Floor(m.probeBudgetTokens + 1e-9))
+	}
+	if cfg.ProbeMaxPerHour > 0 {
+		available = min(available, cfg.ProbeMaxPerHour-m.probeBudgetUsed)
+	}
+	if cfg.ProbeMaxPerDay > 0 {
+		available = min(available, cfg.ProbeMaxPerDay-m.probeBudgetDailyUsed)
+	}
+	return max(available, 0)
 }
 
 func (m *Manager) reserveProbeBudget(requested int, now time.Time) int {
@@ -97,30 +148,21 @@ func (m *Manager) reserveProbeBudget(requested int, now time.Time) int {
 		return 0
 	}
 	m.mu.RLock()
-	limit := m.cfg.ProbeMaxPerHour
-	dailyLimit := m.cfg.ProbeMaxPerDay
+	cfg := m.cfg
 	m.mu.RUnlock()
 	m.probeBudgetMu.Lock()
 	defer m.probeBudgetMu.Unlock()
 	m.resetProbeBudgetLocked(now)
-	allowed := requested
-	if limit > 0 {
-		remaining := limit - m.probeBudgetUsed
-		if remaining < allowed {
-			allowed = remaining
-		}
-	}
-	if dailyLimit > 0 {
-		remaining := dailyLimit - m.probeBudgetDailyUsed
-		if remaining < allowed {
-			allowed = remaining
-		}
-	}
+	_, rate := m.refillProbeBudgetLocked(cfg, now)
+	allowed := min(requested, m.probeAllowanceLocked(cfg, rate))
 	if allowed <= 0 {
 		return 0
 	}
 	m.probeBudgetUsed += allowed
 	m.probeBudgetDailyUsed += allowed
+	if rate > 0 {
+		m.probeBudgetTokens = max(0, m.probeBudgetTokens-float64(allowed))
+	}
 	return allowed
 }
 
@@ -153,17 +195,19 @@ func (m *Manager) selectAdaptiveEntries(entries []*entry, limit int, now time.Ti
 		available := candidate.available
 		lastProbeAt := candidate.lastProbeAt
 		lastPassiveSuccess := candidate.lastPassiveSuccess
+		lastFailure := candidate.lastFail
 		failures := candidate.consecutiveProbeFails
+		tag := candidate.info.Tag
 		candidate.mu.RUnlock()
 		if !probeAvailable {
 			continue
 		}
-		if !lastPassiveSuccess.IsZero() && now.Sub(lastPassiveSuccess) < cfg.ProbePassiveGrace {
+		if initialCheckDone && available && lastPassiveSuccess.After(lastFailure) && now.Sub(lastPassiveSuccess) >= 0 && now.Sub(lastPassiveSuccess) < cfg.ProbePassiveGrace {
 			passiveSkipped++
 			continue
 		}
 
-		priority := 3
+		priority := 2
 		due := false
 		last := lastProbeAt
 		switch {
@@ -178,7 +222,7 @@ func (m *Manager) selectAdaptiveEntries(entries []*entry, limit int, now time.Ti
 			due = now.Sub(lastProbeAt) >= cfg.ProbeHealthyInterval
 		}
 		if due {
-			candidates = append(candidates, adaptiveProbeCandidate{entry: candidate, priority: priority, last: last})
+			candidates = append(candidates, adaptiveProbeCandidate{entry: candidate, priority: priority, last: last, tag: tag})
 		}
 	}
 	m.adaptiveEligible.Store(int32(len(entries)))
@@ -190,26 +234,27 @@ func (m *Manager) selectAdaptiveEntries(entries []*entry, limit int, now time.Ti
 			return candidates[i].priority < candidates[j].priority
 		}
 		if candidates[i].last.Equal(candidates[j].last) {
-			candidates[i].entry.mu.RLock()
-			left := candidates[i].entry.info.Tag
-			candidates[i].entry.mu.RUnlock()
-			candidates[j].entry.mu.RLock()
-			right := candidates[j].entry.info.Tag
-			candidates[j].entry.mu.RUnlock()
-			return left < right
+			return candidates[i].tag < candidates[j].tag
 		}
 		return candidates[i].last.Before(candidates[j].last)
 	})
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
+	allowed := m.reserveProbeBudget(min(len(candidates), limit), now)
+	var groups [3][]*entry
+	for _, candidate := range candidates {
+		groups[candidate.priority] = append(groups[candidate.priority], candidate.entry)
 	}
-	allowed := m.reserveProbeBudget(len(candidates), now)
-	if allowed < len(candidates) {
-		candidates = candidates[:allowed]
-	}
-	selected := make([]*entry, len(candidates))
-	for index := range candidates {
-		selected[index] = candidates[index].entry
+	// New nodes get two shares, recovery and healthy rechecks one each. Empty
+	// groups lend their shares to the others; retain the cursor across tiny
+	// batches so a one-token budget cannot starve recovery or healthy nodes.
+	shares := [...]int{0, 1, 0, 2}
+	selected := make([]*entry, 0, allowed)
+	for len(selected) < allowed {
+		group := shares[(m.adaptivePickCursor.Add(1)-1)%uint64(len(shares))]
+		if len(groups[group]) == 0 {
+			continue
+		}
+		selected = append(selected, groups[group][0])
+		groups[group] = groups[group][1:]
 	}
 	return selected
 }

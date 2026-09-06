@@ -44,6 +44,7 @@ type MetricPoint struct {
 	TotalNodes          int       `json:"total_nodes"`
 	HealthyNodes        int       `json:"healthy_nodes"`
 	UnavailableNodes    int       `json:"unavailable_nodes"`
+	UnknownNodes        int       `json:"unknown_nodes"`
 	BlacklistedNodes    int       `json:"blacklisted_nodes"`
 	ActiveConnections   int64     `json:"active_connections"`
 	AverageLatencyMs    float64   `json:"average_latency_ms"`
@@ -182,8 +183,10 @@ func metricPointFromSnapshots(snapshots []Snapshot, budget ProbeBudgetStatus, no
 	for _, snapshot := range snapshots {
 		if snapshot.InitialCheckDone && snapshot.Available && !snapshot.Blacklisted && !snapshot.CoolingDown {
 			point.HealthyNodes++
-		} else if snapshot.InitialCheckDone {
+		} else if snapshot.InitialCheckDone || snapshot.Blacklisted || snapshot.CoolingDown {
 			point.UnavailableNodes++
+		} else {
+			point.UnknownNodes++
 		}
 		if snapshot.Blacklisted || snapshot.CoolingDown {
 			point.BlacklistedNodes++

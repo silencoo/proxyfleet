@@ -180,11 +180,37 @@ func (e *Engine) SaveSnapshot(ctx context.Context, health []HealthRecord, domain
 	if len(health) == 0 && len(domains) == 0 {
 		return nil
 	}
+	return e.saveChanges(ctx, health, domains, nil, nil, true)
+}
+
+// SaveChanges upserts only changed health and replaces domain caches only for
+// domainNodes (including an empty cache). Removed nodes are deleted atomically.
+// Unlike SaveSnapshot, untouched nodes and their domain rows are never rewritten.
+func (e *Engine) SaveChanges(ctx context.Context, health []HealthRecord, domains []DomainLatencyRecord, domainNodes, removedNodes []string) error {
+	if len(health)+len(domains)+len(domainNodes)+len(removedNodes) == 0 {
+		return nil
+	}
+	return e.saveChanges(ctx, health, domains, domainNodes, removedNodes, false)
+}
+
+func (e *Engine) saveChanges(ctx context.Context, health []HealthRecord, domains []DomainLatencyRecord, domainNodes, removedNodes []string, fullDomains bool) error {
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin runtime state snapshot: %w", err)
 	}
 	defer tx.Rollback()
+	if len(removedNodes) > 0 {
+		statement, err := tx.PrepareContext(ctx, "DELETE FROM node_health WHERE node_id = ?")
+		if err != nil {
+			return fmt.Errorf("prepare retired health cleanup: %w", err)
+		}
+		defer statement.Close()
+		for _, tag := range removedNodes {
+			if _, err := statement.ExecContext(ctx, tag); err != nil {
+				return fmt.Errorf("delete retired health: %w", err)
+			}
+		}
+	}
 	// Prepare each statement on its first valid row and reuse it for the batch.
 	// Keep both batches in this transaction so a failure rolls back the entire snapshot.
 	var healthStatement *sql.Stmt
@@ -222,10 +248,25 @@ func (e *Engine) SaveSnapshot(ctx context.Context, health []HealthRecord, domain
 			return fmt.Errorf("save node health %q: %w", record.NodeID, err)
 		}
 	}
-	// Domain latencies are a complete bounded snapshot. Replacing them in the
-	// same transaction removes entries evicted by the in-memory per-node LRU.
-	if _, err := tx.ExecContext(ctx, "DELETE FROM node_domain_latency"); err != nil {
-		return fmt.Errorf("replace domain latency snapshot: %w", err)
+	// Replace bounded caches only for touched nodes, preserving LRU eviction
+	// semantics without rebuilding every other node's cache on a traffic update.
+	if fullDomains {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM node_domain_latency"); err != nil {
+			return fmt.Errorf("replace domain latency snapshot: %w", err)
+		}
+	} else if len(domainNodes)+len(removedNodes) > 0 {
+		statement, err := tx.PrepareContext(ctx, "DELETE FROM node_domain_latency WHERE node_id = ?")
+		if err != nil {
+			return fmt.Errorf("prepare domain latency changes: %w", err)
+		}
+		defer statement.Close()
+		for _, tags := range [][]string{domainNodes, removedNodes} {
+			for _, tag := range tags {
+				if _, err := statement.ExecContext(ctx, tag); err != nil {
+					return fmt.Errorf("replace node domain latency: %w", err)
+				}
+			}
+		}
 	}
 	var domainStatement *sql.Stmt
 	for _, record := range domains {

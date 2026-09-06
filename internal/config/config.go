@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2494,7 +2495,23 @@ func buildShadowsocksURI(p clashProxy) string {
 	}
 	// Encode method:password in base64
 	userInfo := base64.RawURLEncoding.EncodeToString([]byte(p.Cipher + ":" + p.Password))
-	return fmt.Sprintf("ss://%s@%s#%s", userInfo, endpoint, url.QueryEscape(p.Name))
+	query := ""
+	if plugin := strings.TrimSpace(p.Plugin); plugin != "" {
+		// Preserve the requirement so candidate construction can explicitly reject
+		// unsupported external plugins. Dropping it silently changes the protocol.
+		keys := make([]string, 0, len(p.PluginOpts))
+		for key := range p.PluginOpts {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			plugin += ";" + key + "=" + fmt.Sprint(p.PluginOpts[key])
+		}
+		query = "?" + url.Values{"plugin": {plugin}}.Encode()
+	} else if len(p.PluginOpts) > 0 {
+		return "" // Options without a plugin name cannot define a usable transport.
+	}
+	return fmt.Sprintf("ss://%s@%s%s#%s", userInfo, endpoint, query, url.QueryEscape(p.Name))
 }
 
 func buildHysteria2URI(p clashProxy) string {

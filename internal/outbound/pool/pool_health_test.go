@@ -259,7 +259,7 @@ func TestSupersededPoolProbeCannotMarkReplacementHealthy(t *testing.T) {
 	outbound := &gatedProbeOutbound{started: make(chan struct{}), release: make(chan struct{})}
 	member := &memberState{tag: "replacement", outbound: outbound, entry: entry}
 	proxyPool := &poolOutbound{monitor: monitorManager}
-	entry.SetProbe(proxyPool.makeProbeFunc(member))
+	proxyPool.registerProbe(member)
 
 	probeResult := make(chan error, 1)
 	go func() {
