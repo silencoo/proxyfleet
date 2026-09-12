@@ -31,6 +31,40 @@ func (o *probeTransportOutbound) DialContext(ctx context.Context, _ string, _ M.
 
 type probeNoDeadlineConn struct{ net.Conn }
 
+func TestPoolProbePreservesHostAuthority(t *testing.T) {
+	for _, host := range []string{"example.test:8080", "127.0.0.1:8080", "[2001:db8::1]:8080", "example.test:443"} {
+		t.Run(host, func(t *testing.T) {
+			hosts := make(chan string, 1)
+			outbound := &probeTransportOutbound{dial: func(context.Context) (net.Conn, error) {
+				client, server := net.Pipe()
+				go func() {
+					defer server.Close()
+					request, err := http.ReadRequest(bufio.NewReader(server))
+					if err != nil {
+						return
+					}
+					hosts <- request.Host
+					_, _ = io.WriteString(server, "HTTP/1.1 204 No Content\r\n\r\n")
+				}()
+				return client, nil
+			}}
+			target, _, err := monitor.ResolveProbeTarget("http://"+host+"/health", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			proxyPool := &poolOutbound{}
+			if _, err := proxyPool.probeMember(ctx, &memberState{outbound: outbound}, target); err != nil {
+				t.Fatal(err)
+			}
+			if got := <-hosts; got != host {
+				t.Fatalf("HTTP Host=%q want=%q", got, host)
+			}
+		})
+	}
+}
+
 func (c probeNoDeadlineConn) SetDeadline(time.Time) error { return nil }
 
 func TestProbeWatchdogTimeoutUsesCooldownNotBlacklist(t *testing.T) {

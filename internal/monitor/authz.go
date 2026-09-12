@@ -85,6 +85,20 @@ func (w *responseStatusRecorder) Write(data []byte) (int, error) {
 	return w.ResponseWriter.Write(data)
 }
 
+func (w *responseStatusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+type flushingStatusRecorder struct {
+	*responseStatusRecorder
+	flusher http.Flusher
+}
+
+func (w *flushingStatusRecorder) Flush() {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	w.flusher.Flush()
+}
+
 func (s *Server) serveAuthorized(w http.ResponseWriter, r *http.Request, role Role, next http.HandlerFunc) {
 	r = r.WithContext(context.WithValue(r.Context(), requestRoleContextKey{}, role))
 	if !isUnsafeHTTPMethod(r.Method) {
@@ -92,7 +106,11 @@ func (s *Server) serveAuthorized(w http.ResponseWriter, r *http.Request, role Ro
 		return
 	}
 	recorder := &responseStatusRecorder{ResponseWriter: w}
-	next(recorder, r)
+	var writer http.ResponseWriter = recorder
+	if flusher, ok := w.(http.Flusher); ok {
+		writer = &flushingStatusRecorder{responseStatusRecorder: recorder, flusher: flusher}
+	}
+	next(writer, r)
 	status := recorder.status
 	if status == 0 {
 		status = http.StatusOK

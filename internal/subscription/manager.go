@@ -950,6 +950,9 @@ type candidateNodeTaggedError interface {
 }
 
 func (m *Manager) commitRefreshPlan(ctx context.Context, desired *config.Config, subscriptionNodes []config.NodeConfig, targetSequence, pendingGeneration uint64, expectedRevision *uint64) (*config.Config, string, error) {
+	if err := config.ValidateSubscriptionAggregate(subscriptionNodes); err != nil {
+		return nil, "", err
+	}
 	policy := desired.SubscriptionNodeFailurePolicyOrDefault()
 	workingNodes, failures, err := filterSubscriptionNodesForBuild(subscriptionNodes, desired.SkipCertVerify, policy)
 	if err != nil {
@@ -1468,7 +1471,15 @@ func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Con
 	var lastErr error
 	for _, result := range results {
 		plan.activeKeys[result.Key] = struct{}{}
+		// A safety-limit rejection is not a transient source outage. Do not
+		// replace it with cached nodes and accidentally accept an oversized plan.
+		if errors.Is(result.Err, config.ErrSubscriptionAggregateLimit) {
+			return plan, result.Err
+		}
 		if result.Err == nil && len(result.Nodes) > 0 {
+			if err := config.ValidateSubscriptionAggregate(plan.nodes, result.Nodes); err != nil {
+				return plan, err
+			}
 			nodes := cloneNodes(result.Nodes)
 			plan.nodes = append(plan.nodes, nodes...)
 			plan.cacheUpdates[result.Key] = nodes
@@ -1479,6 +1490,9 @@ func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Con
 		cached := cloneNodes(m.sourceCache[result.Key])
 		m.mu.RUnlock()
 		if len(cached) > 0 {
+			if err := config.ValidateSubscriptionAggregate(plan.nodes, cached); err != nil {
+				return plan, err
+			}
 			m.logger.Warnf("using %d cached nodes for one unavailable subscription", len(cached))
 			plan.nodes = append(plan.nodes, cached...)
 			plan.fallbackKeys[result.Key] = struct{}{}
@@ -1502,12 +1516,18 @@ func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Con
 			if len(cached) == 0 {
 				return plan, fmt.Errorf("subscription source cache is not initialized; run a full refresh first")
 			}
+			if err := config.ValidateSubscriptionAggregate(plan.nodes, cached); err != nil {
+				return plan, err
+			}
 			plan.nodes = append(plan.nodes, cached...)
 		}
 	}
 
 	if unresolved > 0 && allowAggregateFallback {
-		cachedNodes, cacheErr := config.LoadNodesFromFile(nodesFilePath)
+		cachedNodes, cacheErr := config.LoadSubscriptionCache(nodesFilePath)
+		if errors.Is(cacheErr, config.ErrSubscriptionAggregateLimit) {
+			return plan, cacheErr
+		}
 		if cacheErr == nil && len(cachedNodes) > 0 {
 			cachedNodes, _ = config.DedupeNodesByStableIdentity(cachedNodes)
 			m.logger.Warnf("keeping %d aggregate cached nodes because %d subscription sources have no runtime cache", len(cachedNodes), unresolved)
@@ -1538,7 +1558,7 @@ func (m *Manager) fetchAllSubscriptions(ctx context.Context, baseCfg *config.Con
 	if len(plan.nodes) == 0 {
 		return plan, fmt.Errorf("no nodes fetched from subscriptions")
 	}
-	return plan, nil
+	return plan, config.ValidateSubscriptionAggregate(plan.nodes)
 }
 
 func (m *Manager) markSourcesRefreshing(cfg *config.Config, selectedKeys map[string]struct{}) {

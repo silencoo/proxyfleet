@@ -92,15 +92,13 @@ silently run the original upstream image:
 ./start.sh
 ```
 
-Or prepare the bind-mounted files and build manually:
+The app creates a local-only configuration with a random management password
+on first start. Open `http://127.0.0.1:9091`; find the initial password in the
+container logs. `./data` persists the entire configuration and runtime state.
+The script builds before replacing the container and uses private file permissions.
 
-```bash
-cp config.example.yaml config.yaml
-touch nodes.txt
-docker compose up -d --build
-```
-
-Open `http://127.0.0.1:9091` after startup.
+Existing single-file mounts need a one-time migration **before removing the old
+container**. See [Docker storage, migration, and upgrades](docs/docker-deployment.md).
 
 ## Configuration
 
@@ -464,7 +462,7 @@ When all management role passwords are empty, loopback requests run as administr
 
 ### docker-compose.yml
 
-The default setup uses host networking (recommended for automatic port management). Volumes mount `config.yaml` and `nodes.txt`:
+The default setup uses host networking (recommended for automatic port management). The entire data directory is mounted so atomic file replacement and SQLite sidecars work:
 
 ```yaml
 services:
@@ -475,17 +473,19 @@ services:
     container_name: proxyfleet
     restart: unless-stopped
     network_mode: host
+    environment:
+      PROXYFLEET_UID: ${PROXYFLEET_UID:-10001}
+      PROXYFLEET_GID: ${PROXYFLEET_GID:-10001}
     volumes:
-      - ./config.yaml:/etc/proxyfleet/config.yaml
-      - ./nodes.txt:/etc/proxyfleet/nodes.txt
+      - ${PROXYFLEET_DATA_DIR:-./data}:/etc/proxyfleet
       - ./logs:/app/logs
 ```
 
 ### Important Notes
 
 - **Builds this fork**: the default Compose file builds the current checkout instead of pulling the original upstream image.
-- **Create config files first**: `config.yaml` and `nodes.txt` must exist as files before running `docker compose up`. Use `./start.sh` which handles this automatically.
-- **Permissions**: Files must be writable by the container user for WebUI settings to persist. Prefer correct ownership with `0600`/`0640` permissions; avoid world-writable configuration files.
+- **Persistence**: Keep config, node caches, databases, authentication, port maps, and health/history files inside `./data`. Custom paths outside this directory need their own mounts. See the [migration guide](docs/docker-deployment.md) for old containers.
+- **Permissions**: `start.sh` uses the host UID/GID (10001:10001 when invoked as root). The entrypoint applies directory mode `0700` and file mode `0600`, then runs as that non-root user. Keep UID/GID consistent when using Compose manually.
 - **Multi-platform**: Supports amd64 and arm64 architectures.
 - **Reload**: node/subscription changes use a node-level diff. Unchanged listeners and active connections stay up; new candidates are health-checked before cutover when `min_available_nodes` is configured, and removed outbounds drain for `drain_timeout`. Immutable global listener/log changes still require a short validated full-instance handoff.
 

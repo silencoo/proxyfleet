@@ -571,7 +571,7 @@ func (c *Config) normalize() error {
 			nodesFilePath = filepath.Join(filepath.Dir(c.filePath), "nodes.txt")
 			c.NodesFile = nodesFilePath
 		}
-		cachedNodes, cacheErr := loadNodesFromFile(nodesFilePath)
+		cachedNodes, cacheErr := LoadSubscriptionCache(nodesFilePath)
 
 		subNodes, stats := FetchSubscriptionNodes(nil, c.Subscriptions, SubscriptionFetchOptions{
 			Timeout:              c.SubscriptionRefresh.Timeout,
@@ -580,9 +580,19 @@ func (c *Config) normalize() error {
 			HeadersBySourceKey:   c.subscriptionHeadersBySourceKey(),
 			Loggerf:              log.Printf,
 		})
-		if (stats.Failed > 0 || stats.Empty > 0 || len(subNodes) == 0) && cacheErr == nil && len(cachedNodes) > 0 {
+		if stats.LimitExceeded {
+			return ErrSubscriptionAggregateLimit
+		}
+		incomplete := stats.Failed > 0 || stats.Empty > 0 || len(subNodes) == 0
+		if incomplete && errors.Is(cacheErr, ErrSubscriptionAggregateLimit) {
+			return cacheErr
+		}
+		if incomplete && cacheErr == nil && len(cachedNodes) > 0 {
 			log.Printf("⚠️ Keeping %d cached subscription nodes after an incomplete startup refresh", len(cachedNodes))
 			subNodes = cachedNodes
+		}
+		if err := ValidateSubscriptionAggregate(subNodes); err != nil {
+			return err
 		}
 		// Mark subscription nodes. The cache is committed only after BoxManager
 		// successfully starts, so a parseable-but-unbootable subscription cannot

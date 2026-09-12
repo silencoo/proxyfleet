@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +21,9 @@ import (
 )
 
 var subscriptionErrorURLPattern = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
+
+// ErrSubscriptionAggregateLimit must not be treated as a transient fetch outage.
+var ErrSubscriptionAggregateLimit = errors.New("subscription aggregate exceeds configured safety limits")
 
 const (
 	defaultSubscriptionFetchConcurrency = 16
@@ -46,6 +51,7 @@ type SubscriptionFetchStats struct {
 	DedupedURLs   int
 	DedupedNodes  int
 	LastError     error
+	LimitExceeded bool
 }
 
 // SubscriptionFetchOptions controls bounded concurrent subscription loading.
@@ -151,8 +157,8 @@ func FetchSubscriptionSources(ctx context.Context, urls []string, opts Subscript
 		duration time.Duration
 		err      error
 	}
-	jobs := make(chan int)
-	completed := make(chan indexedResult, len(specs))
+	jobs := make(chan int, concurrency)
+	completed := make(chan indexedResult, concurrency)
 	var workers sync.WaitGroup
 	workers.Add(concurrency)
 	for worker := 0; worker < concurrency; worker++ {
@@ -165,42 +171,43 @@ func FetchSubscriptionSources(ctx context.Context, urls []string, opts Subscript
 			}
 		}()
 	}
-	go func() {
-		for index := range specs {
-			jobs <- index
-		}
-		close(jobs)
-		workers.Wait()
-		close(completed)
-	}()
-
+	// Keep only one concurrency-sized window ahead of the ordered consumer.
+	// A slow early source must not let every later source accumulate in memory.
+	for index := 0; index < concurrency; index++ {
+		jobs <- index
+	}
 	results := make([]SubscriptionSourceResult, len(specs))
-	for result := range completed {
+	ready := make([]bool, len(specs))
+	next := 0
+	totalNodes, totalBytes := 0, 0
+	for received := 0; received < len(specs); received++ {
+		result := <-completed
 		spec := specs[result.index]
 		results[result.index] = SubscriptionSourceResult{
-			Key: spec.key, Nodes: cloneSubscriptionNodes(result.nodes),
+			Key: spec.key, Nodes: result.nodes,
 			Duration: result.duration, Err: result.err,
 		}
-	}
-
-	// Apply aggregate semantic limits in stable configured order. The response
-	// byte cap protects the HTTP read, while these caps prevent many compact
-	// nodes or expanded Clash fields from exhausting memory during reload.
-	totalNodes := 0
-	totalBytes := 0
-	for index := range results {
-		if results[index].Err != nil {
-			continue
+		ready[result.index] = true
+		for next < len(specs) && ready[next] {
+			current := &results[next]
+			if current.Err == nil {
+				nodeBytes := subscriptionNodeBytes(current.Nodes)
+				if len(current.Nodes) > MaxSubscriptionNodesTotal-totalNodes || nodeBytes > MaxSubscriptionNodeBytesTotal-totalBytes {
+					current.Nodes = nil
+					current.Err = ErrSubscriptionAggregateLimit
+				} else {
+					totalNodes += len(current.Nodes)
+					totalBytes += nodeBytes
+				}
+			}
+			if index := next + concurrency; index < len(specs) {
+				jobs <- index
+			}
+			next++
 		}
-		nodeBytes := subscriptionNodeBytes(results[index].Nodes)
-		if totalNodes+len(results[index].Nodes) > MaxSubscriptionNodesTotal || totalBytes+nodeBytes > MaxSubscriptionNodeBytesTotal {
-			results[index].Nodes = nil
-			results[index].Err = errors.New("subscription aggregate exceeds configured safety limits")
-			continue
-		}
-		totalNodes += len(results[index].Nodes)
-		totalBytes += nodeBytes
 	}
+	close(jobs)
+	workers.Wait()
 
 	// Aggregate and log in configured order, keeping output deterministic.
 	for index, result := range results {
@@ -208,6 +215,7 @@ func FetchSubscriptionSources(ctx context.Context, urls []string, opts Subscript
 		switch {
 		case result.Err != nil:
 			stats.Failed++
+			stats.LimitExceeded = stats.LimitExceeded || errors.Is(result.Err, ErrSubscriptionAggregateLimit)
 			stats.LastError = result.Err
 			if opts.Loggerf != nil {
 				opts.Loggerf("subscription fetch failed for %s: %v", redacted, result.Err)
@@ -273,6 +281,40 @@ func DedupeNodesByStableIdentity(nodes []NodeConfig) ([]NodeConfig, int) {
 // LoadNodesFromFile reads the URI-per-line cache used as a restart fallback.
 func LoadNodesFromFile(path string) ([]NodeConfig, error) {
 	return loadNodesFromFile(path)
+}
+
+// LoadSubscriptionCache bounds the restart fallback before parsing it. The
+// extra bytes allow CRLF delimiters for the maximum permitted node count.
+func LoadSubscriptionCache(path string) ([]NodeConfig, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	const maxCacheBytes = MaxSubscriptionNodeBytesTotal + 2*MaxSubscriptionNodesTotal
+	reader := &io.LimitedReader{R: file, N: maxCacheBytes + 1}
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 1024), MaxSubscriptionNodeURIBytes+2)
+	var nodes []NodeConfig
+	totalBytes := 0
+	for scanner.Scan() {
+		uri := strings.TrimSpace(scanner.Text())
+		if uri == "" || strings.HasPrefix(uri, "#") || !IsProxyURI(uri) {
+			continue
+		}
+		if len(nodes) >= MaxSubscriptionNodesTotal || len(uri) > MaxSubscriptionNodeURIBytes || len(uri) > MaxSubscriptionNodeBytesTotal-totalBytes {
+			return nil, ErrSubscriptionAggregateLimit
+		}
+		totalBytes += len(uri)
+		nodes = append(nodes, NodeConfig{URI: uri})
+	}
+	if reader.N == 0 || errors.Is(scanner.Err(), bufio.ErrTooLong) {
+		return nil, ErrSubscriptionAggregateLimit
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nodes, nil
 }
 
 // loadNodesFromSubscription is retained for callers that load one source.
@@ -358,6 +400,42 @@ func subscriptionNodeBytes(nodes []NodeConfig) int {
 		total += len(node.Name) + len(node.URI)
 	}
 	return total
+}
+
+// ValidateSubscriptionAggregate checks the complete candidate, including cached
+// sources. Multiple batches can be checked before allocating a combined slice.
+func ValidateSubscriptionAggregate(batches ...[]NodeConfig) error {
+	totalNodes, totalBytes := 0, 0
+	for _, nodes := range batches {
+		if len(nodes) > MaxSubscriptionNodesTotal-totalNodes {
+			return ErrSubscriptionAggregateLimit
+		}
+		totalNodes += len(nodes)
+		for _, node := range nodes {
+			if len(node.URI) > MaxSubscriptionNodeURIBytes || len(node.Name) > MaxSubscriptionNodeNameBytes {
+				return fmt.Errorf("%w: node URI or name is too large", ErrSubscriptionAggregateLimit)
+			}
+			nodeBytes := len(node.URI) + len(node.Name)
+			if nodeBytes > MaxSubscriptionNodeBytesTotal-totalBytes {
+				return ErrSubscriptionAggregateLimit
+			}
+			totalBytes += nodeBytes
+		}
+	}
+	return nil
+}
+
+func sameSubscriptionOrigin(a, b *url.URL) bool {
+	effectivePort := func(u *url.URL) string {
+		if port := u.Port(); port != "" {
+			return port
+		}
+		if strings.EqualFold(u.Scheme, "https") {
+			return "443"
+		}
+		return "80"
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Hostname(), b.Hostname()) && effectivePort(a) == effectivePort(b)
 }
 
 func dedupeSubscriptionURLs(urls []string) ([]subscriptionURLSpec, int) {
@@ -560,6 +638,7 @@ func fetchSubscriptionWithClientAndHeaders(ctx context.Context, client *http.Cli
 	}
 	requestClient := *client
 	originalRedirectPolicy := client.CheckRedirect
+	crossedOrigin := false
 	requestClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return errors.New("stopped after 10 redirects")
@@ -567,8 +646,24 @@ func fetchSubscriptionWithClientAndHeaders(ctx context.Context, client *http.Cli
 		if err := validateSubscriptionURLTarget(next.Context(), next.URL, allowPrivateNetworks); err != nil {
 			return err
 		}
+		if len(via) > 0 && strings.EqualFold(via[len(via)-1].URL.Scheme, "https") && strings.EqualFold(next.URL.Scheme, "http") {
+			return errors.New("subscription redirect would downgrade HTTPS to HTTP")
+		}
 		if originalRedirectPolicy != nil {
-			return originalRedirectPolicy(next, via)
+			if err := originalRedirectPolicy(next, via); err != nil {
+				return err
+			}
+		}
+		crossedOrigin = crossedOrigin || !sameSubscriptionOrigin(request.URL, next.URL)
+		if crossedOrigin {
+			// net/http copies the initial headers on every hop, including when a
+			// chain returns to its original host. Once crossed, never restore them.
+			for name := range headers {
+				next.Header.Del(name)
+			}
+			for _, name := range []string{"Authorization", "Proxy-Authorization", "Cookie", "Referer"} {
+				next.Header.Del(name)
+			}
 		}
 		return nil
 	}

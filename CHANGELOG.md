@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.2] - 2026-09-13
+
+### Fixed
+
+- Strip source-specific headers and referrers after cross-origin subscription redirects; reject HTTPS-to-HTTP redirects. Providers requiring headers at another origin should be configured with that destination URL directly.
+- Preserve SSE flushing through authorization and audit middleware for batch probes.
+- Preserve non-default ports and IPv6 brackets in both pool and candidate-preflight HTTP probes.
+- Enforce subscription aggregate limits across source caches, selected refreshes, startup fallback, and final commits; bound concurrent result retention and stream restart-cache reads.
+- Persist the entire Docker data directory so atomic config/cache replacement and runtime sidecars survive container replacement. Existing single-file mounts require the [documented migration](docs/docker-deployment.md).
+- Make `start.sh` executable, build before replacing a running container, use private data permissions, and reject mistaken mounts without deleting data or generating an insecure fallback.
+
 ## [3.3.0] - 2026-08-04
 
 ### Changed

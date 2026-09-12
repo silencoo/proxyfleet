@@ -1111,13 +1111,7 @@ func (p *poolOutbound) probeMember(ctx context.Context, member *memberState, tar
 	if err != nil {
 		return 0, err
 	}
-	host := target.Host
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	if target.Destination.Port != 80 && target.Destination.Port != 443 {
-		host = target.Destination.AddrString()
-	}
+	host := probetarget.HTTPAuthority(target.Host, target.Destination.Port, target.TLS)
 	setupDuration := time.Since(start)
 	responseLatency, err := probetarget.ProbeHTTP(ctx, conn, host, target.RequestURI)
 	if err != nil {

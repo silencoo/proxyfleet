@@ -1337,13 +1337,7 @@ func probeOutboundConnectionMeasured(ctx context.Context, outbound adapter.Outbo
 		}
 		connection = tlsConn
 	}
-	host := target.Host
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	if target.Destination.Port != 80 && target.Destination.Port != 443 {
-		host = target.Destination.AddrString()
-	}
+	host := probetarget.HTTPAuthority(target.Host, target.Destination.Port, target.TLS)
 	setupDuration := time.Since(start)
 	responseLatency, err := probetarget.ProbeHTTP(ctx, connection, host, target.RequestURI)
 	if err != nil {

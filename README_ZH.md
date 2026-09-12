@@ -89,15 +89,12 @@ Hysteria2 和 TUIC 必须使用 `with_quic`；无标签构建虽然能解析这�
 ./start.sh
 ```
 
-也可以手动准备 bind mount 文件后构建：
+首次启动由程序生成仅监听本机的安全配置和随机管理密码，密码见容器日志。
+访问 `http://127.0.0.1:9091`。配置、节点缓存和运行状态统一保存在 `./data`，
+脚本先构建镜像，成功后才替换容器，并使用私有文件权限。
 
-```bash
-cp config.example.yaml config.yaml
-touch nodes.txt
-docker compose up -d --build
-```
-
-启动后访问 `http://127.0.0.1:9091`。
+旧版本的单文件挂载需要先迁移数据，**不要先删除旧容器**。
+完整步骤见 [Docker 数据目录与升级](docs/docker-deployment.md)。
 
 ## 最小配置示例（Pool）
 

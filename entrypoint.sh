@@ -1,67 +1,32 @@
 #!/bin/sh
-# Fix bind-mount directory issues and ownership, then start ProxyFleet.
+set -eu
+umask 077
 
-OVERRIDE_CONFIG=false
-CONFIG_PATH="/etc/proxyfleet/config.yaml"
+for path in /etc/proxyfleet/config.yaml /etc/proxyfleet/nodes.txt; do
+  if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
+    echo "Expected a regular file: $path. Repair the mount; no fallback configuration was created." >&2
+    exit 1
+  fi
+done
 
-# Check if config.yaml was bind-mounted as a directory (Docker creates directories
-# for non-existent bind-mount sources)
-if [ -d "/etc/proxyfleet/config.yaml" ]; then
-  echo "=======================================================" >&2
-  echo "WARNING: config.yaml is a directory, not a file!" >&2
-  echo "This happens when Docker creates the bind-mount target" >&2
-  echo "before the file exists on the host." >&2
-  echo "" >&2
-  echo "To fix permanently, run on the host:" >&2
-  echo "  docker compose down && rm -rf config.yaml && touch config.yaml && docker compose up -d" >&2
-  echo "Or use start.sh which handles this automatically." >&2
-  echo "=======================================================" >&2
-
-  CONFIG_PATH="/tmp/default_config.yaml"
-  cat > "$CONFIG_PATH" <<'YAML'
-mode: pool
-
-listener:
-  address: 0.0.0.0
-  port: 2323
-
-pool:
-  mode: balance
-
-management:
-  enabled: true
-  listen: 0.0.0.0:9091
-  password: ""
-
-dns:
-  server: 223.5.5.5
-  port: 53
-  strategy: prefer_ipv4
-YAML
-  OVERRIDE_CONFIG=true
-  echo "INFO: Using fallback config at $CONFIG_PATH" >&2
+if [ "$(id -u)" = 0 ]; then
+  runtime_uid="${PROXYFLEET_UID:-10001}"
+  runtime_gid="${PROXYFLEET_GID:-10001}"
+  case "$runtime_uid" in ''|*[!0-9]*) echo "PROXYFLEET_UID must be numeric" >&2; exit 1;; esac
+  case "$runtime_gid" in ''|*[!0-9]*) echo "PROXYFLEET_GID must be numeric" >&2; exit 1;; esac
+  if [ "$runtime_uid" -eq 0 ]; then
+    echo "PROXYFLEET_UID must be non-root" >&2
+    exit 1
+  fi
+  mkdir -p /etc/proxyfleet /app/logs
+  # Do not follow symlinks or change ownership of /app and the executable.
+  find /etc/proxyfleet /app/logs -type d -exec chown "$runtime_uid:$runtime_gid" {} + -exec chmod 700 {} +
+  find /etc/proxyfleet /app/logs -type f -exec chown "$runtime_uid:$runtime_gid" {} + -exec chmod 600 {} +
+  exec gosu "$runtime_uid:$runtime_gid" /usr/local/bin/proxyfleet "$@"
 fi
 
-# Check if nodes.txt was bind-mounted as a directory
-if [ -d "/etc/proxyfleet/nodes.txt" ]; then
-  echo "=======================================================" >&2
-  echo "WARNING: nodes.txt is a directory, not a file!" >&2
-  echo "This happens when Docker creates the bind-mount target" >&2
-  echo "before the file exists on the host." >&2
-  echo "" >&2
-  echo "To fix permanently, run on the host:" >&2
-  echo "  docker compose down && rm -rf nodes.txt && touch nodes.txt && docker compose up -d" >&2
-  echo "Or use start.sh which handles this automatically." >&2
-  echo "=======================================================" >&2
-fi
-
-# Fix ownership of mounted config directory so the non-root user can write
-chown -R easy:easy /etc/proxyfleet 2>/dev/null || true
-chown -R easy:easy /app 2>/dev/null || true
-
-if [ "$OVERRIDE_CONFIG" = "true" ]; then
-  chown easy:easy "$CONFIG_PATH" 2>/dev/null || true
-  exec gosu easy /usr/local/bin/proxyfleet --config "$CONFIG_PATH"
-else
-  exec gosu easy /usr/local/bin/proxyfleet "$@"
-fi
+# Explicit docker --user is supported when the mounted directories are already
+# owned by that user. Fail on unusable mounts instead of hiding permission errors.
+test -w /etc/proxyfleet
+test -w /app/logs
+exec /usr/local/bin/proxyfleet "$@"

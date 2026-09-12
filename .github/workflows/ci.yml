@@ -9,6 +9,20 @@ permissions:
   contents: read
 
 jobs:
+  docker-persistence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check startup and Compose configuration
+        run: |
+          python3 tests/deployment/start_test.py
+          docker compose config --quiet
+          docker compose -f docker-compose.dev.yml config --quiet
+      - name: Build container
+        run: docker build -t proxyfleet:smoke .
+      - name: Verify API writes and persistence across container replacement
+        run: python3 tests/deployment/persistence_smoke.py --image proxyfleet:smoke
+
   go-test:
     runs-on: ubuntu-latest
     steps:

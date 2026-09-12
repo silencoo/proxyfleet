@@ -19,6 +19,18 @@ type Target struct {
 	RequestURI string
 }
 
+// HTTPAuthority retains IPv6 brackets and any port that is not the default for
+// the request scheme. The TLS server name remains the unbracketed Host.
+func HTTPAuthority(host string, port uint16, tls bool) string {
+	if (tls && port == 443) || (!tls && port == 80) {
+		if strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(int(port)))
+}
+
 // Parse accepts an HTTP(S) URL or an explicit host:port. An empty value is a
 // deliberate disabled state and is reported with ready=false.
 func Parse(value string) (target Target, ready bool, err error) {

@@ -156,6 +156,7 @@ type responsePreflightOutbound struct {
 	adapter.Outbound
 	response string
 	paths    chan string
+	hosts    chan string
 }
 
 func (o *responsePreflightOutbound) DialContext(context.Context, string, M.Socksaddr) (net.Conn, error) {
@@ -167,9 +168,32 @@ func (o *responsePreflightOutbound) DialContext(context.Context, string, M.Socks
 			return
 		}
 		o.paths <- request.RequestURI
+		if o.hosts != nil {
+			o.hosts <- request.Host
+		}
 		_, _ = io.WriteString(server, o.response)
 	}()
 	return client, nil
+}
+
+func TestPreflightPreservesProbeHostAuthority(t *testing.T) {
+	for _, host := range []string{"example.test:8080", "127.0.0.1:8080", "[2001:db8::1]:8080", "example.test:443"} {
+		t.Run(host, func(t *testing.T) {
+			outbound := &responsePreflightOutbound{response: "HTTP/1.1 204 No Content\r\n\r\n", paths: make(chan string, 1), hosts: make(chan string, 1)}
+			target, _, err := monitor.ResolveProbeTarget("http://"+host+"/health", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := probeOutboundConnection(ctx, outbound, target); err != nil {
+				t.Fatal(err)
+			}
+			if got := <-outbound.hosts; got != host {
+				t.Fatalf("HTTP Host=%q want=%q", got, host)
+			}
+		})
+	}
 }
 
 func TestPreflightValidatesHTTPStatusAndConfiguredPath(t *testing.T) {

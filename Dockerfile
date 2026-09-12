@@ -11,12 +11,12 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates gosu \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -r -u 10001 easy \
-    && mkdir -p /etc/proxyfleet \
-    && chown -R easy:easy /etc/proxyfleet
+    && groupadd -r -g 10001 easy \
+    && useradd -r -u 10001 -g easy easy \
+    && mkdir -p /etc/proxyfleet /app/logs \
+    && chown -R easy:easy /etc/proxyfleet /app/logs
 WORKDIR /app
 COPY --from=builder /src/proxyfleet /usr/local/bin/proxyfleet
-COPY --chown=easy:easy config.example.yaml /etc/proxyfleet/config.yaml
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 # Pool/Hybrid mode: 2323, Management: 9091, Multi-port/Hybrid mode: 24000-24200
