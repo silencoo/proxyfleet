@@ -68,7 +68,7 @@ func TestBuildNodeOutboundSafeConvertsPanicWithoutPayloadLeak(t *testing.T) {
 
 func TestBuildNodeOutboundSafeRedactsMalformedURI(t *testing.T) {
 	const secret = "password-must-not-leak"
-	_, err := buildNodeOutboundSafe("safe-node-tag", "socks5://user:"+secret+"@example.com%zz:1080", false)
+	_, err := buildNodeOutboundSafe("safe-node-tag", "socks5://user:"+secret+"@example.com%zz:1080", false, "default")
 	if err == nil {
 		t.Fatal("expected malformed URI error")
 	}

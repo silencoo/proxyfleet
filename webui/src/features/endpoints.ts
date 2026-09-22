@@ -133,6 +133,7 @@ class EndpointController implements EndpointsModule {
   }
 
   private renderRows(): void {
+    queueMicrotask(() => this.mount.dispatchEvent(new Event('settings-structure-change', {bubbles:true})));
     const list = this.mount.querySelector<HTMLElement>('[data-endpoint-list]');
     if (!list) return;
     if (!this.endpoints.length) {
@@ -167,7 +168,9 @@ class EndpointController implements EndpointsModule {
   }
 
   private profileOptions(selected: string): string {
-    return '<option value="">全部节点</option>' + this.profiles.map(profile => `<option value="${escapeHTML(profile.name)}" ${profile.name === selected ? 'selected' : ''}>${escapeHTML(profile.name)}</option>`).join('');
+    const missing = selected && !this.profiles.some(profile => profile.name === selected)
+      ? `<option value="${escapeHTML(selected)}" selected>${escapeHTML(selected)} · ${tr('不存在')}</option>` : '';
+    return '<option value="">全部节点</option>' + missing + this.profiles.map(profile => `<option value="${escapeHTML(profile.name)}" ${profile.name === selected ? 'selected' : ''}>${escapeHTML(profile.name)}</option>`).join('');
   }
 
   private refreshProfileOptions(): void {

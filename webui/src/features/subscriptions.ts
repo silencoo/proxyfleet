@@ -143,6 +143,7 @@ class SubscriptionController implements SubscriptionsModule {
   }
 
   private renderRows(): void {
+    queueMicrotask(() => this.mount.dispatchEvent(new Event('settings-structure-change', {bubbles:true})));
     const list = this.mount.querySelector<HTMLElement>('[data-source-list]');
     if (!list) return;
     if (!this.sources.length) {

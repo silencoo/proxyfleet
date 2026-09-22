@@ -9,6 +9,9 @@
 config.yaml
 nodes.txt
 node-auth.yaml
+.env
+.env.*
+!.env.example
 
 # GeoIP database (auto-downloaded)
 *.mmdb
@@ -27,6 +30,8 @@ data/
 health-state.yaml
 port-map.yaml
 monitor-history.json
+job-sessions.json
+__pycache__/
 
 # IDE and editor
 .idea/

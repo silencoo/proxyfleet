@@ -47,6 +47,9 @@ interface AccessInfo {
 }
 
 interface AccessEndpoint {
+
+  job?: string;
+  job_mode?: string;
   name: string;
   enabled: boolean;
   host: string;
@@ -91,9 +94,9 @@ class ProfileController implements ProfilesModule {
   load(profiles: ProfileConfig[]): void {
     this.profiles = Array.isArray(profiles) ? profiles.map(profile => ({
       name: String(profile.name || ''), regions: [...(profile.regions || [])],
-      name_regex: '', tag_rules: {
+      name_regex: String(profile.name_regex || ''), tag_rules: {
         any: [...(profile.tag_rules?.any || [])],
-        must: [...(profile.tag_rules?.must || (profile.name_regex ? [profile.name_regex] : []))],
+        must: [...(profile.tag_rules?.must || [])],
         must_not: [...(profile.tag_rules?.must_not || [])],
       }, protocols: [...(profile.protocols || [])],
       sources: [...(profile.sources || [])], min_quality: Number(profile.min_quality) || 0,
@@ -110,7 +113,7 @@ class ProfileController implements ProfilesModule {
     return {
       name: this.value(row, 'name').toLowerCase(),
       regions: splitList(this.value(row, 'regions')),
-      name_regex: '',
+      name_regex: this.value(row, 'name_regex'),
       tag_rules: {
         any: splitRules(this.value(row, 'tag_any')),
         must: splitRules(this.value(row, 'tag_must')),
@@ -130,6 +133,9 @@ class ProfileController implements ProfilesModule {
       if (names.has(profile.name)) return this.invalid(tr('Profile 名称重复：{name}', {name: profile.name}));
       names.add(profile.name);
       if (profile.min_quality < 0 || profile.min_quality > 100) return this.invalid('最低质量分必须在 0 到 100 之间。');
+      if (profile.name_regex) {
+        try { new RegExp(profile.name_regex); } catch { return this.invalid(tr('Profile {name} 的名称正则无效。', {name:profile.name})); }
+      }
       for (const [group, rules] of Object.entries(profile.tag_rules)) {
         if (rules.length > 64) return this.invalid(tr('Profile {name} 的 {group} 规则不能超过 64 条。', {name: profile.name, group}));
         for (let index = 0; index < rules.length; index += 1) {
@@ -171,6 +177,7 @@ class ProfileController implements ProfilesModule {
   }
 
   private renderRows(): void {
+    queueMicrotask(() => this.mount.dispatchEvent(new Event('settings-structure-change', {bubbles:true})));
     const list = this.mount.querySelector<HTMLElement>('[data-profile-list]');
     if (!list) return;
     if (!this.profiles.length) {
@@ -187,6 +194,7 @@ class ProfileController implements ProfilesModule {
             <div class="form-group"><label for="${id}-protocols">协议</label><input id="${id}-protocols" class="setting-input" data-field="protocols" value="${escapeHTML(profile.protocols.join(', '))}" placeholder="vless, hysteria2"></div>
             <div class="form-group"><label for="${id}-sources">来源</label><input id="${id}-sources" class="setting-input" data-field="sources" value="${escapeHTML(profile.sources.join(', '))}" placeholder="subscription"></div>
             <div class="form-group"><label for="${id}-quality">最低质量分</label><input id="${id}-quality" type="number" min="0" max="100" class="setting-input" data-field="min_quality" value="${profile.min_quality}"></div>
+            <div class="form-group"><label for="${id}-name-regex">名称正则（可选）</label><input id="${id}-name-regex" class="setting-input" data-field="name_regex" value="${escapeHTML(profile.name_regex)}"><div class="field-help">与下方规则同时生效；保留 YAML 中的 name_regex 筛选。</div></div>
           </div>
           <div class="profile-rule-grid">
             <div class="form-group"><label for="${id}-any">ANY · 至少命中一条</label><textarea id="${id}-any" class="setting-input tt-mono" data-field="tag_any" rows="3" placeholder="HK|Hong Kong&#10;JP|Japan">${escapeHTML(profile.tag_rules.any.join('\n'))}</textarea><div class="field-help">留空表示不限制；每行一条正则。</div></div>
@@ -256,6 +264,7 @@ class ProfileController implements ProfilesModule {
     }];
     const endpoint = endpoints.find(item => item.name === endpointName) || endpoints[0];
     if (!endpoint) return;
+    const pinned = endpoint.job_mode === 'pinned';
     const profileSelect = this.mount.querySelector<HTMLSelectElement>('[data-access-profile]');
     if (endpoint.profile && profileSelect) profileSelect.value = endpoint.profile;
     if (profileSelect) profileSelect.disabled = Boolean(endpoint.profile);
@@ -263,15 +272,17 @@ class ProfileController implements ProfilesModule {
     const username = profile && !endpoint.profile && endpoint.username ? `${endpoint.username}@${profile}` : endpoint.username;
     const credentials = username ? `${encodeURIComponent(username)}:${encodeURIComponent(endpoint.password)}@` : '';
     const host = endpoint.host.includes(':') ? `[${endpoint.host}]` : endpoint.host;
-    const uri = endpoint.port ? `${scheme}://${credentials}${host}:${endpoint.port}` : '';
+    const uri = endpoint.port && !pinned ? `${scheme}://${credentials}${host}:${endpoint.port}` : '';
     const curl = uri ? `curl --proxy '${uri}' https://api.ipify.org` : '';
     const uriField = this.mount.querySelector<HTMLInputElement>('[data-access-uri]');
     const curlField = this.mount.querySelector<HTMLInputElement>('[data-access-curl]');
     if (uriField) uriField.value = uri;
     if (curlField) curlField.value = curl;
+    this.mount.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach(button => { button.disabled = !uri; });
     const help = this.mount.querySelector<HTMLElement>('[data-access-help]');
     if (help) {
-      if (endpoint.profile) help.textContent = tr('Endpoint {endpoint} 已固定到 Profile {profile}，客户端无需修改用户名。', {endpoint: endpoint.name, profile: endpoint.profile});
+      if (pinned) help.textContent = tr('此入口属于 pinned 任务 {job}，需要会话 ID。请在“抓取任务”的访问助手中生成地址。', {job:endpoint.job || endpoint.name});
+      else if (endpoint.profile) help.textContent = tr('Endpoint {endpoint} 已固定到 Profile {profile}，客户端无需修改用户名。', {endpoint: endpoint.name, profile: endpoint.profile});
       else if (endpoint.username) help.textContent = tr('可选择 Profile；访问用户名会自动生成为 base@profile。');
       else help.textContent = tr('该 Endpoint 未启用认证；如需客户端选择 Profile，请为入口配置用户名和密码，或将 Endpoint 固定到一个 Profile。');
       if (endpoint.status !== 'running') help.textContent += tr(' 当前状态：{status}{message}。', {status: endpoint.status, message: endpoint.message ? ` (${localizedAPIMessage(endpoint.message, '状态异常')})` : ''});

@@ -18,6 +18,8 @@ import (
 	"github.com/silencoo/proxyfleet/internal/commitguard"
 	"github.com/silencoo/proxyfleet/internal/config"
 	"github.com/silencoo/proxyfleet/internal/geoip"
+	sessionin "github.com/silencoo/proxyfleet/internal/inbound/session"
+	"github.com/silencoo/proxyfleet/internal/jobs"
 	"github.com/silencoo/proxyfleet/internal/monitor"
 	"github.com/silencoo/proxyfleet/internal/outbound/pool"
 	"github.com/silencoo/proxyfleet/internal/probetarget"
@@ -93,6 +95,7 @@ func WithLogger(l Logger) Option {
 
 // Manager owns the lifecycle of the active sing-box instance.
 type Manager struct {
+	jobStore *jobs.Store
 	mu       sync.RWMutex
 	reloadMu sync.Mutex
 	startMu  sync.Mutex
@@ -231,6 +234,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	started := false
 	cleanupOnFailure := false
 	var startupPortRollback func() error
+	var resumeJobAssignments func()
 	defer func() {
 		m.reloadMu.Unlock()
 		if cleanupOnFailure && !started {
@@ -238,6 +242,9 @@ func (m *Manager) Start(ctx context.Context) error {
 				_ = startupPortRollback()
 			}
 			_ = m.Close()
+		}
+		if resumeJobAssignments != nil {
+			resumeJobAssignments()
 		}
 	}()
 	m.mu.RLock()
@@ -277,6 +284,12 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.baseCtx = ctx
 	cfg := m.cfg
 	m.mu.Unlock()
+	jobStore, jobErr := jobs.Open(cfg.ResolveManagementPath("", "job-sessions.json"))
+	if jobErr != nil {
+		return fmt.Errorf("load job sessions: %w", jobErr)
+	}
+	m.jobStore = jobStore
+	resumeJobAssignments = m.pauseNewJobAssignments()
 	if err := pool.ConfigureRuntimeState(cfg.RuntimeStatePath(), cfg.HealthStatePath()); err != nil {
 		return fmt.Errorf("load pool runtime state: %w", err)
 	}
@@ -480,6 +493,8 @@ func (m *Manager) reloadRuntimeLocked(operationCtx context.Context, newCfg *conf
 	// Release the old sing-box ports immediately before starting the already
 	// validated replacement. Keep the GeoIP listener published: its dialers are
 	// swapped only after the candidate runtime and region pools are ready.
+	resumeJobAssignments := m.pauseNewJobAssignments()
+	defer resumeJobAssignments()
 	if err := m.discardRuntimeDrains(oldBox); err != nil {
 		_ = built.box.Close()
 		return fmt.Errorf("prepare full runtime handoff: %w", err)
@@ -651,6 +666,8 @@ func (m *Manager) reloadManagementOnlyRuntimeLocked(
 		restoreManagementOnlyState()
 		return err
 	}
+	resumeJobAssignments := m.pauseNewJobAssignments()
+	defer resumeJobAssignments()
 	if err := built.box.Start(); err != nil {
 		_ = built.box.Close()
 		restoreManagementOnlyState()
@@ -780,7 +797,8 @@ func canReloadNodesInPlace(oldCfg, newCfg *config.Config) bool {
 		oldCfg.LogLevel != newCfg.LogLevel ||
 		!reflect.DeepEqual(oldCfg.Log, newCfg.Log) ||
 		!reflect.DeepEqual(oldCfg.GeoIP, newCfg.GeoIP) ||
-		oldCfg.SkipCertVerify != newCfg.SkipCertVerify {
+		oldCfg.SkipCertVerify != newCfg.SkipCertVerify ||
+		oldCfg.CertVerifyModeOrDefault() != newCfg.CertVerifyModeOrDefault() {
 		return false
 	}
 	// Exit-IP classification and region-pool replacement are themselves a
@@ -863,6 +881,10 @@ func (m *Manager) reloadNodesInPlace(
 		rollbackAddedBase()
 		return err
 	}
+	// Proxy ingress bypasses reloadMu. Keep candidate pools from persisting
+	// bindings until this cutover has committed or fully rolled back.
+	resumeJobAssignments := m.pauseNewJobAssignments()
+	defer resumeJobAssignments()
 
 	type outboundChange struct {
 		tag      string
@@ -2184,6 +2206,7 @@ func (m *Manager) createBox(ctx context.Context, cfg *config.Config) (*builtInst
 	maxRetries := len(cfg.Nodes)*3 + 50 // Dynamically scale retries to configuration size
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		inboundRegistry := include.InboundRegistry()
+		sessionin.Register(inboundRegistry)
 		outboundRegistry := include.OutboundRegistry()
 		pool.Register(outboundRegistry)
 		endpointRegistry := include.EndpointRegistry()
@@ -2192,6 +2215,7 @@ func (m *Manager) createBox(ctx context.Context, cfg *config.Config) (*builtInst
 
 		boxCtx := box.Context(ctx, inboundRegistry, outboundRegistry, endpointRegistry, dnsRegistry, serviceRegistry)
 		boxCtx = monitor.ContextWith(boxCtx, m.monitorMgr)
+		boxCtx = jobs.ContextWith(boxCtx, m.jobStore)
 		// Pre-install the service registry so the context retained here observes
 		// the managers that box.New registers on its derived context. This enables
 		// safe runtime InboundManager/OutboundManager Create calls during reload.

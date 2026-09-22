@@ -25,8 +25,8 @@
       document.documentElement.setAttribute('data-theme', visual);
     })();
   </script>
-  <script type="module" crossorigin src="/assets/index-CKyq5k7n.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-BNTc6F8G.css">
+  <script type="module" crossorigin src="/assets/index-CemUdDGv.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-DX3psYdO.css">
 </head>
 <body>
 
@@ -69,6 +69,7 @@
     <div class="nav">
       <button type="button" class="nav-item active" data-tab="dashboard" aria-current="page" onclick="switchTab('dashboard')"><svg class="icon"><use href="#i-dashboard"></use></svg><span>监控看板</span></button>
       <button type="button" class="nav-item" data-tab="manage" data-min-role="admin" onclick="switchTab('manage')"><svg class="icon"><use href="#i-edit"></use></svg><span>节点配置</span></button>
+      <button type="button" class="nav-item" data-tab="jobs" data-min-role="admin" onclick="switchTab('jobs')"><svg class="icon"><use href="#i-network"></use></svg><span>抓取任务</span></button>
       <button type="button" class="nav-item" data-tab="debug" onclick="switchTab('debug')"><svg class="icon"><use href="#i-activity"></use></svg><span>诊断分析</span></button>
       <button type="button" class="nav-item" data-tab="operations" onclick="switchTab('operations')"><svg class="icon"><use href="#i-activity"></use></svg><span>运行中心</span></button>
       <button type="button" class="nav-item" data-tab="logs" onclick="switchTab('logs')"><svg class="icon"><use href="#i-file"></use></svg><span>控制台日志</span></button>
@@ -381,6 +382,7 @@
       </div>
 
       <!-- Settings Tab -->
+      <div id="jobsTab" class="tab-content" data-min-role="admin"><div id="jobRuntimeMount"></div></div>
       <div id="settingsTab" class="tab-content">
         <div style="max-width: 800px; margin: 0 auto;">
           <div style="font-size: 20px; font-weight: 700; margin-bottom: 24px; color: var(--text-main);">系统设置</div>
@@ -470,6 +472,7 @@
                 <div class="form-group adaptive-probe-setting"><label for="settingProbeMaxPerHour">每小时探测预算</label><input type="number" id="settingProbeMaxPerHour" class="setting-input" min="0" max="10000000" placeholder="600" /><div class="field-help">adaptive 中 0 使用默认值 600；耗尽后等下一小时。</div></div>
                 <div class="form-group adaptive-probe-setting"><label for="settingProbeMaxPerDay">每天探测预算</label><input type="number" id="settingProbeMaxPerDay" class="setting-input" min="0" max="100000000" placeholder="5000" /><div class="field-help">adaptive 中 0 使用默认值 5000；小时与每日限制取更严格者。</div></div>
                 <div class="checkbox-row"><input type="checkbox" id="settingSkipCertVerify" /><label for="settingSkipCertVerify">跳过 SSL 证书验证</label></div>
+                <div class="form-group"><label for="settingSkipCertVerifyMode">节点证书校验策略</label><select id="settingSkipCertVerifyMode" class="setting-input" aria-describedby="certVerifyModeHelp"><option value="default">全局默认（节点可覆盖）</option><option value="override">全局强制覆盖</option></select><p id="certVerifyModeHelp" class="field-help">全局默认：节点显式设置优先，否则使用全局开关。强制覆盖：所有节点使用全局开关。</p></div>
                 <div class="settings-help">大池建议使用 adaptive：优先失败或过期节点，复用真实流量的被动健康结果，并同时受每小时与每日预算约束；sample 仍按顺序轮转；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。</div>
               </div>
             </div>
@@ -515,6 +518,7 @@
             </div>
 
             <div id="profileSettingsMount"></div>
+            <div id="jobSettingsMount"></div>
 
             <div class="panel" style="margin-bottom: 16px;">
               <div class="panel-header"><div class="panel-title">管理面板 (Management)</div></div>
@@ -623,7 +627,9 @@
               </div>
             </div>
 
-            <div style="display: flex; justify-content: flex-end; gap: 12px; padding: 8px 0 24px;">
+            <div class="settings-save-bar">
+              <div id="settingsSaveStatus" role="status"></div>
+              <button type="button" class="btn" onclick="reloadSettingsDraft()">重新载入设置</button>
               <button type="submit" class="btn btn-primary" style="padding: 10px 32px; font-size: 14px;"><svg class="icon"><use href="#i-save"></use></svg><span id="settingsSaveLabel">保存配置</span></button>
             </div>
           </form>

@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:release": "node scripts/build.mjs --target windows/amd64 --target linux/amd64",
+    "test:build": "node --test tests/build/build.test.mjs",
     "build:webui": "vite build webui",
     "dev:webui": "vite webui",
     "test:e2e": "playwright test",

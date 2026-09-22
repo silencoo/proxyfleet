@@ -20,6 +20,10 @@
     let settingsETag = '';
     let subscriptionETag = '';
     let subscriptionSettingsLoaded = false;
+    let settingsLoaded = false;
+    let settingsSaving = false;
+    let settingsLoadGeneration = 0;
+    let settingsNavigationPending = false;
     let _lastLogsPayload = null;
     const CHART_FONT_FAMILY = '"Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Segoe UI Variable", "Segoe UI", sans-serif';
     const REGION_CHART_COLORS = Object.freeze({
@@ -325,6 +329,12 @@
       '配置已保存；部分设置将在重启程序后生效': 'Saved. Some settings will take effect after restarting the process.',
       '已保存，重载失败': 'Saved, but reload failed',
       '请求失败': 'Request failed',
+      '节点证书校验策略': 'Node certificate verification policy',
+      '全局默认（节点可覆盖）': 'Global default (node can override)',
+      '全局强制覆盖': 'Force global setting',
+      '全局默认：节点显式设置优先，否则使用全局开关。强制覆盖：所有节点使用全局开关。': 'Global default: explicit node settings take priority; otherwise use the global checkbox. Force global: all nodes use the global checkbox.',
+      '服务器响应格式无效，请重试。': 'Invalid server response. Please retry.',
+      '保存结果无法确认，草稿已保留。请重新载入设置核对。': 'Save could not be confirmed. Your draft is preserved. Reload settings to verify.',
       '会话已过期，请重新登录': 'Your session has expired. Sign in again.',
       '操作成功': 'Operation completed',
       '加载数据失败': 'Failed to load data',
@@ -472,6 +482,9 @@
       '地域（逗号分隔）': 'Regions (comma-separated)',
       '来源': 'Source',
       '最低质量分': 'Minimum quality score',
+      '名称正则（可选）': 'Name regex (optional)',
+      '与下方规则同时生效；保留 YAML 中的 name_regex 筛选。': 'Applies together with the rules below; preserves the YAML name_regex filter.',
+      'Profile {name} 的名称正则无效。': 'Profile {name} has an invalid name regex.',
       'ANY · 至少命中一条': 'ANY · match at least one',
       'MUST · 每条都要命中': 'MUST · match every rule',
       'MUST NOT · 任一命中即排除': 'MUST NOT · exclude on any match',
@@ -688,6 +701,7 @@
       translateTree(document.body);
       const selector = document.getElementById('settingLanguage');
       if (selector) selector.value = currentLanguage;
+      document.dispatchEvent(new CustomEvent('proxyfleet:language'));
       syncAutoRefreshButton();
       syncToggleButton(localStorage.getItem('themeMode') || 'auto');
       if (document.getElementById('dashboardTab').classList.contains('active')) filterByRegion(currentRegionFilter);
@@ -802,16 +816,19 @@
       return /[\u3400-\u9fff]/.test(raw) ? tr(fallback) : raw;
     }
 
-    window.proxyFleetI18n = { tr, translateTree, localizedAPIMessage };
+    window.proxyFleetI18n = { tr, translateTree, localizedAPIMessage, registerMessages: messages => { Object.assign(TRANSLATIONS, messages); translateTree(document.body); } };
 
     async function readAPIJSON(response, fallback='请求失败') {
-      let payload = {};
+      let payload = null;
       try { payload = await response.json(); } catch (_) {}
       if (response.status === 401) {
         showLoginOverlay();
         throw new Error(tr('会话已过期，请重新登录'));
       }
-      if (!response.ok) throw new Error(localizedAPIMessage(payload.error, fallback));
+      if (!response.ok) throw new Error(localizedAPIMessage(payload?.error, fallback));
+      if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+        throw new Error(tr('服务器响应格式无效，请重试。'));
+      }
       return payload;
     }
 
@@ -833,6 +850,10 @@
         const allowed = (ROLE_RANK[currentRole] || 0) >= (ROLE_RANK[element.dataset.minRole] || 99);
         element.hidden = !allowed;
       });
+      if (currentRole !== 'admin') {
+        window.proxyFleetJobRuntime?.setActive(false);
+        if (document.getElementById('jobsTab')?.classList.contains('active') || document.getElementById('settingsTab')?.classList.contains('active')) void switchTab('dashboard');
+      }
     }
 
     async function loadCurrentRole() {
@@ -870,7 +891,19 @@
       } catch (ex) { err.textContent = ex.message; err.style.display = 'block'; }
     }
 
-    function switchTab(name) {
+    async function switchTab(name) {
+      if (settingsSaving) return;
+      if (['settings','manage','jobs'].includes(name) && currentRole !== 'admin') return;
+      if (settingsNavigationPending) return;
+      if (currentRole === 'admin' && name !== 'settings' && document.getElementById('settingsTab').classList.contains('active') && settingsDirty()) {
+        settingsNavigationPending = true;
+        const discard = await requestConfirmation(tr('未保存的更改'), tr('离开将放弃未保存的设置，是否继续？'), tr('放弃更改'));
+        settingsNavigationPending = false;
+        if (!discard) return;
+        _savedCoreSnapshot = '';
+        _savedSubSnapshot = '';
+      }
+      window.proxyFleetJobRuntime?.setActive(name === 'jobs');
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.nav-item').forEach(el => { el.classList.remove('active'); el.removeAttribute('aria-current'); });
       document.getElementById(`${name}Tab`).classList.add('active');
@@ -894,8 +927,42 @@
       } else {
         stopLogPolling();
       }
-      if (name === 'settings') loadSettingsPage();
+      if (name === 'settings' && !settingsDirty()) await loadSettingsPage();
     }
+
+    function _buildSubSnapshot() {
+      return JSON.stringify({
+        sources: window.proxyFleetSubscriptions?.serialize() || [],
+        enabled: document.getElementById('settingSubEnabled').checked,
+        interval: document.getElementById('settingSubInterval').value,
+        fetch_concurrency: parseInt(document.getElementById('settingSubFetchConcurrency').value) || 16,
+        allow_private_networks: document.getElementById('settingSubAllowPrivate').checked,
+        max_removed_ratio: Number(document.getElementById('settingSubMaxRemovedRatio').value) || 0.5,
+        min_available_ratio: Number(document.getElementById('settingSubMinAvailableRatio').value) || 0,
+        quarantine_new_nodes: document.getElementById('settingSubQuarantine').checked,
+        node_failure_policy: document.getElementById('settingSubNodeFailurePolicy').value,
+      });
+    }
+    function settingsDirty() {
+      return (Boolean(_savedCoreSnapshot) && _savedCoreSnapshot !== _buildCoreSnapshot()) ||
+        (subscriptionSettingsLoaded && Boolean(_savedSubSnapshot) && _savedSubSnapshot !== _buildSubSnapshot());
+    }
+    function updateSettingsDraftStatus() {
+      if (settingsLoaded && !settingsSaving) document.getElementById('settingsSaveStatus').textContent = settingsDirty() ? tr('未保存的更改') : '';
+    }
+    async function reloadSettingsDraft() {
+      if (settingsSaving) return;
+      if (settingsNavigationPending) return;
+      if (settingsDirty()) {
+        settingsNavigationPending = true;
+        const discard = await requestConfirmation(tr('未保存的更改'), tr('离开将放弃未保存的设置，是否继续？'), tr('放弃更改'));
+        settingsNavigationPending = false;
+        if (!discard) return;
+      }
+      await loadSettingsPage();
+    }
+    window.addEventListener('beforeunload', event => { if (settingsDirty()) { event.preventDefault(); event.returnValue = ''; } });
+    ['input','change','jobs-draft-change','settings-structure-change'].forEach(type => document.getElementById('settingsTab').addEventListener(type, updateSettingsDraftStatus));
 
     function toggleAutoRefresh() {
       isAutoRefresh = !isAutoRefresh;
@@ -1794,6 +1861,9 @@
     }
 
     async function loadSettingsPage() {
+      const generation = ++settingsLoadGeneration;
+      settingsLoaded = false;
+      document.querySelector('#settingsTab form').inert = true;
       subscriptionSettingsLoaded = false;
       _savedSubSnapshot = '';
       subscriptionETag = '';
@@ -1801,6 +1871,10 @@
       try {
         const r = await fetch('/api/settings');
         const d = await readAPIJSON(r, '加载数据失败');
+        if (generation !== settingsLoadGeneration) return;
+        if (!['pool', 'hybrid', 'multi-port'].includes(d.mode) || (d.jobs != null && !Array.isArray(d.jobs))) {
+          throw new Error(tr('服务器响应格式无效，请重试。'));
+        }
         settingsETag = r.headers.get('ETag') || '';
         document.getElementById('settingLanguage').value = currentLanguage;
         // General
@@ -1808,6 +1882,7 @@
         document.getElementById('settingExternalIP').value = d.external_ip||'';
         document.getElementById('settingProbeTarget').value = d.probe_target||'';
         document.getElementById('settingSkipCertVerify').checked = d.skip_cert_verify||false;
+        document.getElementById('settingSkipCertVerifyMode').value = d.skip_cert_verify_mode || 'default';
         document.getElementById('settingProbeConcurrency').value = d.probe_concurrency || 32;
         document.getElementById('settingProbeMode').value = d.probe_mode || 'all';
         document.getElementById('settingProbeInterval').value = formatDurationForInput(d.probe_interval || '5m');
@@ -1822,6 +1897,7 @@
           username: ls.username || '', password: ls.password || '', profile: '', status: 'waiting',
         }];
         window.proxyFleetEndpoints?.load(endpoints, d.profiles || []);
+        window.proxyFleetJobs?.load(d.jobs || []);
         // Multi-port
         const mp = d.multi_port || {};
         document.getElementById('settingMPAddr').value = mp.address || '';
@@ -1891,6 +1967,7 @@
         try {
           const sr = await fetch('/api/subscription/config');
           const sd = await readAPIJSON(sr, '订阅设置加载失败，请刷新页面后重试');
+          if (generation !== settingsLoadGeneration) return;
           if (!Array.isArray(sd.subscriptions)) throw new Error('invalid subscription settings response');
           subscriptionETag = sr.headers.get('ETag') || '';
           document.getElementById('settingSubEnabled').checked = sd.enabled || false;
@@ -1908,26 +1985,34 @@
           document.getElementById('settingSubNodeFailurePolicy').value = sd.node_failure_policy === 'strict' ? 'strict' : 'skip';
           const sourceStatusResponse = await fetch('/api/subscription/status');
           const sourceStatus = await readAPIJSON(sourceStatusResponse, '订阅源状态加载失败');
+          if (generation !== settingsLoadGeneration) return;
           const sources = Array.isArray(sd.sources) ? sd.sources : (sd.subscriptions || []).map((url, index) => ({name: `source-${index + 1}`, url, enabled: true, refresh_interval: ''}));
           window.proxyFleetSubscriptions?.load(sources, sourceStatus.sources || []);
           _savedSubSnapshot = JSON.stringify({sources: window.proxyFleetSubscriptions?.serialize() || sources, enabled: sd.enabled || false, interval: sel.value, fetch_concurrency: fetchConcurrency, allow_private_networks: sd.allow_private_networks === true, max_removed_ratio: Number(sd.max_removed_ratio) || 0.5, min_available_ratio: Number(sd.min_available_ratio) || 0, quarantine_new_nodes: sd.quarantine_new_nodes !== false, node_failure_policy: sd.node_failure_policy === 'strict' ? 'strict' : 'skip'});
           subscriptionSettingsLoaded = true;
         } catch(e){
+          if (generation !== settingsLoadGeneration) return;
           console.error('Failed to load subscription settings:', e);
           showToast(tr('订阅设置加载失败，请刷新页面后重试'), 'error');
         }
         // Take core snapshot after all fields are populated
+        if (generation !== settingsLoadGeneration) return;
         _savedCoreSnapshot = _buildCoreSnapshot();
-      } catch(e){ console.error('Failed to load settings:', e); showToast(e.message || tr('加载数据失败'), 'error'); }
+        settingsLoaded = true;
+        document.getElementById('settingsSaveStatus').textContent = '';
+      } catch(e){ if (generation !== settingsLoadGeneration) return; console.error('Failed to load settings:', e); showToast(e.message || tr('加载数据失败'), 'error'); document.getElementById('settingsSaveStatus').textContent = tr('设置加载失败，请重试。'); }
+      finally { if (generation === settingsLoadGeneration) document.querySelector('#settingsTab form').inert = false; }
     }
     function _buildCoreSnapshot() {
       return JSON.stringify({
+        jobs: window.proxyFleetJobs?.serialize() || [],
         profiles: window.proxyFleetProfiles?.serialize() || [],
         endpoints: window.proxyFleetEndpoints?.serialize() || [],
         mode: document.getElementById('settingMode').value,
         external_ip: document.getElementById('settingExternalIP').value,
         probe_target: document.getElementById('settingProbeTarget').value,
         skip_cert_verify: document.getElementById('settingSkipCertVerify').checked,
+        skip_cert_verify_mode: document.getElementById('settingSkipCertVerifyMode').value,
         probe_concurrency: document.getElementById('settingProbeConcurrency').value,
         probe_mode: document.getElementById('settingProbeMode').value,
         probe_interval: document.getElementById('settingProbeInterval').value,
@@ -2103,9 +2188,11 @@
 
     async function handleSettingsSave(e) {
       e.preventDefault();
+      if (!settingsLoaded || e.target.querySelector('button[type="submit"]').disabled) return;
       if (!validateProbeDurationSettings()) return;
       if (window.proxyFleetProfiles && !window.proxyFleetProfiles.validate()) return;
       if (window.proxyFleetEndpoints && !window.proxyFleetEndpoints.validate()) return;
+      if (window.proxyFleetJobs && !window.proxyFleetJobs.validate()) return;
       if (window.proxyFleetSubscriptions && !window.proxyFleetSubscriptions.validate()) return;
       const saveBtn = e.target.querySelector('button[type="submit"]');
       const saveLabel = document.getElementById('settingsSaveLabel');
@@ -2156,15 +2243,20 @@
         showToast(tr('配置未变更')); return;
       }
 
+      settingsSaving = true;
+      e.target.inert = true;
+      try {
       // Save core settings if changed
       if (coreChanged) {
         saveBtn.disabled = true; saveLabel.textContent = tr('保存中...'); saveBtn.style.opacity = '0.6';
         const p = {
+          jobs: window.proxyFleetJobs?.serialize() || [],
           profiles: window.proxyFleetProfiles?.serialize() || [],
           endpoints: window.proxyFleetEndpoints?.serialize() || [],
           external_ip: document.getElementById('settingExternalIP').value,
           probe_target: document.getElementById('settingProbeTarget').value,
           skip_cert_verify: document.getElementById('settingSkipCertVerify').checked,
+          skip_cert_verify_mode: document.getElementById('settingSkipCertVerifyMode').value,
           probe_concurrency: parseInt(document.getElementById('settingProbeConcurrency').value) || 32,
           probe_mode: document.getElementById('settingProbeMode').value,
           probe_interval: document.getElementById('settingProbeInterval').value.trim() || '5m',
@@ -2242,18 +2334,21 @@
             auto_update_interval: document.getElementById('settingGeoIPAutoUpdate').checked ? (document.getElementById('settingGeoIPUpdateInterval').value || '24h') : '',
           }
         };
+        let coreResponseOK = false;
         try {
           const r = await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json', 'If-Match': settingsETag}, body:JSON.stringify(p)});
-          const result = await r.json().catch(() => ({}));
+          coreResponseOK = r.ok;
+          const result = r.ok ? await readAPIJSON(r, '保存失败') : await r.json().catch(() => ({}));
           if(!r.ok) {
             if (r.status === 412 || r.status === 428) {
-              await loadSettingsPage();
-              showToast(tr('设置已被其他操作更新，已重新载入'), 'warning');
+              document.getElementById('settingsSaveStatus').textContent = tr('设置已变更，草稿已保留。请重新载入最新配置后再编辑。');
             } else {
-              showToast(localizedAPIMessage(result.error, '保存失败'), 'error');
+              showToast(localizedAPIMessage(result?.error, '保存失败'), 'error');
+              document.getElementById('settingsSaveStatus').textContent = localizedAPIMessage(result?.error, '配置保存失败，草稿已保留。');
             }
             saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return;
           }
+          if (typeof result.message !== 'string') throw new Error(tr('服务器响应格式无效，请重试。'));
           const committedETag = r.headers.get('ETag') || settingsETag;
           settingsETag = committedETag;
           // A successful partial core update preserves the subscription fields,
@@ -2261,8 +2356,10 @@
           subscriptionETag = committedETag || subscriptionETag;
           coreRestartRequired = !!result.need_restart;
           coreAuthChanged = !!result.auth_changed;
-        } catch(e){ showToast(e.message || tr('保存失败'), 'error'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
+        } catch(e){ showToast(e.message || tr('保存失败'), 'error'); document.getElementById('settingsSaveStatus').textContent = tr(coreResponseOK ? '保存结果无法确认，草稿已保留。请重新载入设置核对。' : '配置保存失败，草稿已保留。'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
         _savedCoreSnapshot = currentCoreSnapshot;
+        window.proxyFleetJobs?.markSaved();
+        document.getElementById('settingsSaveStatus').textContent = tr('配置已保存');
       }
 
       // Save subscription config through a fetched, one-time preview plan.
@@ -2278,8 +2375,8 @@
           showFullscreenLoading(tr('更新订阅中...'), tr('正在拉取候选订阅并计算节点差异'));
           const previewResponse = await fetch('/api/subscription/preview', {method:'POST', headers:{'Content-Type':'application/json', 'If-Match': subscriptionETag}, body:JSON.stringify(subPayload)});
           if (previewResponse.status === 412 || previewResponse.status === 428) {
-            hideFullscreenLoading(); await loadSettingsPage();
-            showToast(tr('设置已被其他操作更新，已重新载入'), 'warning');
+            hideFullscreenLoading();
+            document.getElementById('settingsSaveStatus').textContent = tr('设置已变更，草稿已保留。请重新载入最新配置后再编辑。');
             saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return;
           }
           const preview = await readAPIJSON(previewResponse, '订阅预览失败');
@@ -2303,18 +2400,26 @@
           const sr = await fetch('/api/subscription/config', {method:'PUT', headers:{'Content-Type':'application/json', 'If-Match': subscriptionETag}, body:JSON.stringify(applyPayload)});
           hideFullscreenLoading();
           if (sr.status === 412 || sr.status === 428) {
-            await loadSettingsPage();
-            showToast(tr('设置已被其他操作更新，已重新载入'), 'warning');
+            document.getElementById('settingsSaveStatus').textContent = tr('设置已变更，草稿已保留。请重新载入最新配置后再编辑。');
             saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return;
           }
           const sd = await readAPIJSON(sr, '订阅配置保存失败');
           subscriptionETag = sr.headers.get('ETag') || subscriptionETag;
-          const statusResponse = await fetch('/api/subscription/status');
-          const statusData = await readAPIJSON(statusResponse, '订阅源状态加载失败');
-          window.proxyFleetSubscriptions?.load(sd.sources || subSources, statusData.sources || []);
+          settingsETag = subscriptionETag || settingsETag;
+          // The commit succeeded. A later status read must not turn it into a
+          // failed save or cause the next Job edit to use a stale revision.
+          window.proxyFleetSubscriptions?.load(sd.sources || subSources, []);
           _savedSubSnapshot = JSON.stringify({sources: window.proxyFleetSubscriptions?.serialize() || subSources, enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate, max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio, quarantine_new_nodes: subQuarantine, node_failure_policy: subNodeFailurePolicy});
+          document.getElementById('settingsSaveStatus').textContent = tr('配置已保存');
+          try {
+            const statusResponse = await fetch('/api/subscription/status');
+            const statusData = await readAPIJSON(statusResponse, '订阅源状态加载失败');
+            window.proxyFleetSubscriptions?.setStatuses(statusData.sources || []);
+          } catch (error) {
+            document.getElementById('settingsSaveStatus').textContent = tr('订阅已保存，但状态读取失败，请重新载入状态。');
+          }
           showToast(sd.node_count !== undefined ? tr('已保存，获取 {count} 个节点', {count: sd.node_count}) : tr('设置已保存'));
-        } catch(e){ hideFullscreenLoading(); showToast(e.message || tr('订阅配置保存失败'), 'error'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
+        } catch(e){ hideFullscreenLoading(); showToast(e.message || tr('订阅配置保存失败'), 'error'); document.getElementById('settingsSaveStatus').textContent = tr('配置保存失败，草稿已保留。'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
       } else if (coreChanged && !coreRestartRequired) {
         showToast(tr('已保存并重载成功'));
       }
@@ -2328,6 +2433,11 @@
         return;
       }
       refresh();
+      } finally {
+        settingsSaving = false;
+        e.target.inert = false;
+        saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1';
+      }
     }
 
     let logPollInterval = null;

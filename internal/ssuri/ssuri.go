@@ -76,7 +76,8 @@ func parseSIP002(rest string, query url.Values, fragment string) (URI, error) {
 	if err != nil {
 		return URI{}, err
 	}
-	server, port, err := parseHostPort(rest[at+1:])
+	// SIP002 permits a single root slash before the plugin query or fragment.
+	server, port, err := parseHostPort(strings.TrimSuffix(rest[at+1:], "/"))
 	if err != nil {
 		return URI{}, err
 	}
@@ -182,8 +183,8 @@ func parseHostPort(hostPort string) (string, int, error) {
 	if err != nil || !utf8.ValidString(unescaped) || strings.TrimSpace(unescaped) == "" {
 		return "", 0, errors.New("invalid Shadowsocks host")
 	}
-	if strings.ContainsAny(unescaped, "\r\n\x00") {
-		return "", 0, errors.New("invalid control character in Shadowsocks host")
+	if strings.ContainsAny(unescaped, "\r\n\x00/\\?#@") {
+		return "", 0, errors.New("invalid character in Shadowsocks host")
 	}
 	return unescaped, port, nil
 }

@@ -43,6 +43,7 @@ traffic_log:
 
 # 全局跳过 SSL 证书验证（默认 false，不建议在生产环境启用）
 skip_cert_verify: false
+skip_cert_verify_mode: default # default: 节点显式值优先；override: 所有节点强制使用全局开关
 
 # 外部 IP 地址，用于导出配置时替换 0.0.0.0（可选）
 # external_ip: "your.public.ip"
@@ -108,6 +109,39 @@ profiles:
     min_quality: 80
 
 # ───────────────────────────────────────────────────────────────
+# 抓取任务：节点来源 selection 与连接策略 mode 独立选择。
+# selection 默认 manual：直接使用指定 Profile 的可用节点，不做 Job 目标测速，不按 size 缩减。
+# selection: auto 才启用目标测速优选，需要 target_url；两者都支持 pooled / pinned。
+# 完整配置、API 和 Python 客户端见 docs/jobs.md。
+# 两种 Job 均可在 pool/hybrid 下绑定同 Profile 的独立 Endpoint，每个 Job 一个端口。
+# pinned Endpoint 必须配置 username/password，客户端使用 username-session-会话ID。
+# 例如 accounts Endpoint 使用 2325 端口、profile: hk-fast、username: scraper、password: change-me，
+# 代理 URL 为 http://scraper-session-account-a:change-me@127.0.0.1:2325，无需先调管理 API。
+# pinned 若省略 endpoint，保留 hybrid/multi-port 的独立节点端口方式。
+# jobs:
+#   - name: catalog
+#     mode: pooled
+#     selection: auto        # 显式开启自动优选；普通手选池用 manual 并省略测速字段
+#     profile: hk-fast
+#     endpoint: default       # 对应 Endpoint 也需设置 profile: hk-fast
+#     target_url: https://example.com/catalog
+#     size: 5
+#     concurrency: 8          # 由客户端执行的请求并发上限
+#     timeout: 15s
+#     refresh_interval: 10m
+#     probe_batch_size: 32
+#     probe_concurrency: 4
+#     expected_status: 200
+#     max_response_bytes: 2097152
+#     # body_contains: "expected marker"
+#   - name: accounts
+#     mode: pinned
+#     selection: manual      # 默认值，可省略；用 Profile 的名称规则等指定节点集合
+#     profile: hk-fast
+#     endpoint: accounts     # 在 endpoints 列表中添加此入口，并配置上述 Profile 和认证
+#     session_ttl: 30m
+#     max_sessions: 1024
+#
 # 多端口模式配置（multi-port / hybrid 模式使用）
 # ───────────────────────────────────────────────────────────────
 multi_port:

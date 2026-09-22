@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-09-22
+
+### Added
+
+- Scraping Jobs with pooled connections or durable pinned sessions, manual Profile selection or target-specific automatic benchmarking, and complete WebUI configuration and session management. Pinned sessions can use ordinary HTTP/SOCKS5 clients with a session ID in the proxy username.
+- Optional Python Job client with isolated cookies, concurrency limits, timeouts, and explicit session recovery.
+- Built-in Shadowsocks `obfs-http` and `obfs-tls` support, including simple-obfs/SIP003 aliases and Clash subscription options.
+- Unified `npm run build` and `npm run build:release` commands shared by local builds, GitHub releases, and Docker, with full protocol capabilities, version metadata, checksums, and a build manifest.
+
+### Fixed
+
+- Honor per-node certificate verification settings for AnyTLS without an explicit `security=tls` parameter, and preserve explicit settings when importing subscriptions.
+- Add `skip_cert_verify_mode`: `default` lets explicit node settings override the global default; `override` enforces the global setting. Both modes are configurable in the WebUI.
+- Harden Job session persistence, selection caches, benchmark scheduling, settings validation, and recovery from failed or conflicting WebUI saves. Existing pinned sessions never silently move to another node.
+- Replace historical node examples with reserved example domains and dummy credentials; exclude local environment and session files from build contexts.
+
 ## [3.3.2] - 2026-09-13
 
 ### Fixed

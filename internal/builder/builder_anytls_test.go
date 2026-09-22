@@ -19,14 +19,14 @@ import (
 	"github.com/silencoo/proxyfleet/internal/config"
 )
 
-func TestAnyTLSImplicitTLSDoesNotEnablePreviouslyIgnoredBypass(t *testing.T) {
+func TestAnyTLSImplicitTLSHonorsNodeVerificationSetting(t *testing.T) {
 	for _, query := range []string{"allowInsecure=1", "insecure=true", "security=none&allowInsecure=1"} {
 		outbound, err := buildNodeOutbound("anytls", "anytls://test-password@192.0.2.1:443?sni=tls.example.test&"+query, false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if outbound.Options.(*option.AnyTLSOutboundOptions).TLS.Insecure {
-			t.Fatalf("implicit TLS parsing enabled a previously ignored bypass: %s", query)
+		if !outbound.Options.(*option.AnyTLSOutboundOptions).TLS.Insecure {
+			t.Fatalf("implicit TLS ignored the node verification setting: %s", query)
 		}
 	}
 }
@@ -50,21 +50,26 @@ func TestAnyTLSSNIUsesVerifiedCertificate(t *testing.T) {
 	}
 	certificate := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: private}
 	for _, test := range []struct {
-		name, serverName string
-		trust, wantOK    bool
+		name, serverName, query, mode   string
+		trust, wantOK, global, wantSkip bool
 	}{
-		{"correct SNI", "tls.example.test", true, true},
-		{"wrong SNI rejected", "wrong.example.test", true, false},
-		{"untrusted certificate rejected", "tls.example.test", false, false},
+		{name: "correct SNI", serverName: "tls.example.test", trust: true, wantOK: true},
+		{name: "wrong SNI rejected", serverName: "wrong.example.test", trust: true},
+		{name: "untrusted certificate rejected", serverName: "tls.example.test"},
+		{name: "implicit node bypass", serverName: "tls.example.test", query: "&allowInsecure=1", wantOK: true, wantSkip: true},
+		{name: "global override verifies", serverName: "tls.example.test", query: "&allowInsecure=1", mode: "override"},
+		{name: "node false overrides insecure default", serverName: "tls.example.test", query: "&insecure=false", global: true},
+		{name: "global override bypasses", serverName: "tls.example.test", query: "&insecure=false", mode: "override", global: true, wantOK: true, wantSkip: true},
+		{name: "absent node inherits default", serverName: "tls.example.test", global: true, wantOK: true, wantSkip: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			outbound, err := buildNodeOutbound("anytls", "anytls://test-password@192.0.2.1:443?sni="+test.serverName+"&alpn=h2", false)
+			outbound, err := buildNodeOutboundWithPolicy("anytls", "anytls://test-password@192.0.2.1:443?sni="+test.serverName+"&alpn=h2"+test.query, test.global, test.mode)
 			if err != nil {
 				t.Fatal(err)
 			}
 			opts := outbound.Options.(*option.AnyTLSOutboundOptions)
-			if opts.TLS.Insecure {
-				t.Fatal("certificate verification is disabled")
+			if opts.TLS.Insecure != test.wantSkip {
+				t.Fatal("wrong certificate verification policy")
 			}
 			if test.trust {
 				opts.TLS.Certificate = []string{string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))}

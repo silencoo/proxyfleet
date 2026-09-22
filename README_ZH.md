@@ -130,6 +130,24 @@ dns:
 nodes_file: nodes.txt
 ```
 
+## 节点证书校验策略
+
+```yaml
+skip_cert_verify: false
+skip_cert_verify_mode: default # default 或 override
+```
+
+WebUI「系统设置」中的「跳过 SSL 证书验证」和「节点证书校验策略」可配置这两个字段。
+
+| 策略 | 节点显式 true / 1 | 节点显式 false / 0 | 节点未设置 |
+|---|---|---|---|
+| `default`：全局默认（默认值） | 跳过校验 | 校验证书 | 使用全局开关 |
+| `override`：全局强制覆盖 | 使用全局开关 | 使用全局开关 | 使用全局开关 |
+
+AnyTLS 链接即使没有 `security=tls`，也会采用节点的 `allowInsecure` 或 `insecure`。Clash 的 `skip-cert-verify` 保留显式 true 和 false，VMess JSON 也支持 `allowInsecure` / `insecure`。旧配置省略策略时使用 `default`。如需所有上游节点都必须校验证书，设置 `skip_cert_verify_mode: override` 和 `skip_cert_verify: false`。
+
+策略作用于连接代理节点的 TLS；HTTPS 探测和 Job 目标站的校验继续使用既有全局开关，节点覆盖值不会改变目标站校验。保存策略后会重建运行时配置；已有 pinned Job 绑定会保留并显示策略变化，不会自动更换节点。
+
 ## DNS 配置说明
 
 `dns` 会同时影响 sing-box DNS 客户端和 VMess 域名拨号解析：
@@ -186,6 +204,12 @@ Named Profiles 可按地域、协议、来源、节点名称正则和最低质�
 
 管理面板密码为空时，`management.listen` 只允许绑定回环地址；如需对外监听，必须同时配置强密码和原生 TLS 证书/私钥。程序会拒绝启动不安全的远程管理监听。
 
+## 抓取任务 Jobs
+
+WebUI **系统设置 → 抓取任务配置**可编辑全部 Job 参数，与 Profile 和 Endpoint 一起保存；**抓取任务**页面提供运行状态、自动测速、HTTP/SOCKS5 地址生成，以及会话搜索、分页和显式释放。凭据默认遮罩，保存失败或配置冲突保留草稿。手动模式无需填写测速目标。
+
+节点来源与连接策略独立配置：默认 `selection: manual` 直接使用指定 Profile 的可用节点，无需目标 URL 或 Job 测速预热；显式设置 `selection: auto` 才按目标站点实测优选少量节点。两种来源均支持 `pooled`（新连接分配节点）和 `pinned`（固定会话节点）；`pool` / `hybrid` 模式可同时使用，每个 Job 一个固定入口。`pinned` 通过代理用户名 `<username>-session-<id>` 区分会话，普通 HTTP/SOCKS5 客户端无需调用管理 API 或接入 SDK。会话分配持久化，节点失效时暂停，须显式释放才能重新分配。配置、管理 API、限制和 Python 接入示例见 [Jobs 使用文档](docs/jobs.md)。
+
 ## 协议支持注意事项
 
 运行时真正支持的协议：
@@ -202,7 +226,32 @@ Named Profiles 可按地域、协议、来源、节点名称正则和最低质�
 - `anytls`
 - `tuic`
 
-Shadowsocks 支持 SIP002、旧式整段 Base64 和明文兼容形式，但不支持外部 plugin。单个格式错误的节点只会被跳过，不会让整批订阅节点加载失败。
+Shadowsocks 支持 SIP002、旧式整段 Base64、明文兼容形式，以及内置的 simple-obfs HTTP/TLS 混淆，无需安装插件程序。插件名称兼容 `obfs-http`、`obfs-tls`、`obfs-local`、`simple-obfs` 和 Clash 的 `obfs`。后三种通过 `obfs=http/tls` 或 `mode=http/tls` 选择模式，省略时默认 HTTP；`obfs-host` 或 `host` 指定混淆域名，省略时使用 SS 服务器地址。冲突的模式、无效域名、重复参数、不支持的参数或其他插件会按订阅的 skip/strict 策略处理，不会静默降级为普通 SS。
+
+可在 WebUI 节点编辑器填写以下 URI，也可用于内联节点、节点文件及明文/Base64 订阅：
+
+```text
+ss://aes-128-gcm:example-password@ss.example:8388/?plugin=obfs-http%3Bobfs-host%3Dcdn.example#SS-HTTP
+ss://aes-128-gcm:example-password@ss.example:8388/?plugin=obfs-local%3Bobfs%3Dtls%3Bobfs-host%3Dcdn.example#SS-TLS
+```
+
+Clash 订阅格式：
+
+```yaml
+proxies:
+  - name: SS-TLS
+    type: ss
+    server: ss.example
+    port: 8388
+    cipher: aes-128-gcm
+    password: example-password
+    plugin: obfs
+    plugin-opts:
+      mode: tls # 或 http
+      host: cdn.example
+```
+
+分享链接遵循 [SIP002](https://shadowsocks.org/doc/sip002.html)，内部转换为 sing-box 的 `obfs-local`。这些节点可直接用于 pooled/pinned Job，无需改变 Profile/Endpoint 的使用方式。混淆仅作用于 TCP，原生 SS UDP 不经过混淆；`obfs-tls` 是协议伪装，不是验证证书的 TLS 隧道。
 
 ## WebUI
 
@@ -244,8 +293,30 @@ Shadowsocks 支持 SIP002、旧式整段 Base64 和明文兼容形式，但不�
 
 ## 开发验证
 
+统一构建入口（需要 Node.js 22.12+，推荐使用；也支持 20.19.x，以及 `go.mod` 指定的 Go 工具链）：
+
 ```bash
 npm ci
+npm run build         # 当前 Windows/Linux 平台：检查并构建 WebUI，再编译完整功能程序
+npm run build:release # 一次构建 Windows amd64 和 Linux amd64，不会上传或发布
+
+# 单独交叉编译 Linux arm64；也可以重复 --target 构建多个平台
+npm run build -- --target linux/arm64
+# 指定版本；工作区有未提交改动时自动追加 -dirty
+npm run build -- --version v3.3.3
+```
+
+产物固定放在仓库 `dist/`：Windows amd64 为 `proxyfleet.exe`，Linux 为 `proxyfleet-linux-amd64` / `proxyfleet-linux-arm64`。同时生成 `SHA256SUMS.txt` 和 `build-manifest.json`，记录本次构建的文件、版本、提交、UTC 构建时间、完整功能标签和验证方式。未指定版本时从 Git 自动识别；源码压缩包或 Docker 上下文没有 Git 信息时使用 `dev` / `unknown`，可通过 `--version` / `--commit` 指定。`SOURCE_DATE_EPOCH` 可固定构建时间。
+
+所有入口复用 `scripts/build.mjs` 和 `scripts/build-tags.txt`，默认包含 QUIC、gRPC、WireGuard、gVisor、uTLS、Clash API。脚本检查编译产物中的平台与标签，并对本机产物运行 `--version-json`；交叉编译产物只检查 Go 构建信息，清单会区分这两种验证方式。所有目标编译和检查通过后才更新输出；不会清空 `dist/` 或改动运行配置。校验文件仅列出本次请求的目标，旧的其他平台文件会保留。
+
+CI 已提前构建前端时可使用 `--skip-webui`，本地默认不要加这个参数。Docker 会在独立阶段重新构建 WebUI，再调用同一个脚本；镜像版本可通过 `--build-arg VERSION=... --build-arg COMMIT=...` 指定。构建不会替换或重启运行中的服务；之前的 `artifacts/jobs/proxyfleet.exe` 属于历史验证产物，后续使用 `dist/`。
+
+单独运行开发检查：
+
+```bash
+npm ci
+npm run test:build
 npm run check:webui
 npm run build:webui
 npm run test:e2e
@@ -254,7 +325,7 @@ go vet ./...
 
 # webui/dist 会嵌入 EXE；CI 会校验它与 TypeScript/CSS 源码一致。
 # 验证生产/完整协议构建
-go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o proxyfleet ./cmd/proxyfleet
+npm run build
 ```
 
 ## 许可证

@@ -1,6 +1,11 @@
+import { tr } from './i18n';
+
 export async function readJSON<T>(response: Response): Promise<T> {
-  const payload = await response.json().catch(() => ({})) as { error?: string } & T;
-  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+  const payload = await response.json().catch(() => null) as ({ error?: unknown } & T) | null;
+  if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : `Request failed (${response.status})`);
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error(tr('服务器响应格式无效，请重试。'));
+  }
   return payload;
 }
 

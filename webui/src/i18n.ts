@@ -1,4 +1,5 @@
 export interface ProxyFleetI18n {
+	registerMessages?(messages: Record<string,string>): void;
   tr(source: string, values?: Record<string, string | number>): string;
   translateTree(root: ParentNode): void;
   localizedAPIMessage(message: unknown, fallback?: string): string;

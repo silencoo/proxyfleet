@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/jobs"
 	"github.com/silencoo/proxyfleet/internal/monitor"
 	"github.com/silencoo/proxyfleet/internal/probetarget"
 	"github.com/silencoo/proxyfleet/internal/trafficlog"
@@ -45,6 +46,11 @@ var errPoolClosed = errors.New("proxy pool is closed")
 
 // Options controls pool outbound behaviour.
 type Options struct {
+	Jobs              []config.JobConfig
+	JobPolicies       map[string]string
+	JobEndpoints      map[string]config.EndpointConfig
+	ExternalIP        string
+	JobSkipCertVerify bool
 	Mode              string
 	Members           []string
 	FailureThreshold  int
@@ -161,6 +167,11 @@ func (s *memberSet) remove(member *memberState) {
 }
 
 type poolOutbound struct {
+	jobRanksMu sync.Mutex
+	jobRanks   map[string]jobRankCache
+	jobStore   *jobs.Store
+	jobCancel  context.CancelFunc
+	jobCtx     context.Context
 	outbound.Adapter
 	ctx         context.Context
 	logger      singlog.ContextLogger
@@ -182,6 +193,8 @@ type poolOutbound struct {
 	profiles    map[string]*compiledProfile
 	closed      atomic.Bool
 	initialized atomic.Bool
+
+	eligibleVersion atomic.Uint64
 }
 
 func newPool(ctx context.Context, _ adapter.Router, logger singlog.ContextLogger, tag string, options Options) (adapter.Outbound, error) {
@@ -199,6 +212,7 @@ func newPool(ctx context.Context, _ adapter.Router, logger singlog.ContextLogger
 		return nil, err
 	}
 	p := &poolOutbound{
+		jobStore: jobs.FromContext(ctx),
 		// Members are resolved from the already-populated runtime manager. Do not
 		// expose them as manager dependencies: replacement pools otherwise leave
 		// stale dependency edges that prevent drained node outbounds from being
@@ -232,7 +246,11 @@ func (p *poolOutbound) Close() error {
 		p.healthMu.Unlock()
 		return nil
 	}
+	jobCancel := p.jobCancel
 	p.healthMu.Unlock()
+	if jobCancel != nil {
+		jobCancel()
+	}
 	p.mu.Lock()
 	members := append([]*memberState(nil), p.members...)
 	p.mu.Unlock()
@@ -309,6 +327,7 @@ func (p *poolOutbound) Start(stage adapter.StartStage) error {
 	// pre-validate reloads while the old instance is still serving traffic; it
 	// must not replace live monitor callbacks or GeoIP dialers.
 	registerDialer(p.Tag(), p)
+	p.startJobs()
 	return nil
 }
 
@@ -556,6 +575,12 @@ func (p *poolOutbound) pickMemberExcludingForTarget(ctx context.Context, network
 		}
 	}
 	profile := p.profileFromContext(ctx)
+	if job, ok := p.jobFromContext(ctx); ok {
+		if job.Mode == "pinned" {
+			return p.pickPinnedJobMember(ctx, job, network)
+		}
+		return p.pickJobMember(job, network, tried)
+	}
 	if stickyKey != "" && p.sticky != nil {
 		if tag, ok := p.sticky.get(stickyKey, time.Now()); ok {
 			member := p.memberByTag[tag]
@@ -609,6 +634,9 @@ func (p *poolOutbound) selectHealthyMemberExcludingForTarget(network string, tri
 }
 
 func (p *poolOutbound) maxAttempts(ctx context.Context) int {
+	if job, ok := p.jobFromContext(ctx); ok && job.Mode == "pinned" {
+		return 1
+	}
 	if !p.options.RetryEnabled || len(p.members) <= 1 {
 		return 1
 	}
@@ -677,6 +705,7 @@ func (p *poolOutbound) setMemberEligible(member *memberState, eligible bool) {
 		return
 	}
 	p.eligibleMu.Lock()
+	_, wasEligible := p.eligibleTCP.index[member]
 	if eligible && supportsMemberNetwork(member, N.NetworkTCP) {
 		p.eligibleTCP.add(member)
 	} else {
@@ -686,6 +715,9 @@ func (p *poolOutbound) setMemberEligible(member *memberState, eligible bool) {
 		p.eligibleUDP.add(member)
 	} else {
 		p.eligibleUDP.remove(member)
+	}
+	if _, isEligible := p.eligibleTCP.index[member]; isEligible != wasEligible {
+		p.eligibleVersion.Add(1)
 	}
 	p.eligibleMu.Unlock()
 }

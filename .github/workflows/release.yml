@@ -20,7 +20,6 @@ concurrency:
 
 env:
   GO_VERSION_FILE: go.mod
-  BUILD_TAGS: with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api
 
 jobs:
   test-build-release:
@@ -57,7 +56,7 @@ jobs:
         run: go test ./...
 
       - name: Verify full-tag build compiles
-        run: go test -tags "${BUILD_TAGS}" ./...
+        run: go test -tags "$(cat scripts/build-tags.txt)" ./...
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -67,6 +66,9 @@ jobs:
 
       - name: Install WebUI browser test dependencies
         run: npm ci
+
+      - name: Test unified build entry point
+        run: npm run test:build
 
       - name: Type-check and build embedded WebUI
         run: npm run check:webui && npm run build:webui
@@ -82,34 +84,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
-          commit="$(git rev-parse HEAD)"
-          built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          ldflags="-s -w -X github.com/silencoo/proxyfleet/internal/buildinfo.Version=${{ steps.release.outputs.tag }} -X github.com/silencoo/proxyfleet/internal/buildinfo.Commit=${commit} -X github.com/silencoo/proxyfleet/internal/buildinfo.BuiltAt=${built_at}"
-
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -tags "${BUILD_TAGS}" -ldflags "${ldflags}" -o dist/proxyfleet-linux-amd64 ./cmd/proxyfleet
-          dist/proxyfleet-linux-amd64 -version-json | tee dist/build-info-linux-amd64.json
-          jq -e '
-            .official_release_ready == true and
-            .goos == "linux" and
-            .goarch == "amd64" and
-            .capabilities.quic == true and
-            .capabilities.clash_api == true and
-            .capabilities.grpc == true and
-            .capabilities.wireguard == true and
-            .capabilities.gvisor == true and
-            .capabilities.utls == true
-          ' dist/build-info-linux-amd64.json >/dev/null
-
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath -tags "${BUILD_TAGS}" -ldflags "${ldflags}" -o dist/proxyfleet.exe ./cmd/proxyfleet
+          npm run build:release -- --skip-webui --version "${{ steps.release.outputs.tag }}"
           windows_sha256="$(sha256sum dist/proxyfleet.exe | awk '{print $1}')"
           linux_sha256="$(sha256sum dist/proxyfleet-linux-amd64 | awk '{print $1}')"
           echo "windows_sha256=${windows_sha256}" >> "${GITHUB_OUTPUT}"
           echo "linux_sha256=${linux_sha256}" >> "${GITHUB_OUTPUT}"
-          {
-            echo "${windows_sha256}  proxyfleet.exe"
-            echo "${linux_sha256}  proxyfleet-linux-amd64"
-          } > dist/SHA256SUMS.txt
           {
             echo "### ProxyFleet ${{ steps.release.outputs.tag }}"
             echo "- Windows amd64: \`proxyfleet.exe\` - \`${windows_sha256}\`"
@@ -135,8 +114,8 @@ jobs:
           - Checksums: \`SHA256SUMS.txt\`
           EOF
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" dist/proxyfleet.exe dist/proxyfleet-linux-amd64 dist/SHA256SUMS.txt --clobber
+            gh release upload "${RELEASE_TAG}" dist/proxyfleet.exe dist/proxyfleet-linux-amd64 dist/SHA256SUMS.txt dist/build-manifest.json --clobber
             gh release edit "${RELEASE_TAG}" --title "ProxyFleet ${RELEASE_TAG}" --notes-file release-notes.md --latest
           else
-            gh release create "${RELEASE_TAG}" dist/proxyfleet.exe dist/proxyfleet-linux-amd64 dist/SHA256SUMS.txt --verify-tag --title "ProxyFleet ${RELEASE_TAG}" --notes-file release-notes.md --generate-notes --latest
+            gh release create "${RELEASE_TAG}" dist/proxyfleet.exe dist/proxyfleet-linux-amd64 dist/SHA256SUMS.txt dist/build-manifest.json --verify-tag --title "ProxyFleet ${RELEASE_TAG}" --notes-file release-notes.md --generate-notes --latest
           fi

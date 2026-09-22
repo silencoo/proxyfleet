@@ -632,3 +632,64 @@
     }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Jobs reuse the existing controls, spacing, and light/dark theme tokens. */
+.job-toolbar, .job-actions, .job-pagination, .job-row-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.job-toolbar { justify-content:space-between; margin-bottom:16px; }
+.job-toolbar h1 { font-size:20px; }
+.job-toolbar h1, .jobs-editor h2, #jobRuntimeMount h2 { margin:0; }
+.job-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.job-grid > *, .job-toolbar > *, .job-section-body, .job-config-body, #jobRuntimeMount { min-width:0; }
+.job-grid .setting-input { width:100%; min-width:0; }
+.job-help, .job-empty { padding:16px; color:var(--text-muted); }
+.job-config-row { border-top:1px solid var(--border); }
+.job-config-row > summary { display:flex; gap:12px; justify-content:space-between; padding:16px; cursor:pointer; overflow-wrap:anywhere; }
+.job-config-row > summary strong::before { content:'▸'; display:inline-block; width:18px; }
+.job-config-row[open] > summary strong::before { content:'▾'; }
+.job-config-row > summary span { font-size:12px; color:var(--text-muted); }
+.job-config-body, .job-section-body { padding:16px; }
+.job-row-actions { justify-content:flex-end; margin-bottom:12px; }
+.job-fieldset { min-width:0; border:0; border-top:1px solid var(--border); margin-top:20px; padding:16px 0 0; }
+.job-fieldset legend { font-size:13px; font-weight:600; padding-right:10px; }
+.job-response-settings { margin-top:20px; }
+.job-response-settings > summary, .job-status-card summary { cursor:pointer; padding:8px 0; }
+.job-response-settings .job-grid { padding-top:12px; }
+.job-config-body > .field-help { margin-top:12px; }
+.job-error { color:var(--error); overflow-wrap:anywhere; }
+.job-error:not(:empty) { padding:12px 16px; border:1px solid var(--error); margin:12px 0; border-radius:4px; }
+.job-config-body .field-error:not(:empty) { display:block; }
+.job-grid [aria-invalid="true"] { border-color:var(--error); }
+.jobs-editor input, .jobs-editor select { scroll-margin:80px; }
+.job-status-card, .job-access, .job-sessions, .jobs-editor { margin-bottom:16px; }
+.job-status-card .panel-header, .jobs-editor .panel-header { flex-wrap:wrap; gap:12px; }
+.job-status-card .panel-title { overflow-wrap:anywhere; }
+.job-node-list { list-style:none; max-height:320px; overflow:auto; margin-top:8px; }
+.job-node-list li { display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
+.job-summary { margin-bottom:8px; }
+.job-access .job-actions { margin-top:16px; }
+.job-access-result:not(:empty) { margin:16px 0; overflow-wrap:anywhere; }
+.job-access [data-access-output] { margin-top:16px; }
+.job-table-wrap { overflow:auto; }
+.job-session-table { width:100%; border-collapse:collapse; table-layout:fixed; margin:12px 0; }
+.job-session-table th, .job-session-table td { text-align:left; padding:12px 8px; vertical-align:top; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
+.job-session-table th:last-child { width:120px; }
+.job-pagination { justify-content:flex-end; margin-top:12px; }
+.job-pagination > span { margin-right:auto; color:var(--text-muted); }
+.job-pagination input { width:72px; }
+.job-pagination .btn:disabled { cursor:default; opacity:.5; }
+.settings-save-bar { position:sticky; bottom:0; display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:12px; padding:12px 0 max(12px, env(safe-area-inset-bottom)); background:var(--bg-base); border-top:1px solid var(--border); z-index:5; }
+#settingsSaveStatus { color:var(--text-muted); margin-right:auto; flex:1 1 200px; overflow-wrap:anywhere; }
+.jobs-editor button, #jobRuntimeMount button, .settings-save-bar button { cursor:pointer; }
+.jobs-editor button:disabled, #jobRuntimeMount button:disabled { cursor:default; }
+.jobs-editor summary:focus-visible, #jobRuntimeMount summary:focus-visible { outline:2px solid var(--text-main); outline-offset:2px; }
+@media(max-width:600px) {
+  .job-grid { grid-template-columns:minmax(0,1fr); }
+  .job-toolbar { align-items:flex-start; }
+  .job-config-row > summary { flex-direction:column; gap:4px; }
+  .job-session-table { min-width:540px; }
+  .job-access .copy-row { flex-wrap:wrap; }
+  .job-access .copy-row input { flex-basis:100%; }
+  #jobRuntimeMount button, .jobs-editor button { min-height:40px; }
+  .settings-save-bar > button { min-height:40px; }
+  #settingsSaveStatus { flex-basis:100%; }
+}

@@ -85,18 +85,20 @@ const (
 )
 
 type settingsUpdateRequest struct {
-	ExternalIP       *string                  `json:"external_ip,omitempty"`
-	ProbeTarget      *string                  `json:"probe_target,omitempty"`
-	SkipCertVerify   *bool                    `json:"skip_cert_verify,omitempty"`
-	ProbeConcurrency *int                     `json:"probe_concurrency,omitempty"`
-	ProbeMode        *string                  `json:"probe_mode,omitempty"`
-	ProbeInterval    *string                  `json:"probe_interval,omitempty"`
-	ProbeTimeout     *string                  `json:"probe_timeout,omitempty"`
-	ProbeBatchSize   *int                     `json:"probe_batch_size,omitempty"`
-	Mode             *string                  `json:"mode,omitempty"`
-	Profiles         *[]config.ProfileConfig  `json:"profiles,omitempty"`
-	Endpoints        *[]config.EndpointConfig `json:"endpoints,omitempty"`
-	Listener         *struct {
+	ExternalIP         *string                  `json:"external_ip,omitempty"`
+	ProbeTarget        *string                  `json:"probe_target,omitempty"`
+	SkipCertVerify     *bool                    `json:"skip_cert_verify,omitempty"`
+	SkipCertVerifyMode *string                  `json:"skip_cert_verify_mode,omitempty"`
+	ProbeConcurrency   *int                     `json:"probe_concurrency,omitempty"`
+	ProbeMode          *string                  `json:"probe_mode,omitempty"`
+	ProbeInterval      *string                  `json:"probe_interval,omitempty"`
+	ProbeTimeout       *string                  `json:"probe_timeout,omitempty"`
+	ProbeBatchSize     *int                     `json:"probe_batch_size,omitempty"`
+	Mode               *string                  `json:"mode,omitempty"`
+	Profiles           *[]config.ProfileConfig  `json:"profiles,omitempty"`
+	Endpoints          *[]config.EndpointConfig `json:"endpoints,omitempty"`
+	Jobs               *[]config.JobConfig      `json:"jobs,omitempty"`
+	Listener           *struct {
 		Address  string `json:"address"`
 		Port     uint16 `json:"port"`
 		Username string `json:"username"`
@@ -211,6 +213,8 @@ type endpointSettingsResponse struct {
 
 type endpointAccessResponse struct {
 	endpointSettingsResponse
+	Job       string `json:"job,omitempty"`
+	JobMode   string `json:"job_mode,omitempty"`
 	Host      string `json:"host"`
 	HTTPURI   string `json:"http_uri"`
 	Socks5URI string `json:"socks5_uri"`
@@ -483,6 +487,8 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/settings", s.withRole(RoleAdmin, s.handleSettings))
 	mux.HandleFunc("/api/profiles/preview", s.withRole(RoleAdmin, s.handleProfilePreview))
 	mux.HandleFunc("/api/access", s.withRole(RoleAdmin, s.handleAccessAssistant))
+	mux.HandleFunc("/api/jobs", s.withRole(RoleAdmin, s.handleJobs))
+	mux.HandleFunc("/api/jobs/", s.withRole(RoleAdmin, s.handleJobs))
 	mux.HandleFunc("/api/nodes", s.withRole(RoleViewer, s.handleNodes))
 	mux.HandleFunc("/api/nodes/config", s.withRole(RoleAdmin, s.handleConfigNodes))
 	mux.HandleFunc("/api/nodes/config/", s.withRole(RoleAdmin, s.handleConfigNodeItem))
@@ -1492,6 +1498,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	mode := ""
 	var listenerCfg config.ListenerConfig
 	var endpointCfgs []config.EndpointConfig
+	pinnedEndpoints := make(map[string]string)
 	var multiPortCfg config.MultiPortConfig
 	var geoipCfg config.GeoIPConfig
 	externalIP := s.cfg.ExternalIP
@@ -1499,6 +1506,11 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		mode = s.cfgSrc.Mode
 		listenerCfg = s.cfgSrc.Listener
 		endpointCfgs = s.cfgSrc.EffectiveEndpoints()
+		for _, job := range s.cfgSrc.Jobs {
+			if job.Mode == "pinned" && job.Endpoint != "" {
+				pinnedEndpoints[job.Endpoint] = job.Name
+			}
+		}
 		multiPortCfg = s.cfgSrc.MultiPort
 		geoipCfg = s.cfgSrc.GeoIP
 	}
@@ -1508,6 +1520,10 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if mode == "pool" || mode == "hybrid" {
 		for _, endpoint := range endpointCfgs {
 			if !endpoint.EnabledValue() || endpoint.Port == 0 {
+				continue
+			}
+			if job := pinnedEndpoints[endpoint.Name]; job != "" {
+				lines = append(lines, "# Pinned Job "+job+": a session ID is required; generate its URL in the Scraping jobs access helper.")
 				continue
 			}
 			poolAddr := exportAddress(endpoint.Address, externalIP)
@@ -1599,19 +1615,33 @@ func (s *Server) handleAccessAssistant(w http.ResponseWriter, r *http.Request) {
 	}
 	endpoints := endpointSettingsPayload(cfg, nodeMgr)
 	accessEndpoints := make([]endpointAccessResponse, 0, len(endpoints))
+	endpointJobs := make(map[string]config.JobConfig)
+	for _, job := range cfg.Jobs {
+		if job.Endpoint != "" {
+			endpointJobs[job.Endpoint] = job
+		}
+	}
 	for _, endpoint := range endpoints {
+		job := endpointJobs[endpoint.Name]
 		host := exportAddress(endpoint.Address, cfg.ExternalIP)
 		httpURI, _ := formatProxyURI("http", host, endpoint.Port, endpoint.Username, endpoint.Password)
 		socksURI, _ := formatProxyURI("socks5", host, endpoint.Port, endpoint.Username, endpoint.Password)
+		if job.Mode == "pinned" {
+			httpURI, socksURI = "", ""
+		}
 		accessEndpoints = append(accessEndpoints, endpointAccessResponse{
 			endpointSettingsResponse: endpoint,
 			Host:                     host, HTTPURI: httpURI, Socks5URI: socksURI,
+			Job: job.Name, JobMode: job.Mode,
 		})
 	}
 	primary := cfg.PrimaryEndpoint()
 	host := exportAddress(primary.Address, cfg.ExternalIP)
 	httpURI, _ := formatProxyURI("http", host, primary.Port, primary.Username, primary.Password)
 	socksURI, _ := formatProxyURI("socks5", host, primary.Port, primary.Username, primary.Password)
+	if endpointJobs[primary.Name].Mode == "pinned" {
+		httpURI, socksURI = "", ""
+	}
 	writeJSON(w, map[string]any{
 		"mode": cfg.Mode, "host": host, "port": primary.Port,
 		"username": primary.Username, "password": primary.Password,
@@ -2003,6 +2033,12 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 	if request.SkipCertVerify != nil {
 		candidate.SkipCertVerify = *request.SkipCertVerify
 	}
+	if request.SkipCertVerifyMode != nil {
+		candidate.SkipCertVerifyMode = *request.SkipCertVerifyMode
+	}
+	if err := candidate.NormalizeCertVerifyMode(); err != nil {
+		return err
+	}
 	if request.ProbeConcurrency != nil {
 		if *request.ProbeConcurrency < 1 || *request.ProbeConcurrency > maxProbeConcurrency {
 			return fmt.Errorf("探测并发数必须在 1 到 %d 之间", maxProbeConcurrency)
@@ -2064,11 +2100,17 @@ func applySettingsUpdate(candidate *config.Config, request settingsUpdateRequest
 			candidate.Profiles[index].TagRules.MustNot = append([]string(nil), (*request.Profiles)[index].TagRules.MustNot...)
 		}
 	}
+	if request.Jobs != nil {
+		candidate.Jobs = append([]config.JobConfig(nil), (*request.Jobs)...)
+	}
 	if err := candidate.NormalizeProfiles(); err != nil {
 		return fmt.Errorf("Named Profiles 配置无效: %w", err)
 	}
 	if err := candidate.NormalizeEndpoints(); err != nil {
 		return fmt.Errorf("Endpoint 配置无效: %w", err)
+	}
+	if err := candidate.NormalizeJobs(); err != nil {
+		return err
 	}
 	if request.MultiPort != nil {
 		if strings.TrimSpace(request.MultiPort.Address) == "" || request.MultiPort.BasePort == 0 {
@@ -2327,13 +2369,14 @@ func writeSettingsSuccess(w http.ResponseWriter, candidate *config.Config, previ
 		previousAuth.OperatorPassword != candidate.Management.OperatorPassword ||
 		previousAuth.ViewerPassword != candidate.Management.ViewerPassword)
 	writeJSON(w, map[string]any{
-		"message":          "设置已保存并生效",
-		"external_ip":      candidate.ExternalIP,
-		"probe_target":     candidate.Management.ProbeTarget,
-		"skip_cert_verify": candidate.SkipCertVerify,
-		"need_reload":      false,
-		"need_restart":     needRestart,
-		"auth_changed":     passwordChanged,
+		"message":               "设置已保存并生效",
+		"external_ip":           candidate.ExternalIP,
+		"probe_target":          candidate.Management.ProbeTarget,
+		"skip_cert_verify":      candidate.SkipCertVerify,
+		"skip_cert_verify_mode": candidate.CertVerifyModeOrDefault(),
+		"need_reload":           false,
+		"need_restart":          needRestart,
+		"auth_changed":          passwordChanged,
 	})
 }
 
@@ -2375,14 +2418,15 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			probeConcurrency = s.mgr.ProbeConcurrency()
 		}
 		resp := map[string]any{
-			"external_ip":       extIP,
-			"probe_target":      probeTarget,
-			"skip_cert_verify":  skipCertVerify,
-			"probe_concurrency": probeConcurrency,
-			"probe_mode":        cfg.ProbeModeOrDefault(),
-			"probe_interval":    cfg.ProbeIntervalOrDefault().String(),
-			"probe_timeout":     cfg.ProbeTimeoutOrDefault().String(),
-			"probe_batch_size":  cfg.ProbeBatchSizeOrDefault(),
+			"external_ip":           extIP,
+			"probe_target":          probeTarget,
+			"skip_cert_verify":      skipCertVerify,
+			"skip_cert_verify_mode": cfg.CertVerifyModeOrDefault(),
+			"probe_concurrency":     probeConcurrency,
+			"probe_mode":            cfg.ProbeModeOrDefault(),
+			"probe_interval":        cfg.ProbeIntervalOrDefault().String(),
+			"probe_timeout":         cfg.ProbeTimeoutOrDefault().String(),
+			"probe_batch_size":      cfg.ProbeBatchSizeOrDefault(),
 			"log": map[string]any{
 				"output":          logCfg.Output,
 				"file":            logCfg.File,
@@ -2411,6 +2455,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if cfg != nil {
 			resp["mode"] = cfg.Mode
 			resp["profiles"] = cfg.Profiles
+			resp["jobs"] = cfg.Jobs
 			resp["endpoints"] = endpointSettingsPayload(cfg, nodeMgr)
 			resp["listener"] = map[string]any{
 				"address":  cfg.Listener.Address,
@@ -2494,12 +2539,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			ExternalIP       string `json:"external_ip"`
-			ProbeTarget      string `json:"probe_target"`
-			SkipCertVerify   bool   `json:"skip_cert_verify"`
-			ProbeConcurrency int    `json:"probe_concurrency"`
-			Mode             string `json:"mode,omitempty"`
-			Listener         *struct {
+			ExternalIP         string  `json:"external_ip"`
+			ProbeTarget        string  `json:"probe_target"`
+			SkipCertVerify     bool    `json:"skip_cert_verify"`
+			SkipCertVerifyMode *string `json:"skip_cert_verify_mode"`
+			ProbeConcurrency   int     `json:"probe_concurrency"`
+			Mode               string  `json:"mode,omitempty"`
+			Listener           *struct {
 				Address  string `json:"address"`
 				Port     uint16 `json:"port"`
 				Username string `json:"username"`
@@ -2648,6 +2694,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		if req.SkipCertVerifyMode != nil {
+			modeConfig := config.Config{SkipCertVerifyMode: *req.SkipCertVerifyMode}
+			if err := modeConfig.NormalizeCertVerifyMode(); err != nil {
+				writeSettingsBadRequest(w, err.Error())
+				return
+			}
+			*req.SkipCertVerifyMode = modeConfig.SkipCertVerifyMode
+		}
 		probeConcurrency := req.ProbeConcurrency
 		if req.Management != nil && req.Management.ProbeConcurrency > 0 {
 			probeConcurrency = req.Management.ProbeConcurrency
@@ -2665,6 +2719,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.cfgMu.Lock()
 		if s.cfgSrc != nil {
 			previousManagementPassword := s.cfgSrc.Management.Password
+			previousCertVerifyMode := s.cfgSrc.SkipCertVerifyMode
+			if req.SkipCertVerifyMode != nil {
+				s.cfgSrc.SkipCertVerifyMode = *req.SkipCertVerifyMode
+			}
 			if req.Mode != "" {
 				s.cfgSrc.Mode = req.Mode
 			}
@@ -2736,6 +2794,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := s.cfgSrc.SaveSettings(); err != nil {
 				s.cfgSrc.Management.Password = previousManagementPassword
+				s.cfgSrc.SkipCertVerifyMode = previousCertVerifyMode
 				s.cfgMu.Unlock()
 				writeJSONError(w, http.StatusInternalServerError, err.Error())
 				return

@@ -13,6 +13,7 @@ func (c *Config) Clone() *Config {
 
 	clone := *c
 	clone.Nodes = append([]NodeConfig(nil), c.Nodes...)
+	clone.Jobs = append([]JobConfig(nil), c.Jobs...)
 	clone.Subscriptions = append([]string(nil), c.Subscriptions...)
 	clone.SubscriptionSources = cloneSubscriptionSources(c.SubscriptionSources)
 	clone.Endpoints = make([]EndpointConfig, len(c.Endpoints))

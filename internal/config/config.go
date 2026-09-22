@@ -41,12 +41,14 @@ type Config struct {
 	Nodes               []NodeConfig               `yaml:"nodes"`
 	Profiles            []ProfileConfig            `yaml:"profiles,omitempty"`
 	Endpoints           []EndpointConfig           `yaml:"endpoints,omitempty"`
+	Jobs                []JobConfig                `yaml:"jobs,omitempty"`
 	NodesFile           string                     `yaml:"nodes_file"` // 节点文件路径，每行一个 URI
 	Subscriptions       []string                   `yaml:"-" json:"-"` // enabled URL compatibility view
 	SubscriptionSources []SubscriptionSourceConfig `yaml:"subscriptions,omitempty" json:"subscriptions,omitempty"`
 	ExternalIP          string                     `yaml:"external_ip"` // 外部 IP 地址，用于导出时替换 0.0.0.0
 	LogLevel            string                     `yaml:"log_level"`
-	SkipCertVerify      bool                       `yaml:"skip_cert_verify"` // 全局跳过 SSL 证书验证
+	SkipCertVerify      bool                       `yaml:"skip_cert_verify"`      // 全局跳过 SSL 证书验证
+	SkipCertVerifyMode  string                     `yaml:"skip_cert_verify_mode"` // default: node wins; override: global wins
 
 	filePath string `yaml:"-"` // 配置文件路径，用于保存
 }
@@ -452,6 +454,9 @@ func ExtractNodeName(uri string) string {
 }
 
 func (c *Config) normalize() error {
+	if err := c.NormalizeCertVerifyMode(); err != nil {
+		return err
+	}
 	if c.Mode == "" {
 		c.Mode = "pool"
 	}
@@ -480,6 +485,9 @@ func (c *Config) normalize() error {
 		return err
 	}
 	if err := c.normalizeEndpoints(); err != nil {
+		return err
+	}
+	if err := c.NormalizeJobs(); err != nil {
 		return err
 	}
 	if c.MultiPort.Address == "" {
@@ -1173,6 +1181,9 @@ func (c *Config) PersistPortMap() error {
 // NormalizeWithPortMap applies defaults and validation, preserving port assignments
 // for nodes that exist in the provided port map.
 func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
+	if err := c.NormalizeCertVerifyMode(); err != nil {
+		return err
+	}
 	if c.Mode == "" {
 		c.Mode = "pool"
 	}
@@ -1200,6 +1211,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		return err
 	}
 	if err := c.normalizeEndpoints(); err != nil {
+		return err
+	}
+	if err := c.NormalizeJobs(); err != nil {
 		return err
 	}
 	if c.MultiPort.Address == "" {
@@ -1494,7 +1508,7 @@ func (c *Config) normalizeProfiles() error {
 	// Endpoint Manager configuration is intentionally preserved while the
 	// runtime is in multi-port mode. Profiles referenced by those inactive
 	// endpoints therefore remain valid and become active again on mode switch.
-	if !poolMode && len(c.Endpoints) == 0 {
+	if !poolMode && len(c.Endpoints) == 0 && !(c.Mode == "multi-port" && len(c.Jobs) > 0) {
 		return errors.New("named profiles require pool or hybrid mode")
 	}
 	if poolMode && len(c.Endpoints) == 0 && (strings.TrimSpace(c.Listener.Username) == "" || strings.TrimSpace(c.Listener.Password) == "") {
@@ -2231,7 +2245,7 @@ type clashProxy struct {
 	AlterId           int                    `yaml:"alterId"`
 	Network           string                 `yaml:"network"`
 	TLS               bool                   `yaml:"tls"`
-	SkipCertVerify    bool                   `yaml:"skip-cert-verify"`
+	SkipCertVerify    *bool                  `yaml:"skip-cert-verify"`
 	ServerName        string                 `yaml:"servername"`
 	SNI               string                 `yaml:"sni"`
 	Flow              string                 `yaml:"flow"`
@@ -2346,12 +2360,24 @@ func clashProxyEndpoint(p clashProxy) (string, string, bool) {
 	return host, net.JoinHostPort(host, strconv.Itoa(port)), true
 }
 
+// Preserve an explicit false: it overrides a global insecure default.
+func setClashCertVerify(params url.Values, key string, value *bool) {
+	if value != nil {
+		if *value {
+			params.Set(key, "1")
+		} else {
+			params.Set(key, "0")
+		}
+	}
+}
+
 func buildVMessURI(p clashProxy) string {
 	_, endpoint, ok := clashProxyEndpoint(p)
 	if !ok {
 		return ""
 	}
 	params := url.Values{}
+	setClashCertVerify(params, "allowInsecure", p.SkipCertVerify)
 	if p.Network != "" && p.Network != "tcp" {
 		params.Set("type", p.Network)
 	}
@@ -2389,6 +2415,7 @@ func buildVLESSURI(p clashProxy) string {
 		return ""
 	}
 	params := url.Values{}
+	setClashCertVerify(params, "allowInsecure", p.SkipCertVerify)
 	params.Set("encryption", "none")
 
 	if p.Network != "" && p.Network != "tcp" {
@@ -2446,9 +2473,7 @@ func buildTrojanURI(p clashProxy) string {
 	} else if p.SNI != "" {
 		params.Set("sni", p.SNI)
 	}
-	if p.SkipCertVerify {
-		params.Set("allowInsecure", "1")
-	}
+	setClashCertVerify(params, "allowInsecure", p.SkipCertVerify)
 	if p.Network != "" && p.Network != "tcp" {
 		params.Set("type", p.Network)
 	}
@@ -2483,9 +2508,7 @@ func buildAnyTLSURI(p clashProxy) string {
 	} else if p.SNI != "" {
 		params.Set("sni", p.SNI)
 	}
-	if p.SkipCertVerify {
-		params.Set("allowInsecure", "1")
-	}
+	setClashCertVerify(params, "allowInsecure", p.SkipCertVerify)
 	if p.ClientFingerprint != "" {
 		params.Set("fp", p.ClientFingerprint)
 	}
@@ -2507,15 +2530,16 @@ func buildShadowsocksURI(p clashProxy) string {
 	userInfo := base64.RawURLEncoding.EncodeToString([]byte(p.Cipher + ":" + p.Password))
 	query := ""
 	if plugin := strings.TrimSpace(p.Plugin); plugin != "" {
-		// Preserve the requirement so candidate construction can explicitly reject
-		// unsupported external plugins. Dropping it silently changes the protocol.
+		// Preserve the requirement for the outbound builder. Escape each SIP003
+		// component before URL encoding so values cannot introduce new options.
+		escape := strings.NewReplacer(`\`, `\\`, ";", `\;`, "=", `\=`, ":", `\:`)
 		keys := make([]string, 0, len(p.PluginOpts))
 		for key := range p.PluginOpts {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			plugin += ";" + key + "=" + fmt.Sprint(p.PluginOpts[key])
+			plugin += ";" + escape.Replace(key) + "=" + escape.Replace(fmt.Sprint(p.PluginOpts[key]))
 		}
 		query = "?" + url.Values{"plugin": {plugin}}.Encode()
 	} else if len(p.PluginOpts) > 0 {
@@ -2535,9 +2559,7 @@ func buildHysteria2URI(p clashProxy) string {
 	} else if p.SNI != "" {
 		params.Set("sni", p.SNI)
 	}
-	if p.SkipCertVerify {
-		params.Set("insecure", "1")
-	}
+	setClashCertVerify(params, "insecure", p.SkipCertVerify)
 	if p.Obfs != "" {
 		params.Set("obfs", p.Obfs)
 		if p.ObfsPassword != "" {
@@ -2614,9 +2636,7 @@ func buildTUICURI(p clashProxy) string {
 	} else if p.SNI != "" {
 		params.Set("sni", p.SNI)
 	}
-	if p.SkipCertVerify {
-		params.Set("allowInsecure", "1")
-	}
+	setClashCertVerify(params, "allowInsecure", p.SkipCertVerify)
 	if p.CongestionController != "" {
 		params.Set("congestion_control", p.CongestionController)
 	}
@@ -2684,9 +2704,7 @@ func buildHysteriaURI(p clashProxy) string {
 	if peer := firstNonEmpty(p.ServerName, p.SNI, p.PeerSNI); peer != "" {
 		params.Set("peer", peer)
 	}
-	if p.SkipCertVerify {
-		params.Set("insecure", "1")
-	}
+	setClashCertVerify(params, "insecure", p.SkipCertVerify)
 	if p.UpMbps > 0 {
 		params.Set("upmbps", strconv.Itoa(int(p.UpMbps)))
 	}
@@ -3037,6 +3055,7 @@ func (c *Config) transformSettingsData(data []byte) ([]byte, error) {
 	saveCfg.ExternalIP = c.ExternalIP
 	saveCfg.Management.ProbeTarget = c.Management.ProbeTarget
 	saveCfg.SkipCertVerify = c.SkipCertVerify
+	saveCfg.SkipCertVerifyMode = c.CertVerifyModeOrDefault()
 	saveCfg.Log = c.Log
 	saveCfg.TrafficLog = c.TrafficLog
 	saveCfg.Subscriptions = append([]string(nil), c.Subscriptions...)
@@ -3049,6 +3068,7 @@ func (c *Config) transformSettingsData(data []byte) ([]byte, error) {
 	saveCfg.Pool = c.Pool
 	saveCfg.Profiles = c.Profiles
 	saveCfg.Endpoints = c.Endpoints
+	saveCfg.Jobs = c.Jobs
 	saveCfg.Management = c.Management
 
 	newData, err := yaml.Marshal(&saveCfg)

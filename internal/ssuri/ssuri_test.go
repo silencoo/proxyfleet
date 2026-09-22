@@ -20,6 +20,8 @@ func TestParseSupportedFormats(t *testing.T) {
 		{"legacy whole payload", "ss://" + legacy + "#%E9%A6%99%E6%B8%AF", "aes-256-gcm", "p@ss:word", "example.com", 8388, "香港"},
 		{"SIP002 padded userinfo", "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@example.com:8389#Node", "aes-256-gcm", "password", "example.com", 8389, "Node"},
 		{"SIP002 raw URL userinfo", "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:8390", "aes-256-gcm", "password", "example.com", 8390, ""},
+		{"SIP002 root path", "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:8390/?plugin=obfs-tls#TLS", "aes-256-gcm", "password", "example.com", 8390, "TLS"},
+		{"SIP002 IPv6 root path", "ss://aes-128-gcm:password@[2001:db8::1]:443/?plugin=obfs-http", "aes-128-gcm", "password", "2001:db8::1", 443, ""},
 		{"plain escaped userinfo", "shadowsocks://aes-256-gcm:p%40ss%3Aword@example.com:443#node+plus", "aes-256-gcm", "p@ss:word", "example.com", 443, "node+plus"},
 		{"IPv6 and default port", "ss://aes-128-gcm:password@[2001:db8::1]#IPv6", "aes-128-gcm", "password", "2001:db8::1", 8388, "IPv6"},
 		{"Unicode host", "SS://chacha20-ietf-poly1305:password@例子.test:9000#%F0%9F%8C%8F", "chacha20-ietf-poly1305", "password", "例子.test", 9000, "🌏"},
@@ -57,6 +59,9 @@ func TestParseRejectsMalformedOrNonUTF8WithoutLeakingPayload(t *testing.T) {
 		"ss://aes-256-gcm:password@2001:db8::1:8388",
 		"ss://aes-256-gcm:password@[2001:db8::1:8388",
 		"ss://aes-256-gcm:password@example.com:0",
+		"ss://aes-256-gcm:password@example.com:8388/path?plugin=obfs-http",
+		"ss://aes-256-gcm:password@example.com//?plugin=obfs-http",
+		"ss://aes-256-gcm:password@example.com%2Fpath?plugin=obfs-http",
 		"ss://" + nonUTF8,
 		"ss://" + secretPayload,
 	} {

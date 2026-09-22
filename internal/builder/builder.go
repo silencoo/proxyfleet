@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/silencoo/proxyfleet/internal/config"
+	sessionin "github.com/silencoo/proxyfleet/internal/inbound/session"
+	"github.com/silencoo/proxyfleet/internal/jobs"
 	poolout "github.com/silencoo/proxyfleet/internal/outbound/pool"
 	"github.com/silencoo/proxyfleet/internal/ssruri"
 	"github.com/silencoo/proxyfleet/internal/ssuri"
@@ -27,6 +29,9 @@ import (
 
 // Build converts high level config into sing-box Options tree.
 func Build(cfg *config.Config) (option.Options, error) {
+	if mode := cfg.CertVerifyModeOrDefault(); mode != config.CertVerifyDefault && mode != config.CertVerifyOverride {
+		return option.Options{}, errors.New("skip_cert_verify_mode must be default or override")
+	}
 	baseOutbounds := make([]option.Outbound, 0, len(cfg.Nodes))
 	memberTags := make([]string, 0, len(cfg.Nodes))
 	metadata := make(map[string]poolout.MemberMeta)
@@ -50,7 +55,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 			tag = fmt.Sprintf("%s-%d", tag, occurrence+1)
 		}
 
-		outbound, err := buildNodeOutboundSafe(tag, node.URI, cfg.SkipCertVerify)
+		outbound, err := buildNodeOutboundSafe(tag, node.URI, cfg.SkipCertVerify, cfg.CertVerifyModeOrDefault())
 		if err != nil {
 			// The stable tag is safe to expose (it is a hash), while the URI can
 			// contain passwords/tokens and must never be included in diagnostics.
@@ -146,6 +151,12 @@ func Build(cfg *config.Config) (option.Options, error) {
 				if err != nil {
 					return option.Options{}, err
 				}
+				for _, job := range cfg.Jobs {
+					if job.Mode == "pinned" && job.Endpoint == endpoint.Name {
+						inbound.Type = sessionin.Type
+						break
+					}
+				}
 				inbounds = append(inbounds, inbound)
 				if endpoint.Profile != "" {
 					endpointProfiles[inbound.Tag] = endpoint.Profile
@@ -202,6 +213,11 @@ func Build(cfg *config.Config) (option.Options, error) {
 		}
 	}
 	poolOptions := poolout.Options{
+		Jobs:              append([]config.JobConfig(nil), cfg.Jobs...),
+		JobPolicies:       make(map[string]string),
+		JobEndpoints:      make(map[string]config.EndpointConfig),
+		ExternalIP:        cfg.ExternalIP,
+		JobSkipCertVerify: cfg.SkipCertVerify,
 		Mode:              cfg.Pool.Mode,
 		Members:           memberTags,
 		FailureThreshold:  cfg.Pool.FailureThreshold,
@@ -221,6 +237,18 @@ func Build(cfg *config.Config) (option.Options, error) {
 		FailOpen:         cfg.Pool.FailOpen,
 		DedicatedMembers: dedicatedMembers,
 		EndpointProfiles: endpointProfiles,
+	}
+	for _, job := range cfg.Jobs {
+		for _, profile := range cfg.Profiles {
+			if profile.Name == job.Profile {
+				poolOptions.JobPolicies[job.Name] = jobs.PolicyWithCertVerifyMode(job, profile, cfg.SkipCertVerify, cfg.CertVerifyModeOrDefault())
+			}
+		}
+		for _, endpoint := range cfg.EffectiveEndpoints() {
+			if endpoint.Name == job.Endpoint {
+				poolOptions.JobEndpoints[job.Name] = endpoint
+			}
+		}
 	}
 	outbounds = append(outbounds, option.Outbound{
 		Type:    poolout.Type,
@@ -410,9 +438,9 @@ func buildNodeOutbound(tag, rawURI string, skipCertVerify bool) (option.Outbound
 // case from taking down the complete node pool. Panic payloads are deliberately
 // not returned because third-party parsers may include the original URI (and
 // therefore credentials) in them.
-func buildNodeOutboundSafe(tag, rawURI string, skipCertVerify bool) (outbound option.Outbound, err error) {
+func buildNodeOutboundSafe(tag, rawURI string, skipCertVerify bool, mode string) (outbound option.Outbound, err error) {
 	outbound, err = recoverNodeBuild(func() (option.Outbound, error) {
-		return buildNodeOutbound(tag, rawURI, skipCertVerify)
+		return buildNodeOutboundWithPolicy(tag, rawURI, skipCertVerify, mode)
 	})
 	if err != nil {
 		return option.Outbound{}, fmt.Errorf("outbound %q: %s", tag, credentialSafeBuildError(rawURI, err))
@@ -424,7 +452,7 @@ func buildNodeOutboundSafe(tag, rawURI string, skipCertVerify bool) (outbound op
 // outbound without starting listeners or making network requests. Returned
 // errors are credential-safe and contain only the caller-independent tag.
 func ValidateNodeURI(rawURI string, skipCertVerify bool) error {
-	_, err := buildNodeOutboundSafe("validation-node", rawURI, skipCertVerify)
+	_, err := buildNodeOutboundSafe("validation-node", rawURI, skipCertVerify, config.CertVerifyDefault)
 	return err
 }
 
@@ -582,13 +610,7 @@ func hysteriaTLSOptions(host string, query url.Values, skipCertVerify bool) *opt
 	if sni := query.Get("sni"); sni != "" {
 		tlsOptions.ServerName = sni
 	}
-	insecure := query.Get("insecure")
-	if insecure == "" {
-		insecure = query.Get("allowInsecure")
-	}
-	if insecure != "" {
-		tlsOptions.Insecure = insecure == "1" || strings.EqualFold(insecure, "true")
-	}
+	tlsOptions.Insecure = nodeSkipCertVerify(query, skipCertVerify)
 	if alpn := query.Get("alpn"); alpn != "" {
 		tlsOptions.ALPN = badoption.Listable[string](strings.Split(alpn, ","))
 	}
@@ -604,13 +626,7 @@ func buildTLSOptions(query url.Values, skipCertVerify bool) (*option.OutboundTLS
 	if sni := query.Get("sni"); sni != "" {
 		tlsOptions.ServerName = sni
 	}
-	insecure := query.Get("allowInsecure")
-	if insecure == "" {
-		insecure = query.Get("insecure")
-	}
-	if insecure != "" {
-		tlsOptions.Insecure = insecure == "1" || strings.EqualFold(insecure, "true")
-	}
+	tlsOptions.Insecure = nodeSkipCertVerify(query, skipCertVerify)
 	if alpn := query.Get("alpn"); alpn != "" {
 		tlsOptions.ALPN = badoption.Listable[string](strings.Split(alpn, ","))
 	}
@@ -724,10 +740,9 @@ func buildShadowsocksOptions(rawURI string) (option.ShadowsocksOutboundOptions, 
 		Password:      parsed.Password,
 	}
 
-	if parsed.Query.Get("plugin") != "" {
-		// sing-box library mode doesn't support external plugins like v2ray-plugin
-		// These require the plugin binary to be installed separately
-		return option.ShadowsocksOutboundOptions{}, errors.New("Shadowsocks plugin is not supported in library mode")
+	opts.Plugin, opts.PluginOptions, err = shadowsocksPlugin(parsed.Query, parsed.Server)
+	if err != nil {
+		return option.ShadowsocksOutboundOptions{}, err
 	}
 
 	return opts, nil
@@ -799,9 +814,7 @@ func buildHysteriaOptions(u *url.URL, skipCertVerify bool) (option.HysteriaOutbo
 	if serverName := firstQueryValue(query, "peer", "sni"); serverName != "" {
 		tlsOptions.ServerName = serverName
 	}
-	if boolQuery(query, "insecure", "allowInsecure") {
-		tlsOptions.Insecure = true
-	}
+	tlsOptions.Insecure = nodeSkipCertVerify(query, skipCertVerify)
 	if alpn := splitNonEmpty(query.Get("alpn")); len(alpn) > 0 {
 		tlsOptions.ALPN = badoption.Listable[string](alpn)
 	}
@@ -919,12 +932,12 @@ func buildAnyTLSOptions(u *url.URL, skipCertVerify bool) (option.AnyTLSOutboundO
 		opts.OutboundTLSOptionsContainer = option.OutboundTLSOptionsContainer{TLS: tlsOptions}
 	} else {
 		// AnyTLS always uses TLS, including links emitted by our Clash
-		// converter without security=tls. Preserve handshake metadata while
-		// retaining the existing verification policy for this implicit mode.
+		// converter without security=tls. Honor node verification settings in
+		// exactly the same way as explicit TLS.
 		tlsOptions := &option.OutboundTLSOptions{
 			Enabled:    true,
 			ServerName: server,
-			Insecure:   skipCertVerify,
+			Insecure:   nodeSkipCertVerify(query, skipCertVerify),
 		}
 		if sni := query.Get("sni"); sni != "" {
 			tlsOptions.ServerName = sni
@@ -978,13 +991,7 @@ func buildTUICOptions(u *url.URL, skipCertVerify bool) (option.TUICOutboundOptio
 	if sni := query.Get("sni"); sni != "" {
 		tlsOptions.ServerName = sni
 	}
-	insecure := query.Get("allowInsecure")
-	if insecure == "" {
-		insecure = query.Get("insecure")
-	}
-	if insecure != "" {
-		tlsOptions.Insecure = insecure == "1" || strings.EqualFold(insecure, "true")
-	}
+	tlsOptions.Insecure = nodeSkipCertVerify(query, skipCertVerify)
 	if alpn := query.Get("alpn"); alpn != "" {
 		tlsOptions.ALPN = badoption.Listable[string](strings.Split(alpn, ","))
 	}
@@ -995,21 +1002,23 @@ func buildTUICOptions(u *url.URL, skipCertVerify bool) (option.TUICOutboundOptio
 
 // vmessJSON represents the JSON structure of a VMess URI
 type vmessJSON struct {
-	V    interface{} `json:"v"`    // Version, can be string or int
-	PS   string      `json:"ps"`   // Remarks/name
-	Add  string      `json:"add"`  // Server address
-	Port interface{} `json:"port"` // Server port, can be string or int
-	ID   string      `json:"id"`   // UUID
-	Aid  interface{} `json:"aid"`  // Alter ID, can be string or int
-	Scy  string      `json:"scy"`  // Security/cipher
-	Net  string      `json:"net"`  // Network type (tcp, ws, etc.)
-	Type string      `json:"type"` // Header type
-	Host string      `json:"host"` // Host header
-	Path string      `json:"path"` // Path
-	TLS  string      `json:"tls"`  // TLS (tls or empty)
-	SNI  string      `json:"sni"`  // SNI
-	ALPN string      `json:"alpn"` // ALPN
-	FP   string      `json:"fp"`   // Fingerprint
+	V             interface{} `json:"v"`    // Version, can be string or int
+	PS            string      `json:"ps"`   // Remarks/name
+	Add           string      `json:"add"`  // Server address
+	Port          interface{} `json:"port"` // Server port, can be string or int
+	ID            string      `json:"id"`   // UUID
+	Aid           interface{} `json:"aid"`  // Alter ID, can be string or int
+	Scy           string      `json:"scy"`  // Security/cipher
+	Net           string      `json:"net"`  // Network type (tcp, ws, etc.)
+	Type          string      `json:"type"` // Header type
+	Host          string      `json:"host"` // Host header
+	Path          string      `json:"path"` // Path
+	TLS           string      `json:"tls"`  // TLS (tls or empty)
+	SNI           string      `json:"sni"`  // SNI
+	ALPN          string      `json:"alpn"` // ALPN
+	FP            string      `json:"fp"`   // Fingerprint
+	AllowInsecure any         `json:"allowInsecure"`
+	Insecure      any         `json:"insecure"`
 }
 
 func (v *vmessJSON) GetPort() (int, error) {
@@ -1141,6 +1150,12 @@ func buildVMessOptions(rawURI string, skipCertVerify bool) (option.VMessOutbound
 	// Build TLS options
 	if vmess.TLS == "tls" {
 		tlsOptions := &option.OutboundTLSOptions{Enabled: true, Insecure: skipCertVerify}
+		for _, value := range []any{vmess.AllowInsecure, vmess.Insecure} {
+			if value != nil {
+				tlsOptions.Insecure = nodeSkipCertVerify(url.Values{"insecure": {fmt.Sprint(value)}}, skipCertVerify)
+				break
+			}
+		}
 		if vmess.SNI != "" {
 			tlsOptions.ServerName = vmess.SNI
 		} else if vmess.Host != "" {
@@ -1220,13 +1235,7 @@ func buildTrojanTLSOptions(query url.Values, skipCertVerify bool) (*option.Outbo
 		tlsOptions.ServerName = peer
 	}
 
-	insecure := query.Get("allowInsecure")
-	if insecure == "" {
-		insecure = query.Get("insecure")
-	}
-	if insecure != "" {
-		tlsOptions.Insecure = insecure == "1" || strings.EqualFold(insecure, "true")
-	}
+	tlsOptions.Insecure = nodeSkipCertVerify(query, skipCertVerify)
 
 	if alpn := query.Get("alpn"); alpn != "" {
 		tlsOptions.ALPN = badoption.Listable[string](strings.Split(alpn, ","))
@@ -1502,7 +1511,7 @@ func buildHTTPProxyOptions(u *url.URL, skipCertVerify bool) (option.HTTPOutbound
 			TLS: &option.OutboundTLSOptions{
 				Enabled:    true,
 				ServerName: u.Hostname(),
-				Insecure:   skipCertVerify,
+				Insecure:   nodeSkipCertVerify(u.Query(), skipCertVerify),
 			},
 		}
 	}

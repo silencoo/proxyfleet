@@ -148,6 +148,23 @@ profiles:
     min_quality: 80
 ```
 
+### Scraping Jobs
+
+The WebUI **System Settings → Job configuration** editor exposes every Job field
+and saves Jobs, Profiles and Endpoints together. **Scraping jobs** provides live
+status, manual benchmark triggers for auto Jobs, masked HTTP/SOCKS5 URL generation,
+and searchable, paginated session bindings with explicit release. Failed saves
+and revision conflicts preserve the draft. Manual selection needs no target URL.
+
+Jobs separate node selection from connection behavior: `selection: manual`
+(default) uses your chosen Profile directly; `selection: auto` optionally
+benchmarks a target and picks a small set. Both support pooled connections
+(`pooled`) and durable session assignments (`pinned`), in `pool` or `hybrid` mode with one fixed
+Endpoint per Job. Pinned clients pass `<username>-session-<id>` as the proxy
+username; ordinary HTTP/SOCKS5 clients need no management API or SDK.
+See [Job configuration, API, and Python integration](docs/jobs.md) for optional
+target benchmarks, explicit session recovery, and concurrency/timeout handling.
+
 ### Structured Traffic History
 
 Connection history is optional and disabled by default. When enabled, TCP/UDP outcomes, selected node/Profile, retries, connect time, TTFB, duration, and byte counts are written asynchronously to a separate WAL-mode `traffic-log.db`. A bounded queue ensures logging cannot block proxy traffic. Destination addresses are hashed by default, and retention plus row count are both bounded.
@@ -200,6 +217,24 @@ nodes_file: nodes.txt
 ### Full Config Reference
 
 See [config.example.yaml](config.example.yaml) for the full documented configuration with all available options.
+
+### Upstream certificate verification
+
+```yaml
+skip_cert_verify: false
+skip_cert_verify_mode: default # default or override
+```
+
+Configure both fields in WebUI System settings: **Skip SSL certificate verification** and **Node certificate verification policy**.
+
+| Policy | Node explicitly sets true / 1 | Node explicitly sets false / 0 | Node setting absent |
+|---|---|---|---|
+| `default` (default) | Skip verification | Verify certificates | Use `skip_cert_verify` |
+| `override` | Use `skip_cert_verify` | Use `skip_cert_verify` | Use `skip_cert_verify` |
+
+URI parameters `allowInsecure` and `insecure` work even when TLS is implicit, including `anytls://` links without `security=tls`. Clash `skip-cert-verify` preserves both explicit true and false; VMess JSON also accepts `allowInsecure` / `insecure`. Missing policy fields in older configurations use `default`. To force certificate verification for every upstream node, set `skip_cert_verify_mode: override` with `skip_cert_verify: false`.
+
+This policy governs the TLS connection to the proxy node. Existing HTTPS probe/Job target verification still uses the global `skip_cert_verify` value; a node override does not change target-site verification. Saving a policy change applies it through a runtime rebuild. Existing pinned Job bindings are retained but report a policy change rather than silently moving to another node.
 
 ## GeoIP Region Routing
 
@@ -340,7 +375,7 @@ resp, err := client.Get("http://example.com")
 | VLESS | `vless://` | TCP, WS, HTTP/2, gRPC, HTTPUpgrade; TLS/Reality/uTLS |
 | VMess | `vmess://` | WS, HTTP/2, gRPC, HTTPUpgrade; TLS/uTLS |
 | Trojan | `trojan://` | WS, HTTP/2, gRPC, HTTPUpgrade; TLS/Reality/uTLS |
-| Shadowsocks | `ss://`, `shadowsocks://` | SIP002, legacy whole-payload Base64, plaintext-compatible forms; external plugins are rejected |
+| Shadowsocks | `ss://`, `shadowsocks://` | SIP002, legacy whole-payload Base64, plaintext-compatible forms; built-in simple-obfs HTTP/TLS |
 | ShadowsocksR | `ssr://`, `shadowsocksr://` | Protocol/obfuscation parameters and Unicode metadata |
 | Hysteria | `hysteria://` | QUIC; auth, bandwidth, obfuscation, TLS/SNI, ALPN, windows and MTU |
 | Hysteria2 | `hysteria2://`, `hy2://` | QUIC-based |
@@ -393,7 +428,32 @@ Supports Base64, plain text, and Clash YAML formats. Each named provider can be 
 
 When subscriptions are configured, fetched nodes are written to `nodes_file`. A refresh is committed as one transaction across configuration, cache files, and runtime state. The WebUI first fetches a candidate and displays stable-identity added/removed/unchanged counts; risky removal ratios require a second explicit confirmation and a short-lived one-time preview token. Candidate nodes are built and health-checked before cutover; a failed fetch, strict-mode unsupported node, availability ratio violation, persistence error, or stale configuration revision rolls back without replacing the active pool. Unchanged nodes and listeners retain their connections, removed outbounds drain for the configured timeout, and dedicated ports are restored from `port-map.yaml`.
 
-Clash Shadowsocks conversion preserves plugin requirements so unsupported external plugins are rejected during candidate construction. Plugin-required nodes are never silently converted into plain Shadowsocks; the configured skip/strict failure policy still applies.
+Shadowsocks supports simple-obfs HTTP and TLS without installing a plugin executable. Accepted plugin names are `obfs-http`, `obfs-tls`, `obfs-local`, `simple-obfs`, and Clash's `obfs`. The last three accept `obfs=http/tls` (or `mode=http/tls`) and default to HTTP. Use `obfs-host` (or `host`) for the disguise hostname; when omitted, it defaults to the SS server address. Conflicting modes, malformed hosts, duplicate options, unknown plugin options, and other plugin types are rejected during candidate construction, using the configured skip/strict policy. Nodes are never silently downgraded to plain SS. This is TCP obfuscation; it does not wrap native SS UDP traffic, and `obfs-tls` is not a certificate-verified TLS tunnel.
+
+Add a URI through the WebUI node editor, `nodes_file`, inline configuration, or a plain/Base64 subscription:
+
+```text
+ss://aes-128-gcm:example-password@ss.example:8388/?plugin=obfs-http%3Bobfs-host%3Dcdn.example#SS-HTTP
+ss://aes-128-gcm:example-password@ss.example:8388/?plugin=obfs-local%3Bobfs%3Dtls%3Bobfs-host%3Dcdn.example#SS-TLS
+```
+
+Clash subscriptions can use either HTTP or TLS:
+
+```yaml
+proxies:
+  - name: SS-TLS
+    type: ss
+    server: ss.example
+    port: 8388
+    cipher: aes-128-gcm
+    password: example-password
+    plugin: obfs
+    plugin-opts:
+      mode: tls # or http
+      host: cdn.example
+```
+
+Share-link syntax follows [SIP002](https://shadowsocks.org/doc/sip002.html); the normalized outbound uses sing-box's built-in `obfs-local` transport. Pooled and pinned Jobs use these nodes through the same Profile/Endpoint setup as other SS nodes.
 
 For large pools, `management.probe_mode: adaptive` supports both `probe_max_per_hour` (default 600) and `probe_max_per_day` (default 5000). One batch can run immediately; further capacity refills gradually at the stricter hourly/daily rate. Idle credit is capped at one batch, and hourly/day boundaries do not grant another burst. Both fixed-window limits remain hard caps. `/api/probe/status` distinguishes capacity usable now (`available_now`) from the remaining hourly/daily totals. Due new nodes receive two scheduling shares, recovery checks one, and healthy rechecks one; unused shares go to the other groups. Large inventories can therefore take longer to validate fully instead of exhausting the budget early. Recent successful real traffic suppresses redundant checks only while the node remains healthy and no newer failure or runtime replacement invalidates that evidence. Explicit manual probes remain outside the automatic budget.
 
@@ -504,8 +564,27 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Development
 
+Use the unified build entry point with Node.js 22.12+ (recommended) or 20.19.x and the Go toolchain specified in `go.mod`:
+
 ```bash
 npm ci
+npm run build         # Current Windows/Linux host: check/build WebUI, then compile all capabilities
+npm run build:release # Windows amd64 + Linux amd64; does not publish or upload
+npm run build -- --target linux/arm64
+npm run build -- --version v3.3.3
+```
+
+Output is always in `dist/`: `proxyfleet.exe` for Windows amd64 and `proxyfleet-linux-amd64` / `proxyfleet-linux-arm64` for Linux. `SHA256SUMS.txt` and `build-manifest.json` record this build's files, version, commit, UTC timestamp, capability tags, and verification method. Version and commit are detected from Git; modified or untracked sources append `-dirty` to the version. Source archives default to `dev` / `unknown`; override these with `--version` / `--commit`. Set `SOURCE_DATE_EPOCH` to fix the build timestamp.
+
+Local builds, GitHub Releases, and Docker share `scripts/build.mjs` and `scripts/build-tags.txt`. All include QUIC, gRPC, WireGuard, gVisor, uTLS, and Clash API. The script checks target and tags in Go build metadata, and runs `--version-json` for native binaries; cross builds are marked as metadata-only verification. It publishes outputs only after every requested target compiles and passes inspection, and never cleans the output directory or edits runtime configuration. Checksums describe only this invocation's targets; other platform binaries remain untouched.
+
+Use `--skip-webui` only when the frontend was already built, such as the release workflow. Docker rebuilds WebUI in a separate stage before invoking the same script; supply image metadata with `--build-arg VERSION=... --build-arg COMMIT=...`. Builds do not replace or restart running services. Older binaries under `artifacts/jobs/` are historical validation output; use `dist/` going forward.
+
+Individual development checks:
+
+```bash
+npm ci
+npm run test:build
 npm run check:webui
 npm run build:webui
 npm run test:e2e
@@ -514,7 +593,7 @@ go vet ./...
 
 # webui/dist is embedded into the executable; CI verifies it matches the TypeScript/CSS source.
 # Verify the production/full-protocol build
-go build -trimpath -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" -o proxyfleet ./cmd/proxyfleet
+npm run build
 ```
 
 ## License
