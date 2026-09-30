@@ -1,0 +1,30 @@
+name: Socket safety
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  socket-safety:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Pool and Job regression tests
+        run: go test -timeout 5m ./internal/outbound/pool ./internal/jobs
+      - name: Repeat persistence and probe regressions
+        run: go test -count=20 -timeout 5m -run '^(TestRuntimeFlushWritesOnlyDirtyNodesAndRetriesLatestState|TestActiveProbesDoNotRecordPassiveTraffic|TestActiveProbeLatencySamplesAppliedOnce)$' ./internal/outbound/pool
+      - name: Race detector
+        if: runner.os == 'Linux'
+        run: go test -race -timeout 5m ./internal/outbound/pool ./internal/jobs

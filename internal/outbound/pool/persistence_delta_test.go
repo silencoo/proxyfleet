@@ -12,8 +12,11 @@ import (
 func TestRuntimeFlushWritesOnlyDirtyNodesAndRetriesLatestState(t *testing.T) {
 	ResetSharedStateStore()
 	resetHealthPersistenceForTest()
-	t.Cleanup(func() { ResetSharedStateStore(); resetHealthPersistenceForTest() })
 	dbPath := filepath.Join(t.TempDir(), "state.db")
+	// Cleanups run in reverse registration order. Close the runtime SQLite
+	// handle before TempDir removes its files; Windows forbids deleting an
+	// open database even after the separate inspection handle has closed.
+	t.Cleanup(func() { ResetSharedStateStore(); resetHealthPersistenceForTest() })
 	if err := ConfigureRuntimeState(dbPath, ""); err != nil {
 		t.Fatal(err)
 	}
