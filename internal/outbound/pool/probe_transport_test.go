@@ -178,8 +178,14 @@ func TestActiveProbesDoNotRecordPassiveTraffic(t *testing.T) {
 		if snapshot.Available != success || snapshot.LastProbeAt.IsZero() || len(snapshot.Timeline) != 1 || snapshot.Timeline[0].Source != "probe" {
 			t.Fatalf("missing independent probe diagnostics: %+v", snapshot)
 		}
-		if success && math.Abs(snapshot.EWMALatencyMs-(75+0.25*float64(snapshot.LastProbeLatency)/float64(time.Millisecond))) > 1e-9 {
-			t.Fatalf("probe latency was applied more than once: %+v", snapshot)
+		// A net.Pipe round trip can finish within one clock tick, notably on
+		// Windows. Zero-duration samples deliberately leave the EWMA unchanged.
+		wantEWMA := 100.0
+		if success && snapshot.LastProbeLatency > 0 {
+			wantEWMA = 75 + 0.25*float64(snapshot.LastProbeLatency)/float64(time.Millisecond)
+		}
+		if math.Abs(snapshot.EWMALatencyMs-wantEWMA) > 1e-9 {
+			t.Fatalf("probe latency EWMA = %v, want %v: %+v", snapshot.EWMALatencyMs, wantEWMA, snapshot)
 		}
 		if !success && (state.isBlacklisted(time.Now()) || !state.isCoolingDown(time.Now())) {
 			t.Fatal("HTTP 503 did not use transient cooldown")
@@ -190,6 +196,59 @@ func TestActiveProbesDoNotRecordPassiveTraffic(t *testing.T) {
 		}
 	}
 	ResetSharedStateStore()
+}
+
+// Keep exact-once EWMA coverage independent of the platform's clock precision.
+// The transport test above still exercises real HTTP over net.Pipe; these fixed
+// samples make both zero and positive durations mandatory on every platform.
+func TestActiveProbeLatencySamplesAppliedOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		latency  time.Duration
+		wantEWMA float64
+	}{
+		{name: "zero", latency: 0, wantEWMA: 100},
+		{name: "sub-millisecond", latency: 500 * time.Microsecond, wantEWMA: 75.125},
+		{name: "positive", latency: 20 * time.Millisecond, wantEWMA: 80},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ResetSharedStateStore()
+			t.Cleanup(ResetSharedStateStore)
+			manager, err := monitor.NewManager(monitor.Config{ProbeTarget: "http://example.test/check"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(manager.Stop)
+			handle := manager.Register(monitor.NodeInfo{Tag: "probe-latency"})
+			state := acquireSharedState("probe-latency")
+			state.attachEntry(handle)
+			outbound := &probeTransportOutbound{}
+			member := &memberState{tag: state.tag, shared: state, outbound: outbound, entry: handle}
+			proxyPool := newIndexedTestPool(member, Options{})
+			proxyPool.monitor = manager
+			t.Cleanup(func() { _ = proxyPool.Close() })
+			handle.SetProbeForRuntimeWithPublisher(probeRuntimeIdentity(outbound), func(context.Context) (time.Duration, error) {
+				return tc.latency, nil
+			}, proxyPool.makeProbePublisher(member))
+			handle.RestoreHealthState(monitor.PersistedHealthState{EWMALatencyMs: 100})
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			latency, err := manager.Probe(ctx, state.tag)
+			if err != nil || latency != tc.latency {
+				t.Fatalf("probe = (%v, %v), want (%v, nil)", latency, err, tc.latency)
+			}
+			snapshot := manager.Snapshot()[0]
+			if snapshot.LastProbeLatency != tc.latency || math.Abs(snapshot.EWMALatencyMs-tc.wantEWMA) > 1e-9 {
+				t.Fatalf("probe sample was not applied exactly once: want latency=%v EWMA=%v, got %+v", tc.latency, tc.wantEWMA, snapshot)
+			}
+			if !snapshot.Available || snapshot.LastProbeAt.IsZero() || len(snapshot.Timeline) != 1 || snapshot.Timeline[0].Source != "probe" {
+				t.Fatalf("missing independent probe diagnostics: %+v", snapshot)
+			}
+			if snapshot.SuccessCount != 0 || snapshot.FailureCount != 0 || !snapshot.LastPassiveSuccess.IsZero() || !snapshot.LastPassiveFailure.IsZero() {
+				t.Fatalf("probe polluted traffic statistics: %+v", snapshot)
+			}
+		})
+	}
 }
 
 func TestProbeConnectionWatchdogClosesBlockedConnection(t *testing.T) {
