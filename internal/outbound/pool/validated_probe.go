@@ -48,6 +48,9 @@ func ApplyValidatedProbes(outbound adapter.Outbound, results []ValidatedProbe) i
 			probeRuntimeIdentity(member.outbound) != probeRuntimeIdentity(result.Outbound) || result.Target != target {
 			continue
 		}
+		if p.pauseForLocalResourceError(result.Err) {
+			continue // Local resource pressure is not node-health evidence.
+		}
 		s := member.shared
 		s.transitionMu.Lock()
 		if !s.closed.Load() && member.entry.ApplyValidatedProbe(probeRuntimeIdentity(member.outbound), result.StartedAt, result.CompletedAt, result.Latency, result.Err, func() {

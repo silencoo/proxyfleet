@@ -195,6 +195,7 @@ type poolOutbound struct {
 	initialized atomic.Bool
 
 	eligibleVersion atomic.Uint64
+	resourceBackoff *resourceBackoff
 }
 
 func newPool(ctx context.Context, _ adapter.Router, logger singlog.ContextLogger, tag string, options Options) (adapter.Outbound, error) {
@@ -212,7 +213,8 @@ func newPool(ctx context.Context, _ adapter.Router, logger singlog.ContextLogger
 		return nil, err
 	}
 	p := &poolOutbound{
-		jobStore: jobs.FromContext(ctx),
+		jobStore:        jobs.FromContext(ctx),
+		resourceBackoff: &processResourceBackoff,
 		// Members are resolved from the already-populated runtime manager. Do not
 		// expose them as manager dependencies: replacement pools otherwise leave
 		// stale dependency edges that prevent drained node outbounds from being
@@ -451,6 +453,9 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 			}
 			return nil, err
 		}
+		if err := p.checkResourceBackoff(ctx); err != nil {
+			return nil, err
+		}
 		if !p.admitDial(member) {
 			return nil, errPoolClosed
 		}
@@ -476,6 +481,9 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if p.pauseForLocalResourceError(err) {
+			return nil, err // Changing remote nodes cannot fix a local shortage.
 		}
 		p.recordFailure(member, err)
 		if attempt < maxAttempts {
@@ -510,6 +518,9 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 			}
 			return nil, err
 		}
+		if err := p.checkResourceBackoff(ctx); err != nil {
+			return nil, err
+		}
 		if !p.admitDial(member) {
 			return nil, errPoolClosed
 		}
@@ -535,6 +546,9 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if p.pauseForLocalResourceError(err) {
+			return nil, err // Changing remote nodes cannot fix a local shortage.
 		}
 		p.recordFailure(member, err)
 		if attempt < maxAttempts {
@@ -960,7 +974,7 @@ func activeConnections(member *memberState) int32 {
 func (p *poolOutbound) recordFailure(member *memberState, cause error) {
 	p.healthMu.RLock()
 	defer p.healthMu.RUnlock()
-	if p.closed.Load() {
+	if p.closed.Load() || p.pauseForLocalResourceError(cause) {
 		return
 	}
 	safeCause := monitor.SanitizeProbeError(cause)
@@ -998,7 +1012,7 @@ func failureDecisionSummary(decision failureDecision, threshold int) string {
 func (p *poolOutbound) recordProbeFailure(member *memberState, cause error) {
 	p.healthMu.RLock()
 	defer p.healthMu.RUnlock()
-	if p.closed.Load() {
+	if p.closed.Load() || p.pauseForLocalResourceError(cause) {
 		return
 	}
 	if member.shared != nil {
@@ -1060,6 +1074,9 @@ func (p *poolOutbound) failedTrafficEvent(ctx context.Context, member *memberSta
 }
 
 func trafficErrorCategory(err error) string {
+	if isLocalResourceError(err) {
+		return "local_resource"
+	}
 	if err == nil {
 		return ""
 	}
@@ -1114,8 +1131,11 @@ func (p *poolOutbound) probeMember(ctx context.Context, member *memberState, tar
 	if !p.admitProbe() {
 		return 0, errPoolClosed
 	}
+	if err := p.checkResourceBackoff(ctx); err != nil {
+		return 0, err
+	}
 	defer func() {
-		if probeErr == nil || errors.Is(probeErr, errPoolClosed) {
+		if probeErr == nil || errors.Is(probeErr, errPoolClosed) || p.pauseForLocalResourceError(probeErr) {
 			return
 		}
 		// The watchdog closes connections to interrupt legacy transports. Keep
@@ -1171,7 +1191,7 @@ func (p *poolOutbound) makeProbePublisher(member *memberState) monitor.ProbePubl
 	return func(_ time.Duration, err error, publish func(func()) bool) bool {
 		p.healthMu.RLock()
 		defer p.healthMu.RUnlock()
-		if p.closed.Load() || errors.Is(err, errPoolClosed) {
+		if p.closed.Load() || errors.Is(err, errPoolClosed) || p.pauseForLocalResourceError(err) {
 			return false
 		}
 		s := member.shared

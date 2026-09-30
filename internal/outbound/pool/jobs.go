@@ -350,7 +350,7 @@ func (p *poolOutbound) refreshJob(ctx context.Context, j config.JobConfig, force
 					continue
 				}
 				m := p.measureJobNode(ctx, j, member)
-				if ctx.Err() == nil && !p.closed.Load() {
+				if ctx.Err() == nil && !p.closed.Load() && m.Error != "local_resource" {
 					p.jobStore.Record(key, m)
 				}
 			}
@@ -376,12 +376,20 @@ func (p *poolOutbound) refreshJob(ctx context.Context, j config.JobConfig, force
 // Probes are bounded, do not follow redirects, and never include URL secrets in errors.
 func (p *poolOutbound) measureJobNode(parent context.Context, j config.JobConfig, member *memberState) jobs.Measurement {
 	m := jobs.Measurement{Node: member.tag}
+	if err := p.checkResourceBackoff(parent); err != nil {
+		m.Error = "cancelled"
+		if isLocalResourceError(err) {
+			m.Error = "local_resource"
+		}
+		return m
+	}
 	release, err := p.jobStore.AdmitProbe(parent)
 	if err != nil {
 		m.Error = "cancelled"
 		return m
 	}
-	defer release()
+	lifetime := newProbeLifetime(release)
+	defer lifetime.Close()
 	ctx, cancel := context.WithTimeout(parent, j.RequestTimeout())
 	defer cancel()
 	var connMu sync.Mutex
@@ -397,11 +405,20 @@ func (p *poolOutbound) measureJobNode(parent context.Context, j config.JobConfig
 	}()
 	transport := &http.Transport{DisableKeepAlives: true, MaxResponseHeaderBytes: 32 << 10, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: p.options.JobSkipCertVerify}}
 	transport.DialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		done, admitted := lifetime.Hold()
+		if !admitted {
+			return nil, context.Canceled
+		}
+		defer done() // Keep the slot until the actual outbound dial exits.
+		if err := p.checkResourceBackoff(ctx); err != nil {
+			return nil, err
+		}
 		if !p.admitDial(member) {
 			return nil, errPoolClosed
 		}
 		conn, err := member.outbound.DialContext(ctx, network, M.ParseSocksaddr(address))
 		if err != nil {
+			p.pauseForLocalResourceError(err)
 			p.decActive(member)
 			return nil, err
 		}
@@ -433,6 +450,9 @@ func (p *poolOutbound) measureJobNode(parent context.Context, j config.JobConfig
 	response, err := client.Do(req)
 	if err != nil {
 		m.Error = "request_failed"
+		if p.pauseForLocalResourceError(err) {
+			m.Error = "local_resource"
+		}
 		return m
 	}
 	defer response.Body.Close()
@@ -445,6 +465,9 @@ func (p *poolOutbound) measureJobNode(parent context.Context, j config.JobConfig
 	m.DurationMS = float64(time.Since(started)) / float64(time.Millisecond)
 	if err != nil {
 		m.Error = "body_read_failed"
+		if p.pauseForLocalResourceError(err) {
+			m.Error = "local_resource"
+		}
 		return m
 	}
 	if int64(len(body)) > j.MaxResponseBytes {
