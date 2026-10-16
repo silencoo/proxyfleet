@@ -1,11 +1,13 @@
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS webui
+FROM --platform=$BUILDPLATFORM node:22.23.3-bookworm-slim AS webui
 WORKDIR /src
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .node-version go.mod ./
+COPY scripts/toolchain.mjs ./scripts/toolchain.mjs
 RUN npm ci
 COPY webui ./webui
 RUN npm run check:webui && npm run build:webui
 
-FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.9-bookworm AS builder
+ENV GOTOOLCHAIN=local GOWORK=off
 ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -13,7 +15,8 @@ WORKDIR /src
 COPY --from=webui /usr/local/bin/node /usr/local/bin/node
 COPY go.mod go.sum ./
 ARG GOPROXY=https://proxy.golang.org,direct
-RUN go env -w GOPROXY=${GOPROXY} && go mod download
+RUN test "$(go env GOVERSION)" = "go$(sed -n 's/^go //p' go.mod)" \
+    && go env -w GOPROXY=${GOPROXY} && go mod download
 COPY . .
 COPY --from=webui /src/webui/dist ./webui/dist
 RUN node scripts/build.mjs --skip-webui --target linux/${TARGETARCH} --version "${VERSION}" --commit "${COMMIT}"

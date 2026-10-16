@@ -2397,6 +2397,9 @@ func buildVMessURI(p clashProxy) string {
 			params.Set("host", host)
 		}
 	}
+	if p.GrpcOpts != nil && p.GrpcOpts.GrpcServiceName != "" {
+		params.Set("serviceName", p.GrpcOpts.GrpcServiceName)
+	}
 	if p.ClientFingerprint != "" {
 		params.Set("fp", p.ClientFingerprint)
 	}
@@ -2484,6 +2487,9 @@ func buildTrojanURI(p clashProxy) string {
 		if host, ok := p.WSOpts.Headers["Host"]; ok {
 			params.Set("host", host)
 		}
+	}
+	if p.GrpcOpts != nil && p.GrpcOpts.GrpcServiceName != "" {
+		params.Set("serviceName", p.GrpcOpts.GrpcServiceName)
 	}
 	if p.ClientFingerprint != "" {
 		params.Set("fp", p.ClientFingerprint)

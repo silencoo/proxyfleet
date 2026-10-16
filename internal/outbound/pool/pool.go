@@ -595,6 +595,9 @@ func (p *poolOutbound) pickMemberExcludingForTarget(ctx context.Context, network
 		}
 		return p.pickJobMember(job, network, tried)
 	}
+	if md := adapter.ContextFrom(ctx); md != nil && strings.HasPrefix(md.Inbound, config.SharedJobInboundPrefix) {
+		return nil, E.New("authenticated application is no longer available")
+	}
 	if stickyKey != "" && p.sticky != nil {
 		if tag, ok := p.sticky.get(stickyKey, time.Now()); ok {
 			member := p.memberByTag[tag]
@@ -746,16 +749,19 @@ func (p *poolOutbound) releaseIfAllBlacklisted() bool {
 			return false
 		}
 	}
-	// All blacklisted, force release all
+	// Fail-open is only a retry of automatic failure blacklists, not permission
+	// to undo administrator decisions or active cooldowns. Recheck atomically
+	// in shared state because a manual ban can arrive after the scan above.
+	released := false
 	for _, member := range p.members {
-		if member.shared != nil {
-			member.shared.forceRelease()
+		if member.shared != nil && member.shared.releaseAutomaticBlacklist() {
+			released = true
 		}
 	}
-	if p.logger != nil {
-		p.logger.Warn("all upstream proxies were blacklisted, releasing them for retry")
+	if released && p.logger != nil {
+		p.logger.Warn("all upstream proxies were blocked, releasing automatic blacklists for retry; manual bans and cooldowns remain")
 	}
-	return true
+	return released
 }
 
 func (p *poolOutbound) selectEligibleMember(network string) *memberState {

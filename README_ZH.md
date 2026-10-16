@@ -182,6 +182,8 @@ dns:
 
 Pool 支持 `sequential`、`random`、`balance`、`latency` 和 `quality` 调度。真实流量成功时会被动记录目标域名连接延迟 EWMA，不产生额外请求；延迟调度优先使用该目标数据，再回退到全局探测结果。短暂网络故障会进入独立冷却，不会立即累加长期拉黑计数；统一入口可以在拨号失败时切换其他节点重试，并可选启用有容量和 TTL 的会话保持。每节点独立端口始终只使用对应节点。
 
+人工禁用和未到期冷却属于路由限制，不会被成功探测、订阅预检、已有连接的成功响应或后续自动黑名单提前清除。即使启用 `pool.fail_open`，也只允许重试自动故障黑名单，不会绕过人工禁用和冷却。到期只恢复重试资格，不代表探测成功；管理员仍可显式解除。人工禁用/解除之前已开始的旧探测（包括候选运行实例的预检）完成后不会覆盖新状态。永久应用绑定继续指向原节点，只暂停、不迁移。普通每节点独立端口仍可诊断性地尝试原节点，它不是应用绑定入口。
+
 健康、黑名单/冷却、监控计数以及每节点有界的目标延迟写入配置目录的 `runtime-state.db`。SQLite 使用 WAL 与事务快照；数据库为空时会将旧 `health-state.yaml` 导入一次。可用 `pool.runtime_state_file` 调整路径。
 
 Named Profiles 可按地域、协议、来源、节点名称正则和最低质量预计算子池。连接时使用同一密码，用户名写成 `base@profile`；不带后缀仍使用全局池。该功能需要统一入口认证，适用于 `pool`/`hybrid` 模式，WebUI 的访问助手可一键生成和复制 HTTP/SOCKS5 URI 与 curl 命令。
@@ -204,11 +206,11 @@ Named Profiles 可按地域、协议、来源、节点名称正则和最低质�
 
 管理面板密码为空时，`management.listen` 只允许绑定回环地址；如需对外监听，必须同时配置强密码和原生 TLS 证书/私钥。程序会拒绝启动不安全的远程管理监听。
 
-## 抓取任务 Jobs
+## 应用代理与账号绑定 Jobs
 
-WebUI **系统设置 → 抓取任务配置**可编辑全部 Job 参数，与 Profile 和 Endpoint 一起保存；**抓取任务**页面提供运行状态、自动测速、HTTP/SOCKS5 地址生成，以及会话搜索、分页和显式释放。凭据默认遮罩，保存失败或配置冲突保留草稿。手动模式无需填写测速目标。
+WebUI **系统设置 → 应用配置**可编辑全部 Job 参数，与 Profile 和 Endpoint 一起保存；**应用代理**页面提供运行状态、自动测速、HTTP/SOCKS5 地址生成，以及会话搜索、分页和显式释放。凭据默认遮罩，保存失败或配置冲突保留草稿。手动模式无需填写测速目标。
 
-节点来源与连接策略独立配置：默认 `selection: manual` 直接使用指定 Profile 的可用节点，无需目标 URL 或 Job 测速预热；显式设置 `selection: auto` 才按目标站点实测优选少量节点。两种来源均支持 `pooled`（新连接分配节点）和 `pinned`（固定会话节点）；`pool` / `hybrid` 模式可同时使用，每个 Job 一个固定入口。`pinned` 通过代理用户名 `<username>-session-<id>` 区分会话，普通 HTTP/SOCKS5 客户端无需调用管理 API 或接入 SDK。会话分配持久化，节点失效时暂停，须显式释放才能重新分配。配置、管理 API、限制和 Python 接入示例见 [Jobs 使用文档](docs/jobs.md)。
+节点来源与连接策略独立配置：默认 `selection: manual` 直接使用指定 Profile 的可用节点，无需目标 URL 或 Job 测速预热；显式设置 `selection: auto` 才按目标站点实测优选少量节点。两种来源均支持 `pooled`（新连接分配节点）和 `pinned`（固定会话节点）；`pool` / `hybrid` 模式可同时使用。新应用默认**共用主端口、按应用密码区分**：`账号ID:应用密码@地址:2323`；主入口必须启用、无 Profile 过滤且有普通池用户名/密码。应用密码须为 16–255 字节且与所有应用及入口密码不同。普通池原凭据继续可用，错误或已删除的应用密码不会退回普通池。共享端口支持 HTTP、HTTPS CONNECT、SOCKS5 CONNECT（TCP），不支持 SOCKS4/UDP；需要后者可另留普通入口。独立入口是可选高级配置，旧应用不自动转换，仍使用 `<入口用户名>-session-<账号ID>`。普通 HTTP/SOCKS5 客户端无需调用管理 API 或接入 SDK。每个 Job 对应一个应用，name 是稳定应用 ID，换应用密码不改变绑定。账号绑定默认永久（`session_ttl: "0"`），持久化且重启保留，节点失效只暂停、不自动切换。`max_accounts_per_node` 按应用限制每节点账号数，1 为一账号一节点，0 不限；满额拒绝新绑定，暂停/过期记录仍占名额。界面可按应用查看、解绑、手动迁移或原节点更新绑定。已有有限期绑定需显式更新才能转为永久，降低上限不会驱逐已有账号。配置、管理 API、限制和 Python 接入示例见 [Jobs 使用文档](docs/jobs.md)。
 
 ## 协议支持注意事项
 
@@ -293,26 +295,31 @@ proxies:
 
 ## 开发验证
 
-统一构建入口（需要 Node.js 22.12+，推荐使用；也支持 20.19.x，以及 `go.mod` 指定的 Go 工具链）：
+正式构建统一锁定 **Go 1.26.9**（`go.mod`）和 **Node.js 22.23.3**（`.node-version`），本地、Docker、GitHub CI 使用相同补丁版本。请先用版本管理器切换 Node，例如 `nvm install "$(cat .node-version)"`。构建脚本会检查 Node，并通过 `GOTOOLCHAIN` 精确选择 Go；首次需要时由 Go 下载并校验工具链，不替换系统全局 Go。离线构建需要提前安装或缓存对应工具链。
 
 ```bash
 npm ci
-npm run build         # 当前 Windows/Linux 平台：检查并构建 WebUI，再编译完整功能程序
+npm run build         # 当前 Windows/Linux/macOS 平台：检查并构建 WebUI，再编译完整功能程序
 npm run build:release # 一次构建 Windows amd64 和 Linux amd64，不会上传或发布
 
 # 单独交叉编译 Linux arm64；也可以重复 --target 构建多个平台
 npm run build -- --target linux/arm64
+npm run build -- --target darwin/arm64 # Intel Mac 使用 darwin/amd64
 # 指定版本；工作区有未提交改动时自动追加 -dirty
 npm run build -- --version v3.3.3
 ```
 
-产物固定放在仓库 `dist/`：Windows amd64 为 `proxyfleet.exe`，Linux 为 `proxyfleet-linux-amd64` / `proxyfleet-linux-arm64`。同时生成 `SHA256SUMS.txt` 和 `build-manifest.json`，记录本次构建的文件、版本、提交、UTC 构建时间、完整功能标签和验证方式。未指定版本时从 Git 自动识别；源码压缩包或 Docker 上下文没有 Git 信息时使用 `dev` / `unknown`，可通过 `--version` / `--commit` 指定。`SOURCE_DATE_EPOCH` 可固定构建时间。
+产物固定放在仓库 `dist/`：Windows amd64 为 `proxyfleet.exe`，Linux 为 `proxyfleet-linux-amd64` / `proxyfleet-linux-arm64`，macOS 为 `proxyfleet-darwin-arm64` / `proxyfleet-darwin-amd64`。同时生成 `SHA256SUMS.txt` 和 `build-manifest.json`，记录本次构建的文件、版本、提交、UTC 构建时间、Go/Node 版本、完整功能标签和验证方式。未指定版本时从 Git 自动识别；源码压缩包或 Docker 上下文没有 Git 信息时使用 `dev` / `unknown`，可通过 `--version` / `--commit` 指定。`SOURCE_DATE_EPOCH` 可固定构建时间。
 
-所有入口复用 `scripts/build.mjs` 和 `scripts/build-tags.txt`，默认包含 QUIC、gRPC、WireGuard、gVisor、uTLS、Clash API。脚本检查编译产物中的平台与标签，并对本机产物运行 `--version-json`；交叉编译产物只检查 Go 构建信息，清单会区分这两种验证方式。所有目标编译和检查通过后才更新输出；不会清空 `dist/` 或改动运行配置。校验文件仅列出本次请求的目标，旧的其他平台文件会保留。
+所有入口复用 `scripts/build.mjs` 和 `scripts/build-tags.txt`，默认包含 QUIC、gRPC、WireGuard、gVisor、uTLS、Clash API。脚本检查编译产物中的精确 Go 版本、平台与标签，并对本机产物运行 `--version-json`；交叉编译产物只检查 Go 构建信息，清单会区分这两种验证方式。所有目标编译和检查通过后才更新输出；不会清空 `dist/` 或改动运行配置。校验文件仅列出本次请求的目标，旧的其他平台文件会保留。
 
 CI 已提前构建前端时可使用 `--skip-webui`，本地默认不要加这个参数。Docker 会在独立阶段重新构建 WebUI，再调用同一个脚本；镜像版本可通过 `--build-arg VERSION=... --build-arg COMMIT=...` 指定。构建不会替换或重启运行中的服务；之前的 `artifacts/jobs/proxyfleet.exe` 属于历史验证产物，后续使用 `dist/`。
 
-单独运行开发检查：
+升级工具链时须一起更新 `go.mod` / `.node-version`、Docker 精确镜像版本、`package.json` / `package-lock.json` 中的 Node engine；`npm run test:build` 会检查这些文件与 CI 的版本一致性。CI 从 `go.mod` 安装 Go 并禁用自动切换，Docker 下载依赖前也会验证编译器。现有 Release 下载文件名不变。这是编译工具链统一，不代表 OS 和基础镜像所有内容都已锁定。直接执行 Go 测试时可设置 `GOTOOLCHAIN=go1.26.9`，避免使用本机其他版本。
+
+Go 1.26.9 是兼容性锁定，并非要求使用最新 Go。新版 `x/net` 在 Go 1.27 下会切换 HTTP/2 实现，缺少 sing-box v1.12.12 依赖的私有连接池接口，导致链接失败。在完成内核传输层迁移与验证前，请保留锁定版本，不要单独升级编译器或 sing-box/gVisor/uTLS 这组依赖。
+
+单独运行开发检查（系统 Go 更高时也必须显式指定工具链）：
 
 ```bash
 npm ci
@@ -320,8 +327,8 @@ npm run test:build
 npm run check:webui
 npm run build:webui
 npm run test:e2e
-go test ./...
-go vet ./...
+GOTOOLCHAIN=go1.26.9 go test ./...
+GOTOOLCHAIN=go1.26.9 go vet ./...
 
 # webui/dist 会嵌入 EXE；CI 会校验它与 TypeScript/CSS 源码一致。
 # 验证生产/完整协议构建

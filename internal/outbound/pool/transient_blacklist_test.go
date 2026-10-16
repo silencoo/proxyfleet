@@ -196,7 +196,7 @@ func TestTransientFailurePreservesBlacklistDeadlineAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestPermanentBanReplacesCooldownInSharedAndMonitorState(t *testing.T) {
+func TestAutomaticBlacklistPreservesCooldownInSharedAndMonitorState(t *testing.T) {
 	ResetSharedStateStore()
 	t.Cleanup(ResetSharedStateStore)
 	manager, err := monitor.NewManager(monitor.Config{})
@@ -206,7 +206,7 @@ func TestPermanentBanReplacesCooldownInSharedAndMonitorState(t *testing.T) {
 	t.Cleanup(manager.Stop)
 	state := acquireSharedState("cooldown-to-ban")
 	state.attachEntry(manager.Register(monitor.NodeInfo{Tag: state.tag}))
-	state.recordProbeFailure(context.DeadlineExceeded, time.Hour, time.Minute)
+	deadline := state.recordProbeFailure(context.DeadlineExceeded, time.Hour, time.Minute).Until
 	if !manager.Snapshot()[0].CoolingDown {
 		t.Fatal("initial timeout did not establish cooldown")
 	}
@@ -215,8 +215,8 @@ func TestPermanentBanReplacesCooldownInSharedAndMonitorState(t *testing.T) {
 	cooldown, timer := state.cooldownUntil, state.cooldownTimer
 	state.mu.Unlock()
 	snapshot := manager.Snapshot()[0]
-	if !cooldown.IsZero() || timer != nil || snapshot.CoolingDown || !snapshot.CooldownUntil.IsZero() || !snapshot.Blacklisted {
-		t.Fatalf("replaced cooldown was left behind: shared=%v, timer=%v, monitor=%+v", cooldown, timer, snapshot)
+	if !cooldown.Equal(deadline) || timer == nil || !snapshot.CoolingDown || !snapshot.CooldownUntil.Equal(deadline) || !snapshot.Blacklisted {
+		t.Fatalf("automatic blacklist erased the independent cooldown: shared=%v, timer=%v, monitor=%+v", cooldown, timer, snapshot)
 	}
 }
 

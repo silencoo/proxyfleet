@@ -1,5 +1,6 @@
     // JS Logic - Kept exact API calls from original
     let isAutoRefresh = true;
+    let appReady = false;
     let autoRefreshInterval = null;
     let allNodesCache = [];
     let nodePaginationMeta = { page: 1, page_size: 50, total_items: 0, total_pages: 0 };
@@ -7,7 +8,7 @@
     let topLatencyNodesCache = [];
     let nodeSearchTimer = null;
     let nodeRequestGeneration = 0;
-    let currentRole = 'admin';
+    let currentRole = 'viewer';
     let sweepWasActive = false;
     let currentRegionFilter = 'all';
     let isEditMode = false;
@@ -703,7 +704,7 @@
       if (selector) selector.value = currentLanguage;
       document.dispatchEvent(new CustomEvent('proxyfleet:language'));
       syncAutoRefreshButton();
-      syncToggleButton(localStorage.getItem('themeMode') || 'auto');
+      syncThemeSelector(localStorage.getItem('themeMode') || 'auto');
       if (document.getElementById('dashboardTab').classList.contains('active')) filterByRegion(currentRegionFilter);
       if (document.getElementById('manageTab').classList.contains('active')) loadConfigNodes();
       if (document.getElementById('debugTab').classList.contains('active')) loadDebugData();
@@ -804,6 +805,9 @@
     });
 
     function showLoginOverlay() {
+      appReady = false;
+      delete document.body.dataset.appReady;
+      document.dispatchEvent(new CustomEvent('proxyfleet:auth-required'));
       document.getElementById('loginOverlay').classList.add('show');
       stopAutoRefresh();
     }
@@ -852,12 +856,13 @@
       });
       if (currentRole !== 'admin') {
         window.proxyFleetJobRuntime?.setActive(false);
-        if (document.getElementById('jobsTab')?.classList.contains('active') || document.getElementById('settingsTab')?.classList.contains('active')) void switchTab('dashboard');
+        if (document.getElementById('jobsTab')?.classList.contains('active') || document.getElementById('manageTab')?.classList.contains('active')) void switchTab('dashboard');
       }
     }
 
     async function loadCurrentRole() {
       const response = await fetch('/api/session');
+      if (response.status === 401) showLoginOverlay();
       if (!response.ok) return false;
       const session = await response.json().catch(() => ({}));
       applyRolePermissions(session.role || 'viewer');
@@ -868,10 +873,10 @@
       try {
         const res = await fetch('/api/nodes');
         if (res.status === 401) { showLoginOverlay(); return false; }
-        if (!res.ok) return false;
-        await loadCurrentRole();
+        if (!res.ok) { document.getElementById('dashboardFailure').hidden = false; return false; }
+        if (!await loadCurrentRole()) return false;
         return true;
-      } catch (e) { return false; }
+      } catch (e) { document.getElementById('dashboardFailure').hidden = false; return false; }
     }
 
     async function handleLogin(e) {
@@ -884,6 +889,9 @@
           const payload = await res.json().catch(() => ({}));
           applyRolePermissions(payload.role || 'viewer');
           document.getElementById('loginOverlay').classList.remove('show');
+          appReady = true;
+          document.body.dataset.appReady = 'true';
+          document.dispatchEvent(new CustomEvent('proxyfleet:ready'));
           refresh();
           if (isAutoRefresh) startAutoRefresh();
         }
@@ -892,8 +900,9 @@
     }
 
     async function switchTab(name) {
+      if (!['dashboard','manage','jobs','debug','operations','logs','settings'].includes(name)) return;
       if (settingsSaving) return;
-      if (['settings','manage','jobs'].includes(name) && currentRole !== 'admin') return;
+      if (['manage','jobs'].includes(name) && currentRole !== 'admin') return;
       if (settingsNavigationPending) return;
       if (currentRole === 'admin' && name !== 'settings' && document.getElementById('settingsTab').classList.contains('active') && settingsDirty()) {
         settingsNavigationPending = true;
@@ -910,6 +919,7 @@
       const activeNav = document.querySelector(`.nav-item[data-tab="${name}"]`);
       activeNav.classList.add('active');
       activeNav.setAttribute('aria-current', 'page');
+      document.dispatchEvent(new CustomEvent('proxyfleet:navigation', {detail: name}));
       if (name === 'dashboard') {
         setTimeout(updateDashboardCharts, 100);
       }
@@ -927,7 +937,7 @@
       } else {
         stopLogPolling();
       }
-      if (name === 'settings' && !settingsDirty()) await loadSettingsPage();
+      if (name === 'settings' && currentRole === 'admin' && !settingsDirty()) await loadSettingsPage();
     }
 
     function _buildSubSnapshot() {
@@ -1006,6 +1016,7 @@
 
     async function refresh() {
       const requestGeneration = ++nodeRequestGeneration;
+      document.getElementById('dashboardRefresh').disabled = true;
       const params = new URLSearchParams({
         page: String(nodeTableState.page),
         page_size: String(nodeTableState.pageSize),
@@ -1029,9 +1040,19 @@
         updateSweepProgress(data.probe_sweep);
         updateDashboardStats(data);
         renderNodes();
-        document.getElementById('lastUpdate').textContent = `Sync: ${new Date().toLocaleTimeString()}`;
+        document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString(currentLanguage);
+        document.getElementById('lastUpdate').dateTime = new Date().toISOString();
+        document.getElementById('dashboardFailure').hidden = true;
+        document.getElementById('sidebarStatus').classList.remove('is-stale');
         fetchSubscriptionStatus();
-      } catch(e) { console.error('Failed to refresh dashboard:', e); }
+      } catch(e) {
+        if (requestGeneration !== nodeRequestGeneration) return;
+        document.getElementById('dashboardFailure').hidden = false;
+        document.getElementById('sidebarStatus').classList.add('is-stale');
+        console.error('Failed to refresh dashboard:', e);
+      } finally {
+        if (requestGeneration === nodeRequestGeneration) document.getElementById('dashboardRefresh').disabled = false;
+      }
     }
 
     function updateSweepProgress(sweep) {
@@ -2621,7 +2642,6 @@
     }
 
     // ─── Theme System: Dark / Light / Auto (follow OS) ───
-    const THEME_LABELS = { dark: '深色模式', light: '浅色模式', auto: '跟随系统' };
     const osMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
 
     function getOsTheme() { return osMediaQuery.matches ? 'dark' : 'light'; }
@@ -2652,24 +2672,17 @@
       if (shouldReRender) reRenderCharts();
     }
 
-    function syncToggleButton(mode) {
-      const btn = document.getElementById('themeToggleBtn');
-      const label = document.getElementById('themeModeLabel');
-      if (btn) btn.setAttribute('data-mode', mode);
-      if (label) label.textContent = tr(THEME_LABELS[mode] || mode);
+    function syncThemeSelector(mode) {
+      const selector = document.getElementById('settingTheme');
+      if (selector) selector.value = mode;
     }
 
-    function toggleTheme() {
-      // Cycle: auto → dark → light → auto
-      const saved = localStorage.getItem('themeMode') || 'auto';
-      const next = saved === 'auto' ? 'dark' : (saved === 'dark' ? 'light' : 'auto');
-      localStorage.setItem('themeMode', next);
-      // Remove legacy key
+    function setThemeMode(mode) {
+      if (!['auto','light','dark'].includes(mode)) return;
+      localStorage.setItem('themeMode', mode);
       localStorage.removeItem('theme');
-
-      const visual = next === 'auto' ? getOsTheme() : next;
-      applyTheme(visual, true);
-      syncToggleButton(next);
+      applyTheme(mode === 'auto' ? getOsTheme() : mode, true);
+      syncThemeSelector(mode);
     }
 
     // Listen for OS theme changes — only affects UI when in auto mode
@@ -2696,9 +2709,25 @@
       }
       const visual = mode === 'auto' ? getOsTheme() : mode;
       applyTheme(visual, false);
-      syncToggleButton(mode);
+      syncThemeSelector(mode);
     })();
 
     // Init App
+    applyRolePermissions(currentRole);
     setLanguage(currentLanguage);
-    checkAuth().then(ok => { if(ok) { refresh(); startAutoRefresh(); } });
+    async function retryDashboard() {
+      const button = document.getElementById('dashboardRetry');
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        if (!appReady) {
+          if (!await checkAuth()) { document.getElementById('dashboardFailure').hidden = false; return; }
+          appReady = true;
+          document.body.dataset.appReady = 'true';
+          document.dispatchEvent(new CustomEvent('proxyfleet:ready'));
+          if (isAutoRefresh) startAutoRefresh();
+        }
+        await refresh();
+      } finally { button.disabled = false; }
+    }
+    void retryDashboard();

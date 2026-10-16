@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,167 @@ import (
 
 	"github.com/silencoo/proxyfleet/internal/config"
 )
+
+func TestPermanentBindingsSurviveRestartAndAppCapacity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	s, _ := Open(path)
+	j := config.JobConfig{Name: "twitter", SessionTTL: "0", MaxSessions: 10, MaxAccountsPerNode: 1}
+	nodes := []SelectedNode{{Node: "a"}, {Node: "b"}}
+	a, err := s.Acquire(j, "p", "account-a", nodes)
+	if err != nil || !a.Permanent || !a.ExpiresAt.IsZero() || a.Expired(time.Now().AddDate(100, 0, 0)) {
+		t.Fatalf("not permanent: %+v %v", a, err)
+	}
+	b, err := s.Acquire(j, "p", "account-b", nodes)
+	if err != nil || a.Node == b.Node {
+		t.Fatalf("reused occupied node: %+v %v", b, err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.Acquire(j, "p", "account-a", nil); err != nil || again != a {
+		t.Fatalf("restart lost binding: %+v %v", again, err)
+	}
+	if _, err := s.Acquire(j, "p", "account-c", nodes); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("full app did not fail closed: %v", err)
+	}
+	other := j
+	other.Name = "other-app"
+	if otherLease, err := s.Acquire(other, "p", "account-a", nodes); err != nil || otherLease.Job == a.Job || otherLease.Node != a.Node {
+		t.Fatalf("app scopes not independent: %+v %v", otherLease, err)
+	}
+}
+
+func TestAccountLimitIsAtomicAndCountsExpiredBindings(t *testing.T) {
+	s, _ := Open("")
+	j := config.JobConfig{Name: "app", MaxSessions: 100, MaxAccountsPerNode: 1, SessionTTL: "-1s"}
+	nodes := []SelectedNode{{Node: "a"}, {Node: "b"}}
+	var wg sync.WaitGroup
+	for i := range 32 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := s.Acquire(j, "p", fmt.Sprint(i), nodes)
+			if err != nil && !errors.Is(err, ErrCapacity) {
+				t.Errorf("unexpected error: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	counts := s.AccountCounts(j.Name)
+	if counts["a"] != 1 || counts["b"] != 1 || len(s.Leases()) != 2 {
+		t.Fatalf("oversubscribed: %v", counts)
+	}
+}
+
+func TestMigrationCapacityCASPersistenceAndRollback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.json")
+	s, _ := Open(path)
+	j := config.JobConfig{Name: "app", MaxSessions: 10, MaxAccountsPerNode: 1}
+	nodes := []SelectedNode{{Node: "a"}, {Node: "b"}, {Node: "c"}}
+	a, _ := s.Acquire(j, "p", "a", nodes)
+	b, _ := s.Acquire(j, "p", "b", nodes)
+	request := Migration{Session: a.Session, Node: b.Node, ExpectedRevision: a.Version()}
+	if _, err := s.Migrate(j, "p", request, nodes); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("migrated onto full node: %v", err)
+	}
+	request.Node = "c"
+	s.path = dir
+	if _, err := s.Migrate(j, "p", request, nodes); err == nil {
+		t.Fatal("accepted failed persistence")
+	}
+	if current, _ := s.Lease(j.Name, a.Session); current != a {
+		t.Fatal("failed migration changed original")
+	}
+	s.path = path
+	resume := s.PauseNewAssignments()
+	if _, err := s.Migrate(j, "p", request, nodes); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("migration escaped runtime cutover")
+	}
+	resume()
+	updated, err := s.Migrate(j, "p", request, nodes)
+	if err != nil || updated.Node != "c" || updated.Version() == a.Version() {
+		t.Fatalf("migration failed: %+v %v", updated, err)
+	}
+	if _, err := s.Migrate(j, "p", request, nodes); !errors.Is(err, ErrConflict) {
+		t.Fatal("accepted stale migration")
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored, _ := s.Lease(j.Name, a.Session); restored != updated {
+		t.Fatal("migration not durable")
+	}
+	if next, err := s.Acquire(j, "p", "new", nodes); err != nil || next.Node != "a" {
+		t.Fatal("old slot not released")
+	}
+}
+
+func TestLegacyBindingCanBeExplicitlyMadePermanentWithoutChangingNode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	legacy := Lease{Job: "app", Session: "a", Node: "a", Policy: "old", ExpiresAt: time.Now().Add(-time.Hour)}
+	data, _ := json.Marshal(map[string]Lease{leaseKey("app", "a"): legacy})
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := config.JobConfig{Name: "app", MaxSessions: 10, MaxAccountsPerNode: 1}
+	if old, err := s.Acquire(j, "new", "a", nil); err != nil || !old.Expired(time.Now()) {
+		t.Fatal("legacy lease silently renewed")
+	}
+	updated, err := s.Migrate(j, "new", Migration{Session: "a", Node: "a", ExpectedRevision: legacy.Version()}, []SelectedNode{{Node: "a"}})
+	if err != nil || !updated.Permanent || updated.Policy != "new" || updated.Node != "a" {
+		t.Fatalf("conversion failed: %+v %v", updated, err)
+	}
+}
+
+func TestPerNodeLimitDoesNotInvalidatePolicy(t *testing.T) {
+	j := config.JobConfig{Name: "app", Mode: "pinned"}
+	p := config.ProfileConfig{Name: "us"}
+	before := Policy(j, p, false)
+	j.MaxAccountsPerNode = 1
+	if Policy(j, p, false) != before {
+		t.Fatal("admission limit invalidated existing bindings")
+	}
+}
+
+func TestConcurrentMigrationAndAcquireCannotOversubscribeNode(t *testing.T) {
+	s, _ := Open("")
+	j := config.JobConfig{Name: "app", MaxSessions: 100, MaxAccountsPerNode: 1}
+	a, _ := s.Acquire(j, "p", "a", []SelectedNode{{Node: "source-a"}})
+	b, _ := s.Acquire(j, "p", "b", []SelectedNode{{Node: "source-b"}})
+	target := []SelectedNode{{Node: "target"}}
+	var wg sync.WaitGroup
+	for _, old := range []Lease{a, b} {
+		wg.Add(1)
+		go func(old Lease) {
+			defer wg.Done()
+			_, err := s.Migrate(j, "p", Migration{Session: old.Session, Node: "target", ExpectedRevision: old.Version()}, target)
+			if err != nil && !errors.Is(err, ErrCapacity) {
+				t.Errorf("migration: %v", err)
+			}
+		}(old)
+	}
+	for i := range 16 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := s.Acquire(j, "p", fmt.Sprint(i), target)
+			if err != nil && !errors.Is(err, ErrCapacity) {
+				t.Errorf("acquire: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if counts := s.AccountCounts(j.Name); counts["target"] != 1 {
+		t.Fatalf("target oversubscribed: %v", counts)
+	}
+}
 
 func TestLeaseSurvivesRestartExpiryAndPolicyChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
@@ -264,5 +426,19 @@ func TestCertificateVerificationModeInvalidatesJobPolicy(t *testing.T) {
 	}
 	if PolicyWithCertVerifyMode(j, profile, false, "override") == original {
 		t.Fatal("override reused old certificate-policy measurements and leases")
+	}
+}
+
+func TestApplicationPasswordRotationDoesNotChangePolicy(t *testing.T) {
+	j := config.JobConfig{Name: "a", Mode: "pinned", Selection: "manual", Ingress: "shared", Password: "original-application-key", SessionTTL: "0"}
+	p := config.ProfileConfig{Name: "fast"}
+	original := Policy(j, p, false)
+	j.Password = "rotated-application-key"
+	if Policy(j, p, false) != original {
+		t.Fatal("password rotation invalidated bindings")
+	}
+	j.Ingress = ""
+	if Policy(j, p, false) != original {
+		t.Fatal("inferred ingress changed policy")
 	}
 }

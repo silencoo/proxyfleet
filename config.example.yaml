@@ -73,7 +73,8 @@ pool:
   failure_threshold: 3
   # 黑名单持续时间
   blacklist_duration: 24h
-  # 所有节点被拉黑时是否强制重新尝试；爬虫场景建议保持 false，快速失败
+  # 全池不可用时仅重试自动故障黑名单；不会解除人工禁用或未到期冷却
+  # 爬虫场景建议保持 false，快速失败
   fail_open: false
   # 统一池入口连接失败时切换到其他节点；每节点独立端口始终不会切换
   retry_enabled: true
@@ -109,21 +110,25 @@ profiles:
     min_quality: 80
 
 # ───────────────────────────────────────────────────────────────
-# 抓取任务：节点来源 selection 与连接策略 mode 独立选择。
+# 应用代理（一个 Job 对应一个应用，name 为稳定应用 ID）：节点来源 selection 与连接策略 mode 独立选择。
 # selection 默认 manual：直接使用指定 Profile 的可用节点，不做 Job 目标测速，不按 size 缩减。
 # selection: auto 才启用目标测速优选，需要 target_url；两者都支持 pooled / pinned。
 # 完整配置、API 和 Python 客户端见 docs/jobs.md。
-# 两种 Job 均可在 pool/hybrid 下绑定同 Profile 的独立 Endpoint，每个 Job 一个端口。
-# pinned Endpoint 必须配置 username/password，客户端使用 username-session-会话ID。
-# 例如 accounts Endpoint 使用 2325 端口、profile: hk-fast、username: scraper、password: change-me，
-# 代理 URL 为 http://scraper-session-account-a:change-me@127.0.0.1:2325，无需先调管理 API。
-# pinned 若省略 endpoint，保留 hybrid/multi-port 的独立节点端口方式。
+# 推荐 ingress: shared：应用共用主入口端口，用户名是账号 ID，密码区分应用。
+# 主入口必须启用、无 Profile 过滤且有普通池 username/password，不能匿名访问。
+# 应用密码 16–255 字节且与所有应用/入口密码不同；换密码不改变账号绑定。
+# 代理 URL：http://account-a:replace-accounts-app-secret@127.0.0.1:2323，无需先调管理 API。
+# 共享入口仅支持 HTTP / HTTPS CONNECT / SOCKS5 CONNECT（TCP），不支持 SOCKS4/UDP。
+# 高级：ingress: endpoint + endpoint: 名称，使用独立的同 Profile 入口与入口认证；
+# pinned 用户名仍为 入口用户名-session-账号ID。旧配置不会自动转换。
+# 兼容：ingress: direct 为 hybrid/multi-port 的独立节点端口方式。
 # jobs:
 #   - name: catalog
 #     mode: pooled
 #     selection: auto        # 显式开启自动优选；普通手选池用 manual 并省略测速字段
 #     profile: hk-fast
-#     endpoint: default       # 对应 Endpoint 也需设置 profile: hk-fast
+#     ingress: shared
+#     password: replace-catalog-app-secret # 请替换为随机应用密钥
 #     target_url: https://example.com/catalog
 #     size: 5
 #     concurrency: 8          # 由客户端执行的请求并发上限
@@ -138,9 +143,11 @@ profiles:
 #     mode: pinned
 #     selection: manual      # 默认值，可省略；用 Profile 的名称规则等指定节点集合
 #     profile: hk-fast
-#     endpoint: accounts     # 在 endpoints 列表中添加此入口，并配置上述 Profile 和认证
-#     session_ttl: 30m
+#     ingress: shared
+#     password: replace-accounts-app-secret # 与 catalog 不同，共用端口
+#     session_ttl: "0"       # 默认永久绑定，重启保留；旧绑定通过界面迁移/更新转换
 #     max_sessions: 1024
+#     max_accounts_per_node: 1 # 按应用独立计算；0 不限，1 为一账号一节点，满额拒绝新绑定
 #
 # 多端口模式配置（multi-port / hybrid 模式使用）
 # ───────────────────────────────────────────────────────────────

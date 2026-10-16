@@ -88,6 +88,9 @@ func testJobsHybridTraffic(t *testing.T, selection string) {
 	if pinned.Mode != "pinned" || pinned.State != "ready" || pinned.ProxyURL == pooled.ProxyURL {
 		t.Fatalf("wrong access: %+v %+v", pooled, pinned)
 	}
+	if !pinned.Permanent || !pinned.ExpiresAt.IsZero() {
+		t.Fatal("default binding is not permanent")
+	}
 	for _, access := range []jobs.Access{pooled, pinned} {
 		proxy, _ := url.Parse(access.ProxyURL)
 		transport := &http.Transport{Proxy: http.ProxyURL(proxy)}
@@ -110,7 +113,7 @@ func testJobsHybridTraffic(t *testing.T, selection string) {
 	}
 	m = start()
 	restored, err := m.AcquireJob("accounts", "account-a")
-	if err != nil || restored.Node != pinned.Node || restored.ProxyURL != pinned.ProxyURL {
+	if err != nil || restored.Node != pinned.Node || restored.ProxyURL != pinned.ProxyURL || !restored.Permanent || restored.Revision != pinned.Revision {
 		t.Fatalf("restart changed assignment: %+v %v", restored, err)
 	}
 	candidate, _ := m.ConfigSnapshot()

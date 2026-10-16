@@ -76,6 +76,46 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, action := parts[0], parts[1]
+	if action == "nodes" || action == "migrate" {
+		method := http.MethodGet
+		if action == "migrate" {
+			method = http.MethodPost
+		}
+		if r.Method != method {
+			writeJSONMethodNotAllowed(w, method)
+			return
+		}
+		bindings, ok := c.(jobs.BindingController)
+		if !ok {
+			writeJobError(w, jobs.ErrUnavailable)
+			return
+		}
+		if action == "nodes" {
+			nodes, err := bindings.ListJobNodes(name)
+			if err != nil {
+				writeJobError(w, err)
+				return
+			}
+			writeJSON(w, map[string]any{"nodes": nodes})
+			return
+		}
+		var request jobs.Migration
+		if err := decodeStrictJSON(w, r, 16<<10, &request); err != nil {
+			writeStrictJSONError(w, err)
+			return
+		}
+		if request.Session == "" || len(request.Session) > 128 || request.Node == "" || len(request.Node) > 256 || request.ExpectedRevision == "" || len(request.ExpectedRevision) > 128 {
+			writeJSONError(w, http.StatusBadRequest, "migration requires session, node and expected_revision")
+			return
+		}
+		access, err := bindings.MigrateJob(name, request)
+		if err != nil {
+			writeJobError(w, err)
+			return
+		}
+		writeJSON(w, access)
+		return
+	}
 	if action == "refresh" {
 		if r.Method != http.MethodPost {
 			writeJSONMethodNotAllowed(w, http.MethodPost)
@@ -143,7 +183,7 @@ func writeJobError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case errors.Is(err, jobs.ErrUnavailable):
 		status = http.StatusServiceUnavailable
-	case errors.Is(err, jobs.ErrConflict):
+	case errors.Is(err, jobs.ErrConflict), errors.Is(err, jobs.ErrCapacity):
 		status = http.StatusConflict
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		status = http.StatusRequestTimeout

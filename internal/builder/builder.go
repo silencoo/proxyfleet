@@ -141,6 +141,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 			if err != nil {
 				return option.Options{}, err
 			}
+			inbound = withSharedApplications(cfg, cfg.PrimaryEndpoint(), inbound)
 			inbounds = append(inbounds, inbound)
 		} else {
 			for _, endpoint := range cfg.Endpoints {
@@ -157,6 +158,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 						break
 					}
 				}
+				inbound = withSharedApplications(cfg, endpoint, inbound)
 				inbounds = append(inbounds, inbound)
 				if endpoint.Profile != "" {
 					endpointProfiles[inbound.Tag] = endpoint.Profile
@@ -244,8 +246,11 @@ func Build(cfg *config.Config) (option.Options, error) {
 				poolOptions.JobPolicies[job.Name] = jobs.PolicyWithCertVerifyMode(job, profile, cfg.SkipCertVerify, cfg.CertVerifyModeOrDefault())
 			}
 		}
+		if job.SharedIngress() {
+			poolOptions.JobEndpoints[job.Name] = cfg.PrimaryEndpoint()
+		}
 		for _, endpoint := range cfg.EffectiveEndpoints() {
-			if endpoint.Name == job.Endpoint {
+			if job.EffectiveIngress() == "endpoint" && endpoint.Name == job.Endpoint {
 				poolOptions.JobEndpoints[job.Name] = endpoint
 			}
 		}
@@ -283,6 +288,24 @@ func Build(cfg *config.Config) (option.Options, error) {
 		Experimental: buildExperimentalOptions(),
 	}
 	return opts, nil
+}
+
+func withSharedApplications(cfg *config.Config, endpoint config.EndpointConfig, input option.Inbound) option.Inbound {
+	if endpoint.Name != cfg.PrimaryEndpoint().Name {
+		return input
+	}
+	var applications []sessionin.ApplicationCredential
+	for _, job := range cfg.Jobs {
+		if job.SharedIngress() {
+			applications = append(applications, sessionin.ApplicationCredential{Name: job.Name, Password: job.Password})
+		}
+	}
+	if len(applications) == 0 {
+		return input
+	}
+	input.Type = sessionin.SharedType
+	input.Options = &sessionin.SharedOptions{HTTPMixedInboundOptions: *input.Options.(*option.HTTPMixedInboundOptions), Applications: applications}
+	return input
 }
 
 func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {

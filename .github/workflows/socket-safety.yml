@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  GOTOOLCHAIN: local
+  GOWORK: 'off'
+
 jobs:
   socket-safety:
     strategy:
@@ -21,10 +25,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Pool and Job regression tests
-        run: go test -timeout 5m ./internal/outbound/pool ./internal/jobs
+      - name: Pool, monitor and Job regression tests
+        run: go test -timeout 5m ./internal/outbound/pool ./internal/monitor ./internal/jobs
       - name: Repeat persistence and probe regressions
         run: go test -count=20 -timeout 5m -run '^(TestRuntimeFlushWritesOnlyDirtyNodesAndRetriesLatestState|TestActiveProbesDoNotRecordPassiveTraffic|TestActiveProbeLatencySamplesAppliedOnce)$' ./internal/outbound/pool
+      - name: Repeat account-safety boundaries
+        run: go test -count=20 -timeout 5m -run '^(TestAutomaticRecoveryPreservesProtectedBlocks|TestFailOpenMixedPoolKeepsProtectedNodes|TestAutomaticBanCannotEraseAnActiveCooldown|TestProbeStartedBeforeAdministrativeChangeIsRejected|TestValidatedProbeBeforeAdministrativeChangeIsRejected|TestPermanentAccountStaysPausedOnProtectedNode|TestProtectedBlocksSurviveRecoveryAndSQLiteRestart)$' ./internal/outbound/pool
       - name: Race detector
         if: runner.os == 'Linux'
-        run: go test -race -timeout 5m ./internal/outbound/pool ./internal/jobs
+        run: go test -race -timeout 5m ./internal/outbound/pool ./internal/monitor ./internal/jobs

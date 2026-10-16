@@ -23,6 +23,7 @@ import (
 )
 
 var _ jobs.Controller = (*poolOutbound)(nil)
+var _ jobs.BindingController = (*poolOutbound)(nil)
 
 type jobRankCache struct {
 	status          jobs.Status
@@ -42,7 +43,7 @@ func (p *poolOutbound) job(name string) (config.JobConfig, bool) {
 func (p *poolOutbound) jobFromContext(ctx context.Context) (config.JobConfig, bool) {
 	if metadata := adapter.ContextFrom(ctx); metadata != nil {
 		for _, j := range p.options.Jobs {
-			if j.Endpoint != "" && metadata.Inbound == config.EndpointInboundTag(j.Endpoint) {
+			if (j.SharedIngress() && metadata.Inbound == config.SharedJobInboundTag(j.Name)) || (j.EffectiveIngress() == "endpoint" && metadata.Inbound == config.EndpointInboundTag(j.Endpoint)) {
 				return j, true
 			}
 		}
@@ -210,7 +211,7 @@ func (p *poolOutbound) ListJobSessions() []jobs.SessionInfo {
 		if v, ok := views[lease.Job]; ok {
 			state = p.jobLeaseState(v.job, lease, v.values[lease.Node], v.candidates)
 		}
-		result = append(result, jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: state, ExpiresAt: lease.ExpiresAt})
+		result = append(result, jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: state, ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version()})
 	}
 	return result
 }
@@ -219,7 +220,7 @@ func (p *poolOutbound) jobLeaseState(j config.JobConfig, lease jobs.Lease, sampl
 	if lease.Policy != p.options.JobPolicies[j.Name] {
 		return "policy_changed"
 	}
-	if !time.Now().Before(lease.ExpiresAt) {
+	if lease.Expired(time.Now()) {
 		return "expired"
 	}
 	if p.closed.Load() {
@@ -232,7 +233,7 @@ func (p *poolOutbound) jobLeaseState(j config.JobConfig, lease jobs.Lease, sampl
 	if j.AutomaticSelection() && (!sample.Success || time.Since(sample.CheckedAt) > jobMeasurementMaxAge(j, candidates)) {
 		return "paused"
 	}
-	if j.Endpoint == "" {
+	if j.DirectIngress() {
 		if meta, ok := p.options.Metadata[lease.Node]; !ok || meta.Port == 0 {
 			return "paused"
 		}
@@ -274,6 +275,9 @@ func (p *poolOutbound) pickPinnedJobMember(ctx context.Context, j config.JobConf
 		return nil, jobs.ErrConflict
 	}
 	session, valid := config.ProxySessionID(p.options.JobEndpoints[j.Name].Username, metadata.User)
+	if j.SharedIngress() {
+		session, valid = metadata.User, config.ValidProxySessionID(metadata.User)
+	}
 	if !valid {
 		return nil, jobs.ErrConflict
 	}
@@ -530,13 +534,16 @@ func (p *poolOutbound) AcquireJob(name, session string) (jobs.Access, error) {
 			return a, jobs.ErrUnavailable
 		}
 		e := p.options.JobEndpoints[j.Name]
+		if j.SharedIngress() {
+			e.Username, e.Password = "pool", j.Password
+		}
 		a.ProxyURL = p.jobProxyURL(e.Address, e.Port, e.Username, e.Password)
 		return a, nil
 	}
 	if !validJobSession(session) {
 		return a, fmt.Errorf("%w: session ID must be 1-128 characters without control characters", jobs.ErrConflict)
 	}
-	if j.Endpoint != "" && !config.ValidProxySessionID(session) {
+	if !j.DirectIngress() && !config.ValidProxySessionID(session) {
 		return a, fmt.Errorf("%w: endpoint session ID must use 1-128 ASCII letters, digits, underscores or hyphens", jobs.ErrConflict)
 	}
 	key := p.options.JobPolicies[j.Name]
@@ -552,29 +559,91 @@ func (p *poolOutbound) AcquireJob(name, session string) (jobs.Access, error) {
 	if err != nil {
 		return a, err
 	}
-	a.Session, a.Node, a.ExpiresAt = l.Session, l.Node, l.ExpiresAt
+	return p.accessForLease(j, l, status.Candidates), nil
+}
+
+func (p *poolOutbound) accessForLease(j config.JobConfig, l jobs.Lease, candidates int) jobs.Access {
+	a := jobs.Access{Job: j.Name, Mode: j.Mode, Selection: j.EffectiveSelection(), Concurrency: j.Concurrency, Timeout: j.Timeout, TimeoutMS: j.RequestTimeout().Milliseconds(), ExpectedStatus: j.ExpectedStatus, BodyContains: j.BodyContains,
+		Session: l.Session, Node: l.Node, ExpiresAt: l.ExpiresAt, Permanent: l.Permanent, Revision: l.Version()}
 	// An existing session may retain a healthy node outside the current top N.
 	var sample jobs.Measurement
 	if j.AutomaticSelection() {
-		values, _ := p.jobStore.Measurements(key)
+		values, _ := p.jobStore.Measurements(p.options.JobPolicies[j.Name])
 		sample = values[l.Node]
 	}
-	a.State = p.jobLeaseState(j, l, sample, status.Candidates)
+	a.State = p.jobLeaseState(j, l, sample, candidates)
 	if a.State != "ready" {
-		return a, nil
+		return a
 	}
-	if j.Endpoint != "" {
+	if !j.DirectIngress() {
 		e := p.options.JobEndpoints[j.Name]
-		a.ProxyURL = p.jobProxyURL(e.Address, e.Port, e.Username+config.SessionUsernameSeparator+session, e.Password)
+		username, password := e.Username+config.SessionUsernameSeparator+l.Session, e.Password
+		if j.SharedIngress() {
+			username, password = l.Session, j.Password
+		}
+		a.ProxyURL = p.jobProxyURL(e.Address, e.Port, username, password)
 	} else {
 		meta, exists := p.options.Metadata[l.Node]
 		if !exists || meta.Port == 0 {
 			a.State = "paused"
-			return a, nil
+			return a
 		}
 		a.ProxyURL = p.jobProxyURL(meta.ListenAddress, meta.Port, meta.Username, meta.Password)
 	}
-	return a, nil
+	return a
+}
+
+func (p *poolOutbound) ListJobNodes(name string) ([]jobs.NodeCapacity, error) {
+	j, ok := p.job(name)
+	if !ok {
+		return nil, jobs.ErrNotFound
+	}
+	if j.Mode != "pinned" {
+		return nil, jobs.ErrConflict
+	}
+	if p.closed.Load() || p.jobStore == nil {
+		return nil, jobs.ErrUnavailable
+	}
+	counts := p.jobStore.AccountCounts(name)
+	result := []jobs.NodeCapacity{}
+	for _, n := range p.jobStatus(j).Selected {
+		result = append(result, jobs.NodeCapacity{Node: n.Node, Name: n.Name, Accounts: counts[n.Node], Limit: j.MaxAccountsPerNode, Available: j.MaxAccountsPerNode == 0 || counts[n.Node] < j.MaxAccountsPerNode})
+	}
+	return result, nil
+}
+
+func (p *poolOutbound) MigrateJob(name string, request jobs.Migration) (jobs.Access, error) {
+	j, ok := p.job(name)
+	if !ok {
+		return jobs.Access{}, jobs.ErrNotFound
+	}
+	if j.Mode != "pinned" || !validJobSession(request.Session) || request.Node == "" || request.ExpectedRevision == "" {
+		return jobs.Access{}, jobs.ErrConflict
+	}
+	if !j.DirectIngress() && !config.ValidProxySessionID(request.Session) {
+		return jobs.Access{}, jobs.ErrConflict
+	}
+	if p.jobStore == nil || p.closed.Load() {
+		return jobs.Access{}, jobs.ErrUnavailable
+	}
+	status := p.jobStatus(j)
+	selected := make([]jobs.SelectedNode, 0, len(status.Selected))
+	for _, n := range status.Selected {
+		if p.memberEligibleForProfile(p.memberByTag[n.Node], "tcp", p.profiles[j.Profile]) {
+			selected = append(selected, n)
+		}
+	}
+	p.healthMu.RLock()
+	if p.closed.Load() {
+		p.healthMu.RUnlock()
+		return jobs.Access{}, jobs.ErrUnavailable
+	}
+	l, err := p.jobStore.Migrate(j, p.options.JobPolicies[j.Name], request, selected)
+	p.healthMu.RUnlock()
+	if err != nil {
+		return jobs.Access{}, err
+	}
+	return p.accessForLease(j, l, status.Candidates), nil
 }
 func validJobSession(value string) bool {
 	if len(value) == 0 || len(value) > 128 {
@@ -609,7 +678,7 @@ func (p *poolOutbound) ReportJob(name string, feedback jobs.Feedback) error {
 		return fmt.Errorf("%w: target feedback requires selection: auto", jobs.ErrConflict)
 	}
 	l, ok := p.jobStore.Lease(name, feedback.Session)
-	if !ok || l.Node != feedback.Node || l.Policy != p.options.JobPolicies[name] || !time.Now().Before(l.ExpiresAt) {
+	if !ok || l.Node != feedback.Node || l.Policy != p.options.JobPolicies[name] || l.Expired(time.Now()) {
 		return jobs.ErrConflict
 	}
 	if math.IsNaN(feedback.DurationMS) || math.IsInf(feedback.DurationMS, 0) || feedback.DurationMS <= 0 || feedback.DurationMS > float64(j.RequestTimeout().Milliseconds())+1000 || feedback.StatusCode < 0 || feedback.StatusCode > 599 {

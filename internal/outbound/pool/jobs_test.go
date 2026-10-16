@@ -44,6 +44,44 @@ func jobPoolFixture(t *testing.T) *poolOutbound {
 	return p
 }
 
+func TestPermanentAccountCapacityAndManualMigration(t *testing.T) {
+	p := jobPoolFixture(t)
+	j := &p.options.Jobs[1]
+	j.Selection, j.SessionTTL, j.MaxAccountsPerNode, j.Endpoint = "manual", "0", 1, "accounts"
+	p.options.JobEndpoints["accounts"] = config.EndpointConfig{Address: "127.0.0.1", Port: 2325, Username: "worker", Password: "secret"}
+	a, err := p.AcquireJob("accounts", "a")
+	if err != nil || !a.Permanent || a.State != "ready" {
+		t.Fatalf("permanent acquire: %+v %v", a, err)
+	}
+	b, _ := p.AcquireJob("accounts", "b")
+	p.setMemberEligible(p.memberByTag[a.Node], false)
+	if paused, _ := p.AcquireJob("accounts", "a"); paused.State != "paused" || paused.Node != a.Node {
+		t.Fatal("failed node switched")
+	}
+	if _, err := p.MigrateJob("accounts", jobs.Migration{Session: "a", Node: b.Node, ExpectedRevision: a.Revision}); !errors.Is(err, jobs.ErrCapacity) {
+		t.Fatalf("full migration accepted: %v", err)
+	}
+	nodes, err := p.ListJobNodes("accounts")
+	if err != nil || len(nodes) != 2 || nodes[0].Available || nodes[0].Accounts != 1 || !nodes[1].Available {
+		t.Fatalf("incorrect capacities: %+v %v", nodes, err)
+	}
+	moved, err := p.MigrateJob("accounts", jobs.Migration{Session: "a", Node: "c", ExpectedRevision: a.Revision})
+	if err != nil || moved.Node != "c" || moved.ProxyURL != a.ProxyURL || moved.State != "ready" {
+		t.Fatalf("migration changed account endpoint: %+v %v", moved, err)
+	}
+	if _, err := p.AcquireJob("accounts", "extra"); !errors.Is(err, jobs.ErrCapacity) {
+		t.Fatalf("exhausted pool reused a node: %v", err)
+	}
+	p.setMemberEligible(p.memberByTag[a.Node], true)
+	if same, _ := p.AcquireJob("accounts", "a"); same.Node != "c" {
+		t.Fatal("recovery reverted manual migration")
+	}
+	p.options.JobEndpoints["accounts"] = config.EndpointConfig{Address: "127.0.0.1", Port: 2325, Username: "rotated", Password: "new-secret"}
+	if same, _ := p.AcquireJob("accounts", "a"); same.Node != "c" || same.Revision != moved.Revision || same.State != "ready" {
+		t.Fatal("credential rotation changed application identity")
+	}
+}
+
 func TestJobSessionListingIsReadOnlyAndIncludesRemovedJobs(t *testing.T) {
 	p := jobPoolFixture(t)
 	j := p.options.Jobs[1]
@@ -570,5 +608,53 @@ func TestJobRefreshCloseCancelsBlockedBodyWithoutPublishingFailure(t *testing.T)
 	}
 	if activeConnections(p.memberByTag["a"]) != 0 {
 		t.Fatal("cancelled probe retained outbound")
+	}
+}
+
+func TestSharedApplicationTagNeverFallsBackToPool(t *testing.T) {
+	p := jobPoolFixture(t)
+	ctx := adapter.WithContext(context.Background(), &adapter.InboundContext{Inbound: config.SharedJobInboundTag("accounts"), User: "account-01"})
+	// Existing direct/endpoint jobs are not authorized by stale shared credentials.
+	if _, err := p.pickMember(ctx, "tcp"); err == nil {
+		t.Fatal("stale application tag reached ordinary pool")
+	}
+	j := &p.options.Jobs[1]
+	j.Ingress, j.Password, j.SessionTTL = "shared", "application-secret-123", "0"
+	p.options.JobEndpoints[j.Name] = config.EndpointConfig{Address: "127.0.0.1", Port: 2323}
+	if _, err := p.pickMember(ctx, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	if p.maxAttempts(ctx) != 1 {
+		t.Fatal("shared pinned traffic can retry another node")
+	}
+	p.options.Jobs = nil
+	if _, err := p.pickMember(ctx, "tcp"); err == nil {
+		t.Fatal("removed application tag reached ordinary pool")
+	}
+}
+
+func TestSharedPooledApplicationUsesItsOwnProfile(t *testing.T) {
+	p := jobPoolFixture(t)
+	p.profiles["only-c"] = &compiledProfile{name: "only-c", allowed: map[string]struct{}{"c": {}}}
+	j := &p.options.Jobs[0]
+	j.Ingress, j.Endpoint, j.Password, j.Profile = "shared", "", "pooled-app-secret", "only-c"
+	p.options.JobEndpoints[j.Name] = config.EndpointConfig{Address: "127.0.0.1", Port: 2323}
+	ctx := adapter.WithContext(context.Background(), &adapter.InboundContext{Inbound: config.SharedJobInboundTag(j.Name), User: "pool"})
+	for range 5 {
+		member, err := p.pickMember(ctx, "tcp")
+		if err != nil || member.tag != "c" {
+			t.Fatalf("shared pooled profile escaped: %v %v", member, err)
+		}
+	}
+	access, err := p.AcquireJob(j.Name, "")
+	if err != nil || access.ProxyURL != "http://pool:pooled-app-secret@127.0.0.1:2323" {
+		t.Fatalf("shared pooled access: %v %v", access, err)
+	}
+	if len(p.jobStore.Leases()) != 0 {
+		t.Fatal("pooled requests created bindings")
+	}
+	p.setMemberEligible(p.memberByTag["c"], false)
+	if _, err := p.pickMember(ctx, "tcp"); err == nil {
+		t.Fatal("empty application profile fell back to ordinary pool")
 	}
 }

@@ -4,6 +4,7 @@ package jobs
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +23,7 @@ var (
 	ErrNotFound    = errors.New("job or session not found")
 	ErrUnavailable = errors.New("no eligible nodes available for job")
 	ErrConflict    = errors.New("job operation conflicts with current state")
+	ErrCapacity    = errors.New("all eligible nodes have reached this application's account limit")
 )
 
 type Measurement struct {
@@ -40,6 +42,20 @@ type Lease struct {
 	Node      string    `json:"node"`
 	Policy    string    `json:"policy"`
 	ExpiresAt time.Time `json:"expires_at"`
+	Permanent bool      `json:"permanent,omitempty"`
+	Revision  string    `json:"revision,omitempty"`
+}
+
+func (l Lease) Expired(now time.Time) bool { return !l.Permanent && !now.Before(l.ExpiresAt) }
+
+// Revision also works for old records without rewriting them during read-only use.
+func (l Lease) Version() string {
+	if l.Revision != "" {
+		return l.Revision
+	}
+	data, _ := json.Marshal(l)
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
 }
 
 // Manual selection has node identities but no target measurements. Embedding
@@ -71,6 +87,8 @@ type Access struct {
 	Node           string    `json:"node,omitempty"`
 	ProxyURL       string    `json:"proxy_url,omitempty"`
 	ExpiresAt      time.Time `json:"expires_at,omitempty"`
+	Permanent      bool      `json:"permanent,omitempty"`
+	Revision       string    `json:"revision,omitempty"`
 	Concurrency    int       `json:"concurrency"`
 	Timeout        string    `json:"timeout"`
 	TimeoutMS      int64     `json:"timeout_ms"`
@@ -85,6 +103,28 @@ type SessionInfo struct {
 	Node      string    `json:"node"`
 	State     string    `json:"state"`
 	ExpiresAt time.Time `json:"expires_at"`
+	Permanent bool      `json:"permanent,omitempty"`
+	Revision  string    `json:"revision"`
+}
+
+type NodeCapacity struct {
+	Node      string `json:"node"`
+	Name      string `json:"name"`
+	Accounts  int    `json:"accounts"`
+	Limit     int    `json:"limit"`
+	Available bool   `json:"available"`
+}
+
+type Migration struct {
+	Session          string `json:"session"`
+	Node             string `json:"node"`
+	ExpectedRevision string `json:"expected_revision"`
+}
+
+// Separate interface preserves integrations implementing the existing Controller.
+type BindingController interface {
+	ListJobNodes(string) ([]NodeCapacity, error)
+	MigrateJob(string, Migration) (Access, error)
 }
 
 type Feedback struct {
@@ -160,7 +200,7 @@ func Open(path string) (*Store, error) {
 		return nil, errors.New("invalid job session count")
 	}
 	for k, l := range s.leases {
-		if k != leaseKey(l.Job, l.Session) || l.Node == "" || l.Policy == "" || l.ExpiresAt.IsZero() {
+		if k != leaseKey(l.Job, l.Session) || l.Node == "" || l.Policy == "" || (!l.Permanent && l.ExpiresAt.IsZero()) || (l.Permanent && (!l.ExpiresAt.IsZero() || l.Revision == "")) {
 			return nil, errors.New("invalid job session record")
 		}
 	}
@@ -173,6 +213,11 @@ func Policy(j config.JobConfig, profile config.ProfileConfig, skipCertVerify boo
 }
 
 func PolicyWithCertVerifyMode(j config.JobConfig, profile config.ProfileConfig, skipCertVerify bool, mode string) string {
+	// Admission limits must not invalidate existing bindings or target measurements.
+	// Omitting this new field when zero preserves legacy policy hashes.
+	j.MaxAccountsPerNode = 0
+	// Authentication rotation is not a node-selection policy change.
+	j.Password, j.Ingress = "", ""
 	j.Selection = j.EffectiveSelection()
 	if !j.AutomaticSelection() {
 		// Saved benchmark options may be retained while disabled. Editing those
@@ -373,27 +418,98 @@ func (s *Store) Acquire(j config.JobConfig, policy, session string, ranked []Sel
 	for _, l := range s.leases {
 		if l.Job == j.Name {
 			count++
-			if time.Now().Before(l.ExpiresAt) {
-				loads[l.Node]++
-			}
+			// Paused/expired bindings still reserve their slot until explicit release.
+			loads[l.Node]++
 		}
 	}
 	if count >= j.MaxSessions || len(s.leases) >= 4096 {
 		return Lease{}, fmt.Errorf("%w: release finished sessions before allocating more", ErrConflict)
 	}
-	node := ranked[0].Node
+	node := ""
 	for _, candidate := range ranked {
-		if loads[candidate.Node] < loads[node] {
+		if j.MaxAccountsPerNode > 0 && loads[candidate.Node] >= j.MaxAccountsPerNode {
+			continue
+		}
+		if node == "" || loads[candidate.Node] < loads[node] {
 			node = candidate.Node
 		}
 	}
-	l := Lease{Job: j.Name, Session: session, Node: node, Policy: policy, ExpiresAt: time.Now().Add(j.LeaseTTL())}
+	if node == "" {
+		return Lease{}, ErrCapacity
+	}
+	l := newLease(j, policy, session, node)
 	s.leases[k] = l
 	if err := s.saveLocked(); err != nil {
 		delete(s.leases, k)
 		return Lease{}, err
 	}
 	return l, nil
+}
+
+func newLease(j config.JobConfig, policy, session, node string) Lease {
+	l := Lease{Job: j.Name, Session: session, Node: node, Policy: policy, Revision: rand.Text(), Permanent: j.LeaseTTL() == 0}
+	if !l.Permanent {
+		l.ExpiresAt = time.Now().Add(j.LeaseTTL())
+	}
+	return l
+}
+
+func (s *Store) AccountCounts(job string) map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	counts := make(map[string]int)
+	for _, l := range s.leases {
+		if l.Job == job {
+			counts[l.Node]++
+		}
+	}
+	return counts
+}
+
+// Migrate atomically moves an existing binding, or explicitly reapplies the
+// current lifetime/policy to the same node. Failed writes leave the original intact.
+func (s *Store) Migrate(j config.JobConfig, policy string, request Migration, eligible []SelectedNode) (Lease, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := leaseKey(j.Name, request.Session)
+	old, ok := s.leases[key]
+	if !ok {
+		return Lease{}, ErrNotFound
+	}
+	if request.ExpectedRevision == "" || old.Version() != request.ExpectedRevision {
+		return Lease{}, fmt.Errorf("%w: binding changed; reload before migrating", ErrConflict)
+	}
+	if s.assignmentPauses > 0 {
+		return Lease{}, ErrUnavailable
+	}
+	allowed := false
+	for _, n := range eligible {
+		if n.Node == request.Node {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return Lease{}, ErrUnavailable
+	}
+	if old.Node != request.Node && j.MaxAccountsPerNode > 0 {
+		count := 0
+		for _, l := range s.leases {
+			if l.Job == j.Name && l.Node == request.Node {
+				count++
+			}
+		}
+		if count >= j.MaxAccountsPerNode {
+			return Lease{}, ErrCapacity
+		}
+	}
+	updated := newLease(j, policy, request.Session, request.Node)
+	s.leases[key] = updated
+	if err := s.saveLocked(); err != nil {
+		s.leases[key] = old
+		return Lease{}, err
+	}
+	return updated, nil
 }
 func (s *Store) Lease(job, session string) (Lease, bool) {
 	s.mu.Lock()

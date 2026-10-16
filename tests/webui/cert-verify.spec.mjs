@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { mockAPI } from './fixtures.mjs';
+import { mockAPI, navigate } from './fixtures.mjs';
 
 for (const [locale, width] of [['zh',390], ['en',1280]]) {
   test(`certificate policy saves, retains conflicts and reloads (${locale}, ${width})`, async ({page}, testInfo) => {
@@ -27,7 +27,7 @@ for (const [locale, width] of [['zh',390], ['en',1280]]) {
       return response;
     });
     await page.goto('/');
-    await page.locator('[data-tab="settings"]').click();
+    await navigate(page, 'settings');
     const policy=page.locator('#settingSkipCertVerifyMode'), checkbox=page.locator('#settingSkipCertVerify');
     await expect(policy).toHaveValue('default');
     await expect.poll(()=>page.locator('#settingsTab form').evaluate(el=>el.inert)).toBe(false);
@@ -37,7 +37,7 @@ for (const [locale, width] of [['zh',390], ['en',1280]]) {
     await policy.scrollIntoViewIfNeeded();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     await page.screenshot({path:testInfo.outputPath('certificate-policy.png')});
-    await page.locator('[data-tab="dashboard"]').click();
+    await navigate(page, 'dashboard');
     await expect(page.locator('#confirmDialog')).toBeVisible();
     await page.keyboard.press('Escape');
     status=412;

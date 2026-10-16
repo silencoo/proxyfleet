@@ -215,6 +215,7 @@ func testPinnedSessionEndpoint(t *testing.T, selection string) {
 	defer secureTarget.Close()
 	endpoint := config.EndpointConfig{Name: "accounts", Address: "127.0.0.1", Port: findManagerTestPort(t), Profile: "fast", Username: "worker", Password: "p@ss?/秘密"}
 	cfg := &config.Config{Mode: "pool", LogLevel: "error", Profiles: []config.ProfileConfig{{Name: "fast"}}, Endpoints: []config.EndpointConfig{endpoint}, Pool: config.PoolConfig{Mode: "sequential", RetryAttempts: 3}, Management: config.ManagementConfig{ProbeTarget: target.URL}, Jobs: []config.JobConfig{{Name: "accounts", Mode: "pinned", Selection: "auto", Profile: "fast", Endpoint: "accounts", TargetURL: target.URL, Size: 2, Timeout: "2s"}}}
+	cfg.Jobs[0].MaxAccountsPerNode = 1
 	if selection == "manual" {
 		cfg.Jobs[0].Selection, cfg.Jobs[0].TargetURL, cfg.Jobs[0].Size = "", "", 0
 		cfg.Profiles[0].NameRegex = "^(one|two)$"
@@ -227,6 +228,7 @@ func testPinnedSessionEndpoint(t *testing.T, selection string) {
 		t.Fatal(err)
 	}
 	cfg.SubscriptionRefresh.MinAvailableNodes = 0
+	wantManualSelected := 2
 	start := func() *Manager {
 		m := New(cfg, monitor.Config{ProbeTarget: target.URL, ProbeMode: "manual"})
 		if err := m.Start(context.Background()); err != nil {
@@ -235,7 +237,7 @@ func testPinnedSessionEndpoint(t *testing.T, selection string) {
 		t.Cleanup(func() { _ = m.Close() })
 		if selection == "manual" {
 			s := m.ListJobs()[0]
-			if s.Selection != "manual" || len(s.Selected) != 2 || s.Measured != 0 || s.Refreshing {
+			if s.Selection != "manual" || len(s.Selected) != wantManualSelected || s.Measured != 0 || s.Refreshing {
 				t.Fatalf("manual job needed benchmark warm-up: %+v", s)
 			}
 			return m
@@ -301,6 +303,15 @@ func testPinnedSessionEndpoint(t *testing.T, selection string) {
 	b, _ := m.jobStore.Lease("accounts", "account-b")
 	if !exists || a.Node == b.Node {
 		t.Fatalf("first connections did not assign independent sessions: %+v %+v", a, b)
+	}
+	if !a.Permanent || !b.Permanent {
+		t.Fatal("accounts did not default to permanent bindings")
+	}
+	for _, scheme := range []string{"http", "socks5"} {
+		request(scheme, "worker-session-account-c", endpoint.Password, target.URL, false)
+	}
+	if _, ok := m.jobStore.Lease("accounts", "account-c"); ok {
+		t.Fatal("full nodes admitted another account")
 	}
 	// HTTP keep-alive must authenticate each request independently, including
 	// when a client changes session or omits credentials on a reused connection.
@@ -368,11 +379,28 @@ func testPinnedSessionEndpoint(t *testing.T, selection string) {
 	}
 	request("http", "worker-session-account-a", endpoint.Password, target.URL, false)
 	request("http", "worker-session-account-b", endpoint.Password, secureTarget.URL, true)
-	if err := m.ReleaseJob("accounts", "account-a"); err != nil {
+	move := jobs.Migration{Session: "account-a", Node: b.Node, ExpectedRevision: a.Version()}
+	if _, err := m.MigrateJob("accounts", move); !errors.Is(err, jobs.ErrCapacity) {
+		t.Fatalf("migration reused a full node: %v", err)
+	}
+	if err := m.ReleaseJob("accounts", "account-b"); err != nil {
 		t.Fatal(err)
 	}
+	moved, err := m.MigrateJob("accounts", move)
+	if err != nil || moved.Node != b.Node || !moved.Permanent {
+		t.Fatalf("manual migration failed: %+v %v", moved, err)
+	}
 	request("http", "worker-session-account-a", endpoint.Password, secureTarget.URL, true)
-	if recovered, _ := m.jobStore.Lease("accounts", "account-a"); recovered.Node == a.Node {
-		t.Fatal("explicit recovery did not assign a remaining node")
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The deliberately blacklisted node remains unavailable after restart.
+	wantManualSelected = 1
+	m = start()
+	for _, scheme := range []string{"http", "socks5"} {
+		request(scheme, "worker-session-account-a", endpoint.Password, secureTarget.URL, true)
+	}
+	if recovered, _ := m.jobStore.Lease("accounts", "account-a"); recovered.Node != moved.Node || recovered.Version() != moved.Revision || !recovered.Permanent {
+		t.Fatal("restart lost explicit account migration")
 	}
 }

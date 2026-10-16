@@ -109,3 +109,10 @@ export async function mockAPI(page, transform = response => response) {
     await route.fulfill({ status: result.status, contentType: 'application/json', headers:result.headers, body: JSON.stringify(result.body) });
   });
 }
+
+// Use the same route links in the desktop rail and the modal mobile drawer.
+export async function navigate(page, tab) {
+  const link = page.locator(`.nav-item[data-tab="${tab}"]`);
+  if (!await link.isVisible() && await page.locator('#menuToggle').isVisible()) await page.locator('#menuToggle').click();
+  await link.click();
+}

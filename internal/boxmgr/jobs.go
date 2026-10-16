@@ -59,7 +59,7 @@ func (m *Manager) ListJobSessions() []jobs.SessionInfo {
 	result := []jobs.SessionInfo{}
 	if m.jobStore != nil {
 		for _, lease := range m.jobStore.Leases() {
-			result = append(result, jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: "unavailable", ExpiresAt: lease.ExpiresAt})
+			result = append(result, jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: "unavailable", ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version()})
 		}
 	}
 	return result
@@ -98,4 +98,22 @@ func (m *Manager) ReportJob(name string, f jobs.Feedback) error {
 		return c.ReportJob(name, f)
 	}
 	return jobs.ErrUnavailable
+}
+
+func (m *Manager) ListJobNodes(name string) ([]jobs.NodeCapacity, error) {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
+	if c, ok := m.jobController().(jobs.BindingController); ok {
+		return c.ListJobNodes(name)
+	}
+	return nil, jobs.ErrUnavailable
+}
+
+func (m *Manager) MigrateJob(name string, request jobs.Migration) (jobs.Access, error) {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
+	if c, ok := m.jobController().(jobs.BindingController); ok {
+		return c.MigrateJob(name, request)
+	}
+	return jobs.Access{}, jobs.ErrUnavailable
 }

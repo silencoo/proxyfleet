@@ -1,11 +1,12 @@
 import { expect, test } from '@playwright/test';
-import { mockAPI } from './fixtures.mjs';
+import { mockAPI, navigate } from './fixtures.mjs';
 
-const baseJob = {name:'accounts', mode:'pinned', selection:'manual', profile:'hk-fast', endpoint:'hk-only', target_url:'', size:0, concurrency:8, timeout:'15s', refresh_interval:'10m', session_ttl:'30m', max_sessions:1024, probe_batch_size:32, probe_concurrency:4, max_response_bytes:2097152, expected_status:200, body_contains:''};
+const baseJob = {name:'accounts', mode:'pinned', selection:'manual', profile:'hk-fast', endpoint:'hk-only', ingress:'endpoint', password:'', target_url:'', size:0, concurrency:8, timeout:'15s', refresh_interval:'10m', session_ttl:'0', max_sessions:1024, max_accounts_per_node:0, probe_batch_size:32, probe_concurrency:4, max_response_bytes:2097152, expected_status:200, body_contains:''};
 const autoJob = {...baseJob,name:'catalog',mode:'pooled',selection:'auto',endpoint:'catalog',target_url:'https://example.com/catalog',size:5};
 async function setup(page, {locale='zh',width=1280,role='admin'}={}) {
-  const state = {jobs:[structuredClone(baseJob),structuredClone(autoJob)], calls:[], saves:[], saveStatus:200, saveWait:null, accessWait:null, accessStatus:200, releaseWait:null, persistAcquire:false, refreshing:false, profileRegex:'',
-    sessions:Array.from({length:23},(_,i)=>({job:i===22?'deleted-job':'accounts',session:`account-${String(i+1).padStart(2,'0')}`,node:`node-${i%3+1}`,state:i===22?'removed':i===21?'expired':'ready',expires_at:'2027-01-01T12:00:00Z'}))};
+  const state = {jobs:[structuredClone(baseJob),structuredClone(autoJob)], calls:[], saves:[], saveStatus:200, saveWait:null, accessWait:null, accessStatus:200, releaseWait:null, persistAcquire:false, refreshing:false, profileRegex:'', migrations:[], migrationStatus:200, migrationWait:null,
+    targets:[{node:'node-1',name:'US node 1',accounts:1,limit:1,available:false},{node:'node-2',name:'US node 2',accounts:1,limit:1,available:false},{node:'node-3',name:'US node 3',accounts:0,limit:1,available:true}],
+    sessions:Array.from({length:23},(_,i)=>({job:i===22?'deleted-job':'accounts',session:`account-${String(i+1).padStart(2,'0')}`,node:`node-${i%3+1}`,state:i===22?'removed':i===21?'expired':'ready',revision:`binding-${i}`,permanent:i<21,expires_at:'2027-01-01T12:00:00Z'}))};
   await page.setViewportSize({width,height:900});
   await page.addInitScript(({locale,width})=>{localStorage.setItem('uiLanguage',locale);localStorage.setItem('themeMode',width===390?'dark':'light');},{locale,width});
   await mockAPI(page, async response=>{
@@ -39,6 +40,17 @@ async function setup(page, {locale='zh',width=1280,role='admin'}={}) {
       if(state.persistAcquire&&!state.sessions.some(s=>s.job==='accounts'&&s.session===session))state.sessions.push({job:'accounts',session,node:'node-1',state:'ready',expires_at:'2027-01-01T12:00:00Z'});
       response.body={job:'accounts',mode:'pinned',state:'ready',node:'node-1',session,proxy_url:`http://hk-session-${session}:hk-secret@127.0.0.1:23231`,concurrency:8,timeout:'15s',expires_at:'2027-01-01T12:00:00Z'};
     }
+    if(path.endsWith('/nodes')&&path.startsWith('/api/jobs/'))response.body={nodes:state.targets};
+    if(path.endsWith('/migrate')) {
+      const requestBody=request.postDataJSON();state.migrations.push({app:path.split('/')[3],...requestBody});
+      if(state.migrationWait)await state.migrationWait;
+      const binding=state.sessions.find(s=>s.job===path.split('/')[3]&&s.session===requestBody.session);
+      response.status=state.migrationStatus;
+      if(response.status!==200){response.body={error:'migration rejected; original binding unchanged'};return response;}
+      if(!binding||binding.revision!==requestBody.expected_revision){response.status=409;response.body={error:'binding changed; reload before migrating'};return response;}
+      Object.assign(binding,{node:requestBody.node,permanent:true,revision:'migrated-'+binding.revision,state:'ready',expires_at:'0001-01-01T00:00:00Z'});
+      response.body={...binding};
+    }
     if(path.endsWith('/release')) {if(state.releaseWait)await state.releaseWait;state.sessions=state.sessions.filter(s=>!(s.job===path.split('/')[3]&&s.session===request.postDataJSON().session));response.body={ok:true};}
     return response;
   });
@@ -46,8 +58,8 @@ async function setup(page, {locale='zh',width=1280,role='admin'}={}) {
   await expect(page.locator('#healthyNodeRate')).toBeVisible();
   return state;
 }
-const settings=async page=>{await page.locator('[data-tab="settings"]').click();await expect(page.locator('#job-1-name')).toHaveValue('catalog');await expect.poll(()=>page.locator('#settingsTab form').evaluate(el=>el.inert)).toBe(false);};
-const jobs=async page=>{await page.locator('[data-tab="jobs"]').click();await expect(page.locator('.job-status-card')).toHaveCount(2);await expect(page.locator('[data-session-count]')).toContainText('23');};
+const settings=async page=>{await navigate(page, 'settings');await expect(page.locator('#job-1-name')).toHaveValue('catalog');await expect.poll(()=>page.locator('#settingsTab form').evaluate(el=>el.inert)).toBe(false);};
+const jobs=async page=>{await navigate(page, 'jobs');await expect(page.locator('.job-status-card')).toHaveCount(2);await expect(page.locator('[data-session-count]')).toContainText('23');};
 const save=page=>page.locator('#settingsTab button[type="submit"]').click();
 
 for(const body of ['<html>gateway response</html>','[]','null','{}'])test(`invalid successful save response preserves the draft (${body})`,async({page},testInfo)=>{
@@ -68,7 +80,7 @@ for(const body of ['<html>gateway response</html>','[]','null','{}'])test(`inval
   }
   await expect(page.locator('#job-1-concurrency')).toHaveValue('23');
   expect(writes).toBe(1);
-  await page.locator('[data-tab="jobs"]').click();await expect(page.locator('#confirmDialog')).toBeVisible();await page.keyboard.press('Escape');
+  await navigate(page, 'jobs');await expect(page.locator('#confirmDialog')).toBeVisible();await page.keyboard.press('Escape');
   await page.unroute('**/api/settings');await save(page);
   await expect(page.locator('#settingsSaveStatus')).toContainText(locale==='zh'?'配置已保存':'Configuration saved');
   expect(state.saves).toHaveLength(1);
@@ -180,7 +192,7 @@ for(const status of [500,412])test(`failed save ${status} preserves draft; reloa
   await page.locator('#job-1-concurrency').fill('23');await save(page);
   await expect(page.locator('#settingsSaveStatus')).toContainText(status===412?'草稿已保留':'test save rejected');
   await expect(page.locator('#job-1-concurrency')).toHaveValue('23');
-  await page.locator('[data-tab="jobs"]').click();
+  await navigate(page, 'jobs');
   await expect(page.locator('#confirmDialog')).toBeVisible();
   await expect(page.locator('#confirmCancel')).toBeFocused();await page.keyboard.press('Escape');
   await expect(page.locator('#settingsTab')).toHaveClass(/active/);
@@ -196,7 +208,7 @@ test('pending save prevents duplicate submit and draft replacement',async({page}
   await page.locator('#job-1-timeout').fill('25s');await save(page);
   await expect.poll(()=>state.saves.length).toBe(1);
   await expect.poll(()=>page.locator('#settingsTab form').evaluate(el=>el.inert)).toBe(true);
-  await page.locator('[data-tab="jobs"]').click();await expect(page.locator('#settingsTab')).toHaveClass(/active/);
+  await navigate(page, 'jobs');await expect(page.locator('#settingsTab')).toHaveClass(/active/);
   finish();await expect(page.locator('#settingsSaveStatus')).toContainText('配置已保存');
   await expect.poll(()=>page.locator('#settingsTab form').evaluate(el=>el.inert)).toBe(false);
 });
@@ -207,7 +219,7 @@ test('adding and deleting jobs is a draft operation with cancellable confirmatio
   await expect(page.locator('#job-2-name')).toBeFocused();
   await page.locator('[data-remove-job="2"]').click();await page.keyboard.press('Escape');
   await expect(page.locator('[data-job-row]')).toHaveCount(3);
-  await page.locator('[data-remove-job="2"]').click();await expect(page.locator('#confirmMessage')).toContainText('普通 Profile');
+  await page.locator('[data-remove-job="2"]').click();await expect(page.locator('#confirmMessage')).toContainText('应用密码失效');
   await page.locator('#confirmAccept').click();await expect(page.locator('[data-job-row]')).toHaveCount(2);
   expect(state.saves).toHaveLength(0);
 });
@@ -243,7 +255,7 @@ test('access credentials stay masked, support SOCKS5, and stale acquisitions do 
   await expect(page.locator('[data-acquire-job]')).toBeDisabled();
   await page.locator('#jobAccessSession').fill('new-id');finish();
   await expect(page.locator('[data-acquire-job]')).toBeEnabled();await expect(page.locator('[data-access-output]')).toBeHidden();
-  await page.locator('[data-tab="dashboard"]').click();await expect(page.locator('#jobAccessURL')).toHaveValue('');
+  await navigate(page, 'dashboard');await expect(page.locator('#jobAccessURL')).toHaveValue('');
 });
 
 test('only auto jobs expose benchmarking and the old assistant does not emit invalid pinned URLs',async({page})=>{
@@ -266,7 +278,7 @@ test('viewer cannot open admin job controls',async({page})=>{
 test('runtime failures can be retried and paused sessions never show a proxy URL',async({page})=>{
   await setup(page);
   await page.route('**/api/jobs',route=>route.fulfill({status:503,json:{error:'runtime offline'}}));
-  await page.locator('[data-tab="jobs"]').click();
+  await navigate(page, 'jobs');
   await expect(page.locator('[data-runtime-error]')).toHaveText('runtime offline');
   await page.unroute('**/api/jobs');await page.locator('[data-reload-jobs]').click();
   await expect(page.locator('.job-status-card')).toHaveCount(2);
@@ -280,8 +292,8 @@ test('runtime failures can be retried and paused sessions never show a proxy URL
 
 test('empty jobs show configuration action without inventing nodes or acquiring a session',async({page})=>{
   const state=await setup(page);state.jobs=[];state.sessions=[];
-  await page.locator('[data-tab="jobs"]').click();
-  await expect(page.locator('[data-job-status-list]')).toContainText('尚未配置任务');
+  await navigate(page, 'jobs');
+  await expect(page.locator('[data-job-status-list]')).toContainText('尚未配置应用');
   await expect(page.locator('[data-acquire-job]')).toBeDisabled();
   await expect(page.locator('[data-session-list]')).toContainText('没有匹配的会话');
   expect(state.calls.some(c=>c.endsWith('/acquire'))).toBe(false);
@@ -305,7 +317,7 @@ test('saving jobs preserves legacy Profile name regex alongside MUST rules',asyn
 
 test('renaming a Profile preserves Endpoint bindings and blocks saving missing references',async({page})=>{
   const state=await setup(page);state.jobs=[];
-  await page.locator('[data-tab="settings"]').click();
+  await navigate(page, 'settings');
   await expect(page.locator('#profile-0-name')).toHaveValue('hk-fast');
   await expect.poll(()=>page.locator('#settingsTab form').evaluate(el=>el.inert)).toBe(false);
   await page.locator('#profile-0-name').fill('hk-renamed');
@@ -328,7 +340,7 @@ test('subscription-only drafts are protected by reload and navigation guards',as
   await setup(page);await settings(page);
   const url=page.locator('#subscriptionSourcesMount [data-field="url"]');
   await url.fill('https://example.com/changed');
-  await page.locator('[data-tab="jobs"]').click();
+  await navigate(page, 'jobs');
   await expect(page.locator('#confirmDialog')).toBeVisible();await page.keyboard.press('Escape');
   await expect(page.locator('#settingsTab')).toHaveClass(/active/);
   await page.locator('#settingsTab').getByRole('button',{name:'重新载入设置',exact:true}).click();
@@ -436,7 +448,7 @@ test('running benchmark status updates without erasing access output and polling
   await expect(page.locator('.job-status-card').last().locator('details')).toHaveAttribute('open','');
   await expect(page.locator('[data-status-job="catalog"] summary')).toBeFocused();
   state.refreshing=true;await page.locator('[data-reload-jobs]').click();await expect(refresh).toBeDisabled();
-  await page.locator('[data-tab="dashboard"]').click();
+  await navigate(page, 'dashboard');
   const reads=state.calls.filter(c=>c==='GET /api/jobs').length;
   await page.waitForTimeout(2200);
   expect(state.calls.filter(c=>c==='GET /api/jobs')).toHaveLength(reads);
@@ -492,7 +504,7 @@ test('benchmark status retries back off to 30 seconds and stop after navigation'
     await expect(page.locator('[data-runtime-error]')).toHaveText(`status outage ${before+1}`);
     expect(reads).toBe(before+1);
   }
-  await page.locator('[data-tab="dashboard"]').click();
+  await navigate(page, 'dashboard');
   await page.clock.runFor(60000);expect(reads).toBe(7);
 });
 
@@ -510,7 +522,7 @@ for(const status of [401,403])test(`benchmark polling stops on authorization err
 
 test('auto job named access does not collide with the access helper pending state',async({page})=>{
   const state=await setup(page);state.jobs=[{...autoJob,name:'access'}];
-  await page.locator('[data-tab="jobs"]').click();await expect(page.locator('.job-status-card')).toHaveCount(1);
+  await navigate(page, 'jobs');await expect(page.locator('.job-status-card')).toHaveCount(1);
   await page.locator('[data-refresh-job="access"]').click();
   await expect(page.locator('[data-acquire-job]')).toBeEnabled();
   await page.locator('[data-acquire-job]').click();
@@ -520,7 +532,7 @@ test('auto job named access does not collide with the access helper pending stat
 for(const [locale,width] of [['zh',390],['en',1280]])test(`jobs render and navigate in ${locale} at ${width}px`,async({page},testInfo)=>{
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await setup(page,{locale,width});await jobs(page);
-  await expect(page.locator('#jobsTab h1')).toHaveText(locale==='en'?'Scraping jobs':'抓取任务');
+  await expect(page.locator('#jobsTab h1')).toHaveText(locale==='en'?'Applications':'应用代理');
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await page.locator('.job-status-card summary').first().click();
   await page.screenshot({path:testInfo.outputPath('jobs-runtime.png'),fullPage:true});
@@ -528,7 +540,7 @@ for(const [locale,width] of [['zh',390],['en',1280]])test(`jobs render and navig
   await page.locator('.job-sessions').scrollIntoViewIfNeeded();
   await page.screenshot({path:testInfo.outputPath('jobs-sessions.png')});
   await page.locator('[data-configure-jobs]').click();await expect(page.locator('[data-add-job]')).toBeFocused();
-  await expect(page.locator('.jobs-editor .panel-title')).toHaveText(locale==='en'?'Job configuration':'抓取任务配置');
+  await expect(page.locator('.jobs-editor .panel-title')).toHaveText(locale==='en'?'Application configuration':'应用配置');
   await page.locator('[data-job-row]').last().locator('summary').first().focus();await page.keyboard.press('Space');await page.keyboard.press('Space');
   await page.locator('#job-1-name').scrollIntoViewIfNeeded();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
@@ -536,4 +548,171 @@ for(const [locale,width] of [['zh',390],['en',1280]])test(`jobs render and navig
   await page.locator('#job-1-max_response_bytes').scrollIntoViewIfNeeded();
   await page.screenshot({path:testInfo.outputPath('jobs-benchmark-settings.png')});
   expect(errors).toEqual([]);
+});
+
+
+test('new applications default to permanent bindings and save per-node capacity',async({page})=>{
+  const state=await setup(page);await settings(page);
+  await page.locator('[data-add-job]').click();
+  await expect(page.locator('#job-2-session_ttl')).toHaveValue('0');
+  await page.locator('[data-remove-job="2"]').click();await page.locator('#confirmAccept').click();
+  await page.locator('[data-job-row]').first().locator('summary').first().click();
+  await page.locator('#job-0-max_accounts_per_node').fill('1');
+  await save(page);await expect.poll(()=>state.saves.length).toBe(1);
+  expect(state.saves[0].body.jobs[0]).toMatchObject({session_ttl:'0',max_accounts_per_node:1});
+});
+
+for(const lifetime of ['0','0s','168h'])test(`binding lifetime ${lifetime} is accepted`,async({page})=>{
+  const state=await setup(page);await settings(page);
+  await page.locator('[data-job-row]').first().locator('summary').first().click();
+  await page.locator('#job-0-session_ttl').fill(lifetime);await page.locator('#job-0-max_accounts_per_node').fill('1');await save(page);
+  await expect.poll(()=>state.saves.length).toBe(1);
+});
+
+for(const [locale,width] of [['zh',390],['en',1280]])test(`manual account migration is scoped, confirmed and responsive in ${locale}`,async({page},testInfo)=>{
+  const state=await setup(page,{locale,width});await jobs(page);
+  await expect(page.locator('[data-session-list]')).toContainText(locale==='zh'?'永久绑定':'Permanent binding');
+  await page.locator('[data-migrate-session="account-01"]').click();
+  await expect(page.locator('[data-binding-editor]')).toBeVisible();
+  await expect(page.locator('#bindingTarget')).toBeFocused();
+  await expect(page.locator('#bindingTarget option[value="node-2"]')).toBeDisabled();
+  await expect(page.locator('#bindingTarget option[value="node-1"]')).toBeEnabled();
+  await expect(page.locator('[data-acquire-job]')).toBeDisabled();
+  await page.locator('#bindingTarget').selectOption('node-3');
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:testInfo.outputPath('account-migration.png')});
+  await page.locator('[data-binding-save]').click();await expect(page.locator('#confirmDialog')).toBeVisible();
+  await expect(page.locator('#confirmCancel')).toBeFocused();await page.keyboard.press('Escape');expect(state.migrations).toHaveLength(0);
+  await page.locator('[data-binding-save]').click();await page.locator('#confirmAccept').click();
+  await expect(page.locator('[data-binding-editor]')).toBeHidden();
+  expect(state.migrations).toEqual([{app:'accounts',session:'account-01',node:'node-3',expected_revision:'binding-0'}]);
+  expect(state.sessions[0]).toMatchObject({node:'node-3',permanent:true});
+  expect(state.calls.filter(c=>c.endsWith('/release'))).toEqual([]);
+});
+
+test('same-node update converts an expired binding without changing its account ID',async({page})=>{
+  const state=await setup(page);state.sessions[0].permanent=false;state.sessions[0].state='expired';await jobs(page);
+  await page.locator('[data-migrate-session="account-01"]').click();
+  await expect(page.locator('#bindingTarget')).toHaveValue('node-1');
+  await page.locator('[data-binding-save]').click();await page.locator('#confirmAccept').click();
+  await expect(page.locator('[data-binding-editor]')).toBeHidden();
+  expect(state.sessions[0]).toMatchObject({session:'account-01',node:'node-1',permanent:true,state:'ready'});
+});
+
+for(const status of [409,503,500])test(`failed migration ${status} preserves target choice and original binding`,async({page})=>{
+  const state=await setup(page);state.migrationStatus=status;await jobs(page);
+  await page.locator('[data-migrate-session="account-01"]').click();await page.locator('#bindingTarget').selectOption('node-3');
+  await page.locator('[data-binding-save]').click();await page.locator('#confirmAccept').click();
+  await expect(page.locator('[data-binding-error]')).toContainText('migration rejected');
+  await expect(page.locator('#bindingTarget')).toHaveValue('node-3');
+  expect(state.sessions[0].node).toBe('node-1');expect(state.migrations).toHaveLength(1);
+  await page.locator('[data-binding-cancel]').click();await expect(page.locator('[data-migrate-session="account-01"]')).toBeFocused();
+});
+
+test('no available migration targets does not remove the original binding',async({page})=>{
+  const state=await setup(page);state.targets=[{node:'node-2',name:'full',accounts:1,limit:1,available:false}];await jobs(page);
+  await page.locator('[data-migrate-session="account-01"]').click();await expect(page.locator('[data-binding-save]')).toBeDisabled();
+  await expect(page.locator('[data-binding-state]')).toContainText('没有可用名额');expect(state.sessions[0].node).toBe('node-1');
+  state.targets=[];await page.locator('[data-binding-reload]').click();await expect(page.locator('#bindingTarget option')).toHaveCount(0);
+  await expect(page.locator('[data-binding-save]')).toBeDisabled();expect(state.migrations).toHaveLength(0);
+});
+
+test('pending migration prevents duplicate writes and competing binding operations',async({page})=>{
+  const state=await setup(page);let finish;state.migrationWait=new Promise(r=>{finish=r;});await jobs(page);
+  await page.locator('[data-migrate-session="account-01"]').click();await page.locator('#bindingTarget').selectOption('node-3');
+  await page.locator('[data-binding-save]').click();await page.locator('#confirmAccept').click();await expect.poll(()=>state.migrations.length).toBe(1);
+  await expect(page.locator('[data-binding-save]')).toBeDisabled();await expect(page.locator('[data-binding-cancel]')).toBeDisabled();
+  await expect(page.locator('[data-release-session="account-01"]')).toBeDisabled();await expect(page.locator('[data-acquire-job]')).toBeDisabled();
+  finish();await expect(page.locator('[data-binding-editor]')).toBeHidden();expect(state.migrations).toHaveLength(1);
+});
+
+test('stale migration revision cannot overwrite another operator binding',async({page})=>{
+  const state=await setup(page);await jobs(page);await page.locator('[data-migrate-session="account-01"]').click();
+  await page.locator('#bindingTarget').selectOption('node-3');state.sessions[0].revision='another-operator';
+  await page.locator('[data-binding-save]').click();await page.locator('#confirmAccept').click();
+  await expect(page.locator('[data-binding-error]')).toContainText('binding changed');expect(state.sessions[0].node).toBe('node-1');
+});
+
+test('invalid binding list response preserves displayed records and migration identity',async({page})=>{
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const state=await setup(page);await jobs(page);
+  await page.route('**/api/jobs/sessions?*',route=>route.fulfill({status:200,contentType:'application/json',body:'{"sessions":{},"pagination":{"page":1,"total_pages":1,"total_items":1}}'}));
+  await page.locator('[data-reload-sessions]').click();
+  await expect(page.locator('[data-session-error]')).not.toHaveText('');
+  await expect(page.locator('[data-migrate-job]')).toHaveCount(20);
+  await page.locator('[data-migrate-session="account-01"]').click();await expect(page.locator('#bindingTarget')).toHaveValue('node-1');
+  await page.locator('[data-binding-cancel]').click();
+  expect(state.migrations).toHaveLength(0);expect(errors).toEqual([]);
+});
+
+for (const [locale,width] of [['zh',1280],['en',390]]) test(`shared-port application defaults, secret controls and advanced access ${locale}`,async({page},testInfo)=>{
+  const state=await setup(page,{locale,width});await settings(page);
+  await page.locator('[data-add-job]').click();
+  await expect(page.locator('#job-2-ingress')).toHaveValue('shared');
+  await expect(page.locator('#job-2-endpoint')).toBeHidden();
+  await expect(page.locator('#job-2-session_ttl')).toHaveValue('0');
+  const row=page.locator('[data-job-row]').nth(2),key=page.locator('#job-2-password');
+  const original=await key.inputValue();expect(original).toMatch(/^[0-9a-f]{48}$/);
+  await expect(key).toHaveAttribute('type','password');
+  await expect(row.locator('[data-shared-endpoint]')).toContainText('23230');
+  await row.locator('[data-reveal-app-password]').click();await expect(key).toHaveAttribute('type','text');
+  await row.locator('[data-reveal-app-password]').click();await expect(key).toHaveAttribute('type','password');
+  await row.locator('[data-generate-app-password]').click();await expect(page.locator('#confirmDialog')).toBeVisible();
+  await expect(page.locator('#confirmCancel')).toBeFocused();await page.keyboard.press('Escape');await expect(key).toHaveValue(original);
+  await row.locator('[data-generate-app-password]').click();await page.locator('#confirmAccept').click();
+  await expect(key).not.toHaveValue(original);await expect(key).toHaveAttribute('type','password');
+  const generated=await key.inputValue();expect(state.saves).toHaveLength(0);
+  await page.locator('#job-2-ingress').selectOption('endpoint');await expect(key).toBeHidden();
+  await expect(page.locator('#job-2-endpoint')).toBeVisible();
+  await page.locator('#job-2-endpoint').selectOption('hk-only');
+  await page.locator('#job-2-ingress').selectOption('shared');await expect(page.locator('#job-2-endpoint')).toHaveValue('');
+  await expect(key).toHaveValue(generated);
+  await key.scrollIntoViewIfNeeded();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  if(locale==='en')expect(await row.innerText()).not.toMatch(/[\u3400-\u9fff]/);
+  await page.screenshot({path:testInfo.outputPath(`shared-application-${locale}.png`)});
+  await save(page);await expect.poll(()=>state.saves.length).toBe(1);
+  expect(state.saves[0].body.jobs[2]).toMatchObject({ingress:'shared',endpoint:'',password:generated,session_ttl:'0'});
+  expect(state.saves[0].body.endpoints).toHaveLength(3); // No new listening port.
+});
+
+test('shared credentials validate uniqueness, preserve bytes and failed rotation draft',async({page})=>{
+  const state=await setup(page);await settings(page);
+  await page.locator('#job-1-ingress').selectOption('shared');
+  const key=page.locator('#job-1-password');
+  await key.fill('short');await save(page);await expect(key).toHaveAttribute('aria-invalid','true');
+  await page.locator('[data-endpoint-row]').first().locator('[data-field="password"]').fill('ordinary-pool-secret');
+  await key.fill('ordinary-pool-secret');await save(page);await expect(key).toHaveAttribute('aria-invalid','true');
+  await key.fill(' application-secret-keep-spaces ');await save(page);await expect.poll(()=>state.saves.length).toBe(1);
+  expect(state.saves[0].body.jobs[1].password).toBe(' application-secret-keep-spaces ');
+  await page.locator('[data-add-job]').click();
+  await page.locator('#job-2-password').fill(' application-secret-keep-spaces ');await save(page);
+  await expect(page.locator('#job-2-password')).toHaveAttribute('aria-invalid','true');expect(state.saves).toHaveLength(1);
+  await page.locator('#job-2-password').fill('different-application-secret');
+  state.saveStatus=500;await save(page);await expect(page.locator('#settingsSaveStatus')).toContainText('test save rejected');
+  await expect(page.locator('#job-2-password')).toHaveValue('different-application-secret');
+  state.saveStatus=200;await save(page);await expect(page.locator('#settingsSaveStatus')).toContainText('配置已保存');
+});
+
+test('shared access refuses anonymous or filtered primary and legacy configurations keep access mode',async({page})=>{
+  const state=await setup(page);delete state.jobs[0].ingress;delete state.jobs[0].password;await settings(page);
+  await expect(page.locator('#job-0-ingress')).toHaveValue('endpoint');
+  await page.locator('#job-1-ingress').selectOption('shared');
+  const primary=page.locator('[data-endpoint-row]').first();
+  await primary.locator('[data-field="username"]').fill('');await primary.locator('[data-field="password"]').fill('');
+  await save(page);await expect(page.locator('#job-1-ingress')).toHaveAttribute('aria-invalid','true');expect(state.saves).toHaveLength(0);
+  await primary.locator('[data-field="username"]').fill('fleet');await primary.locator('[data-field="password"]').fill('pool-secret');
+  await primary.locator('[data-field="profile"]').selectOption('hk-fast');
+  await save(page);await expect(page.locator('#job-1-ingress')).toHaveAttribute('aria-invalid','true');expect(state.saves).toHaveLength(0);
+  await primary.locator('[data-field="profile"]').selectOption('');await save(page);await expect.poll(()=>state.saves.length).toBe(1);
+});
+
+test('shared account helper rejects malformed IDs and displays masked server-issued URL',async({page})=>{
+  const state=await setup(page);state.jobs[0]={...baseJob,ingress:'shared',endpoint:'',password:'application-accounts-secret'};
+  await page.route('**/api/jobs/accounts/acquire',route=>route.fulfill({json:{job:'accounts',mode:'pinned',state:'ready',session:route.request().postDataJSON().session,node:'node-1',permanent:true,revision:'binding',proxy_url:'http://account-01:application-accounts-secret@127.0.0.1:23230',concurrency:8,timeout:'15s'}}));
+  await jobs(page);await expect(page.locator('.job-status-card').first()).toContainText('统一端口');
+  await page.locator('#jobAccessSession').fill('account@another-profile');await page.locator('[data-acquire-job]').click();
+  await expect(page.locator('[data-access-error]')).toContainText('账号 ID');
+  await page.locator('#jobAccessSession').fill('account-01');await page.locator('[data-acquire-job]').click();
+  await expect(page.locator('#jobAccessURL')).toHaveValue('http://account-01:application-accounts-secret@127.0.0.1:23230');
+  await expect(page.locator('#jobAccessURL')).toHaveAttribute('type','password');
 });

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { mockAPI } from './fixtures.mjs';
+import { mockAPI, navigate } from './fixtures.mjs';
 
 test.beforeEach(async ({ page }) => {
   await mockAPI(page);
@@ -40,15 +40,16 @@ for (const locale of ['en', 'zh']) {
       const rate = page.locator('#healthyNodeRate');
       expect(await rate.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
       await page.screenshot({path:testInfo.outputPath('health-dashboard.png'),fullPage:true});
-      await page.locator('.nav-item[data-tab="debug"]').click();
+      await navigate(page, 'debug');
       await expect(page.locator('#debugSuccessRate')).toHaveText('39.5%');
       await expect(page.locator('#debugTab .chart-title').first()).toHaveText(locale==='en'?'Recorded success rate':'历史记录成功率');
       await expect(page.locator('#diagnosticRateHelp')).toContainText(locale==='en'?'not the current healthy-node percentage':'不代表当前健康节点比例');
       await page.waitForTimeout(150); // Include the delayed tab redraw.
       await expect.poll(()=>page.evaluate(()=>window.echarts.getInstanceByDom(document.getElementById('successRateChart')).getOption().series[0].data[0].value)).toBe(39.497);
       const helpBox = await page.locator('#diagnosticRateHelp').boundingBox();
-      const actionsBox = await page.locator('.header-actions').boundingBox();
-      expect(helpBox.y).toBeGreaterThanOrEqual(actionsBox.y + actionsBox.height);
+      const pageBox = await page.locator('#debugTab').boundingBox();
+      expect(helpBox.y).toBeGreaterThanOrEqual(pageBox.y);
+      await expect(page.locator('#debugTab .page-actions')).toHaveCount(0);
       await page.screenshot({path:testInfo.outputPath('health-diagnostics.png'),fullPage:true});
       expect(pageErrors).toEqual([]);
     });
@@ -59,7 +60,7 @@ test('empty health metrics do not claim a zero-percent failure rate', async ({pa
   await page.addInitScript(()=>localStorage.setItem('uiLanguage','en'));
   await page.goto('/');
   await expect(page.locator('#healthyNodeRate')).toHaveText('No nodes');
-  await page.locator('.nav-item[data-tab="debug"]').click();
+  await navigate(page, 'debug');
   await page.waitForTimeout(150);
   await expect(page.locator('#debugSuccessRate')).toHaveText('—');
   await expect.poll(()=>page.evaluate(()=>window.echarts.getInstanceByDom(document.getElementById('successRateChart')).getOption().series[0].data[0].name)).toBe('No recorded attempts');
@@ -96,7 +97,7 @@ test('keeps all three dashboard charts visible with an empty pool and no traffic
 
 test('shows release capabilities and the new cost/safety controls', async ({ page }) => {
   await page.goto('/');
-  await page.locator('.nav-item[data-tab="settings"]').click();
+  await navigate(page, 'settings');
 
   await expect(page.locator('#buildInfoIdentity')).toHaveText('ProxyFleet v3.2.0-test');
   await expect(page.locator('#buildInfoStatus')).toHaveText('完整发行构建');
@@ -108,7 +109,7 @@ test('shows release capabilities and the new cost/safety controls', async ({ pag
 
 test('edits named profiles and generates profile-aware proxy commands', async ({ page }) => {
   await page.goto('/');
-  await page.locator('.nav-item[data-tab="settings"]').click();
+  await navigate(page, 'settings');
 
   const mount = page.locator('#profileSettingsMount');
   await expect(mount.getByText('Named Profiles')).toBeVisible();
@@ -130,7 +131,7 @@ test('edits named profiles and generates profile-aware proxy commands', async ({
 
 test('manages named subscription sources with masked URLs, status, refresh, and delete confirmation', async ({ page }) => {
   await page.goto('/');
-  await page.locator('.nav-item[data-tab="settings"]').click();
+  await navigate(page, 'settings');
 
   const mount = page.locator('#subscriptionSourcesMount');
   await expect(mount.getByText('Subscription Sources')).toBeVisible();
@@ -153,13 +154,13 @@ test('manages named subscription sources with masked URLs, status, refresh, and 
 
 test('shows and clears structured traffic history and exposes safe settings', async ({ page }) => {
   await page.goto('/');
-  await page.locator('.nav-item[data-tab="logs"]').click();
+  await navigate(page, 'logs');
   await expect(page.locator('#trafficLogTableBody')).toContainText('node-a');
   await expect(page.locator('#trafficLogTableBody')).toContainText('hk-fast');
   await expect(page.locator('#trafficLogTableBody')).toContainText('retry');
   await expect(page.locator('#trafficLogSummary')).toContainText('丢弃 0 条');
 
-  await page.locator('.nav-item[data-tab="settings"]').click();
+  await navigate(page, 'settings');
   await expect(page.locator('#settingTrafficLogEnabled')).toBeChecked();
   await expect(page.locator('#settingTrafficLogRedact')).toBeChecked();
   await expect(page.locator('#settingTrafficLogMaxEntries')).toHaveValue('100000');
@@ -167,7 +168,7 @@ test('shows and clears structured traffic history and exposes safe settings', as
 
 test('manages shared-pool endpoints with status, profile binding, and delete confirmation', async ({ page }) => {
   await page.goto('/');
-  await page.locator('.nav-item[data-tab="settings"]').click();
+  await navigate(page, 'settings');
 
   const mount = page.locator('#endpointSettingsMount');
   await expect(mount.getByText('Endpoint Manager')).toBeVisible();
@@ -199,7 +200,7 @@ test('manages shared-pool endpoints with status, profile binding, and delete con
 test('localizes dynamic settings content completely in English', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('uiLanguage', 'en'));
   await page.goto('/');
-  await page.locator('.nav-item[data-tab="settings"]').click();
+  await navigate(page, 'settings');
 
   await expect(page).toHaveTitle('ProxyFleet - Control Center');
   await expect(page.locator('#endpointSettingsMount')).toContainText('Endpoints start only in pool / hybrid mode.');
@@ -209,7 +210,7 @@ test('localizes dynamic settings content completely in English', async ({ page }
 
   const chineseByTab = {};
   for (const tab of ['dashboard', 'manage', 'debug', 'operations', 'logs', 'settings']) {
-    await page.locator(`.nav-item[data-tab="${tab}"]`).click();
+    await navigate(page, tab);
     await page.waitForTimeout(100);
     const visibleChinese = await page.locator('body').evaluate(element => element.innerText
       .split(/\n+/)
@@ -223,7 +224,7 @@ test('localizes dynamic settings content completely in English', async ({ page }
 test('localizes the complete subscription save workflow in English', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('uiLanguage', 'en'));
   await page.goto('/');
-  await page.locator('.nav-item[data-tab="settings"]').click();
+  await navigate(page, 'settings');
 
   await page.locator('#subscriptionSourcesMount [data-field="url"]').fill('https://example.com/sub?token=updated');
   await page.locator('#settingsTab form button[type="submit"]').click();
@@ -244,7 +245,7 @@ test('localizes the complete subscription save workflow in English', async ({ pa
 
 test('keeps the Endpoint mode note separated from the panel header', async ({ page }) => {
   await page.goto('/');
-  await page.locator('.nav-item[data-tab="settings"]').click();
+  await navigate(page, 'settings');
 
   const spacing = await page.locator('.endpoint-mode-note').evaluate(element => {
     const note = element.getBoundingClientRect();
@@ -257,7 +258,7 @@ test('keeps the Endpoint mode note separated from the panel header', async ({ pa
 
 test('saves other settings when disabled GeoIP auto-update reports a zero interval', async ({ page }) => {
   await page.goto('/');
-  await page.locator('.nav-item[data-tab="settings"]').click();
+  await navigate(page, 'settings');
 
   await expect(page.locator('#settingGeoIPAutoUpdate')).not.toBeChecked();
   await expect(page.locator('#settingGeoIPUpdateInterval')).toHaveValue('24h');
@@ -271,14 +272,14 @@ test('saves other settings when disabled GeoIP auto-update reports a zero interv
   await expect(page.locator('.toast').last()).toContainText(/保存|Saved/);
 });
 
-test('places probe progress details below the header actions', async ({ page }) => {
+test('places probe progress in the dashboard flow without overlapping actions', async ({ page }) => {
   await page.goto('/');
   await page.locator('#probeProgress').evaluate(element => element.classList.add('show'));
 
   const layout = await page.evaluate(() => {
     const progress = document.querySelector('.progress-float').getBoundingClientRect();
-    const actions = document.querySelector('.header-actions').getBoundingClientRect();
-    const header = document.querySelector('.header').getBoundingClientRect();
+    const actions = document.querySelector('#dashboardTab .page-actions').getBoundingClientRect();
+    const header = document.querySelector('#dashboardTab .page-heading').getBoundingClientRect();
     const overlapsActions = !(progress.right <= actions.left || progress.left >= actions.right || progress.bottom <= actions.top || progress.top >= actions.bottom);
     return { progressTop: progress.top, headerBottom: header.bottom, overlapsActions };
   });

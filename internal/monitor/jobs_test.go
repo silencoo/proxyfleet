@@ -15,7 +15,59 @@ import (
 
 type jobAPIFixture struct {
 	settingsTransactionNodeManager
-	session string
+	session   string
+	migration jobs.Migration
+}
+
+func (*jobAPIFixture) ListJobNodes(string) ([]jobs.NodeCapacity, error) {
+	return []jobs.NodeCapacity{{Node: "node-b", Accounts: 0, Limit: 1, Available: true}}, nil
+}
+func (f *jobAPIFixture) MigrateJob(name string, request jobs.Migration) (jobs.Access, error) {
+	f.migration = request
+	return jobs.Access{Job: name, Session: request.Session, Node: request.Node, Permanent: true, State: "ready", Revision: "new-revision"}, nil
+}
+
+func TestBindingManagementRequiresAdminAndValidatesMigration(t *testing.T) {
+	m, err := NewManager(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+	s := NewServer(Config{Enabled: true, Listen: "127.0.0.1:9091", Password: "admin-test"}, m, nil)
+	defer s.Shutdown(context.Background())
+	f := &jobAPIFixture{}
+	s.SetNodeManager(f)
+	for _, role := range []Role{RoleViewer, RoleOperator, RoleAdmin} {
+		s.sessions[string(role)] = &Session{Role: role, ExpiresAt: time.Now().Add(time.Hour)}
+	}
+	for _, tc := range []struct {
+		role                 Role
+		method, action, body string
+		want                 int
+	}{
+		{RoleViewer, "GET", "nodes", "", 403}, {RoleOperator, "POST", "migrate", `{}`, 403},
+		{RoleAdmin, "POST", "nodes", "", 405}, {RoleAdmin, "GET", "nodes", "", 200},
+		{RoleAdmin, "GET", "migrate", "", 405}, {RoleAdmin, "POST", "migrate", `{"session":"a","node":"node-b"}`, 400},
+		{RoleAdmin, "POST", "migrate", `{"session":"a","node":"node-b","expected_revision":"old","unknown":1}`, 400},
+		{RoleAdmin, "POST", "migrate", `{"session":"a","node":"node-b","expected_revision":"old"}`, 200},
+	} {
+		r := httptest.NewRequest(tc.method, "/api/jobs/accounts/"+tc.action, strings.NewReader(tc.body))
+		r.Header.Set("Authorization", "Bearer "+string(tc.role))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		s.srv.Handler.ServeHTTP(w, r)
+		if w.Code != tc.want {
+			t.Fatalf("%s %s %s: %d %s", tc.role, tc.method, tc.action, w.Code, w.Body.String())
+		}
+	}
+	if f.migration.Session != "a" || f.migration.Node != "node-b" || f.migration.ExpectedRevision != "old" {
+		t.Fatal("migration lost revision")
+	}
+	w := httptest.NewRecorder()
+	writeJobError(w, jobs.ErrCapacity)
+	if w.Code != http.StatusConflict {
+		t.Fatal("capacity must be an actionable conflict")
+	}
 }
 
 func (*jobAPIFixture) ListJobs() []jobs.Status {

@@ -13,7 +13,7 @@ func TestJobsDefaultsValidationAndClone(t *testing.T) {
 	if err := c.NormalizeJobs(); err != nil {
 		t.Fatal(err)
 	}
-	if c.Jobs[0].Size != 5 || c.Jobs[0].RequestTimeout() == 0 || c.Jobs[1].LeaseTTL() == 0 {
+	if c.Jobs[0].Size != 5 || c.Jobs[0].RequestTimeout() == 0 || c.Jobs[1].LeaseTTL() != 0 || c.Jobs[1].SessionTTL != "0" {
 		t.Fatal("missing defaults")
 	}
 	clone := c.Clone()
@@ -22,18 +22,22 @@ func TestJobsDefaultsValidationAndClone(t *testing.T) {
 		t.Fatal("clone aliases job configuration")
 	}
 	for name, mutate := range map[string]func(*Config){
-		"duplicate":           func(c *Config) { c.Jobs[1].Name = "CATALOG" },
-		"missing profile":     func(c *Config) { c.Jobs[0].Profile = "missing" },
-		"unbound endpoint":    func(c *Config) { c.Endpoints[0].Profile = "" },
-		"endpoint reused":     func(c *Config) { c.Jobs = append(c.Jobs, c.Jobs[0]); c.Jobs[2].Name = "other" },
-		"pinned pool-only":    func(c *Config) { c.Mode = "pool" },
-		"pinned endpoint":     func(c *Config) { c.Jobs[1].Endpoint = "catalog" },
-		"target credentials":  func(c *Config) { c.Jobs[0].TargetURL = "https://user:password@example.com" },
-		"unsupported target":  func(c *Config) { c.Jobs[0].TargetURL = "file:///etc/passwd" },
-		"unbounded timeout":   func(c *Config) { c.Jobs[0].Timeout = "1h" },
-		"undersized batch":    func(c *Config) { c.Jobs[0].ProbeBatchSize = 1 },
-		"unknown selection":   func(c *Config) { c.Jobs[0].Selection = "typo" },
-		"auto without target": func(c *Config) { c.Jobs[0].TargetURL = "" },
+		"duplicate":            func(c *Config) { c.Jobs[1].Name = "CATALOG" },
+		"missing profile":      func(c *Config) { c.Jobs[0].Profile = "missing" },
+		"unbound endpoint":     func(c *Config) { c.Endpoints[0].Profile = "" },
+		"endpoint reused":      func(c *Config) { c.Jobs = append(c.Jobs, c.Jobs[0]); c.Jobs[2].Name = "other" },
+		"pinned pool-only":     func(c *Config) { c.Mode = "pool" },
+		"pinned endpoint":      func(c *Config) { c.Jobs[1].Endpoint = "catalog" },
+		"target credentials":   func(c *Config) { c.Jobs[0].TargetURL = "https://user:password@example.com" },
+		"unsupported target":   func(c *Config) { c.Jobs[0].TargetURL = "file:///etc/passwd" },
+		"unbounded timeout":    func(c *Config) { c.Jobs[0].Timeout = "1h" },
+		"undersized batch":     func(c *Config) { c.Jobs[0].ProbeBatchSize = 1 },
+		"unknown selection":    func(c *Config) { c.Jobs[0].Selection = "typo" },
+		"auto without target":  func(c *Config) { c.Jobs[0].TargetURL = "" },
+		"negative node limit":  func(c *Config) { c.Jobs[1].MaxAccountsPerNode = -1 },
+		"excessive node limit": func(c *Config) { c.Jobs[1].MaxAccountsPerNode = 4097 },
+		"negative lifetime":    func(c *Config) { c.Jobs[1].SessionTTL = "-1h" },
+		"too short lifetime":   func(c *Config) { c.Jobs[1].SessionTTL = "1s" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := jobTestConfig()
@@ -42,6 +46,22 @@ func TestJobsDefaultsValidationAndClone(t *testing.T) {
 				t.Fatal("accepted invalid job")
 			}
 		})
+	}
+}
+
+func TestPermanentJobConfigRoundTrip(t *testing.T) {
+	c := jobTestConfig()
+	c.Jobs[1].SessionTTL, c.Jobs[1].MaxAccountsPerNode = "0s", 1
+	if err := c.NormalizeJobs(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(c.Jobs)
+	var restored []JobConfig
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored[1].SessionTTL != "0" || restored[1].MaxAccountsPerNode != 1 || c.Clone().Jobs[1].MaxAccountsPerNode != 1 {
+		t.Fatal("permanent binding configuration lost")
 	}
 }
 
@@ -133,5 +153,43 @@ func TestPinnedJobSessionEndpointValidation(t *testing.T) {
 	}
 	if id, ok := ProxySessionID("name-session-base", "name-session-base-session-account_A-1"); !ok || id != "account_A-1" {
 		t.Fatal("base username parsed incorrectly")
+	}
+}
+
+func sharedJobConfig() *Config {
+	return &Config{Mode: "pool", Profiles: []ProfileConfig{{Name: "fast"}}, Endpoints: []EndpointConfig{{Name: "default", Address: "127.0.0.1", Port: 2323, Username: "fleet", Password: "legacy-password"}}, Jobs: []JobConfig{{Name: "a", Mode: "pinned", Profile: "fast", Ingress: "shared", Password: "application-a-secret"}, {Name: "b", Mode: "pooled", Profile: "fast", Password: "application-b-secret"}}}
+}
+func TestSharedApplicationValidation(t *testing.T) {
+	c := sharedJobConfig()
+	if err := c.NormalizeJobs(); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Jobs[0].SharedIngress() || !c.Jobs[1].SharedIngress() {
+		t.Fatal("shared ingress lost")
+	}
+	for name, change := range map[string]func(*Config){
+		"duplicate password": func(c *Config) { c.Jobs[1].Password = c.Jobs[0].Password },
+		"legacy collision":   func(c *Config) { c.Endpoints[0].Password = c.Jobs[0].Password },
+		"missing password":   func(c *Config) { c.Jobs[0].Password = "" },
+		"short password":     func(c *Config) { c.Jobs[0].Password = "short" },
+		"control password":   func(c *Config) { c.Jobs[0].Password = "long-enough-secret\n" },
+		"ambiguous endpoint": func(c *Config) { c.Jobs[0].Endpoint = "default" },
+		"filtered primary":   func(c *Config) { c.Endpoints[0].Profile = "fast" },
+		"anonymous primary":  func(c *Config) { c.Endpoints[0].Username = ""; c.Endpoints[0].Password = "" },
+		"multi port":         func(c *Config) { c.Mode = "multi-port" },
+		"unknown ingress":    func(c *Config) { c.Jobs[0].Ingress = "mystery" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := sharedJobConfig()
+			change(c)
+			if err := c.NormalizeJobs(); err == nil {
+				t.Fatal("invalid shared configuration accepted")
+			}
+		})
+	}
+	data, _ := json.Marshal(c.Jobs)
+	var restored []JobConfig
+	if err := json.Unmarshal(data, &restored); err != nil || restored[0].Password != c.Jobs[0].Password || !restored[0].SharedIngress() {
+		t.Fatal("credential round trip failed")
 	}
 }

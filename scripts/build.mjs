@@ -3,10 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { ROOT, GO_TOOLCHAIN, NODE_VERSION, goEnvironment, verifyNodeVersion } from './toolchain.mjs';
 
-export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+export { ROOT };
 export const BUILD_TAGS = fs.readFileSync(path.join(ROOT, 'scripts/build-tags.txt'), 'utf8').trim().split(/\s+/);
-const TARGETS = new Set(['windows/amd64', 'linux/amd64', 'linux/arm64']);
+const TARGETS = new Set(['windows/amd64', 'linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64']);
 const INFO_PACKAGE = 'github.com/silencoo/proxyfleet/internal/buildinfo';
 
 export function parseArgs(args) {
@@ -77,6 +78,8 @@ export function goBuildArgs(target, output, stamp) {
 }
 
 export function inspectGoBuild(output, target) {
+  const goVersion = output.split(/\r?\n/)[0].match(/go\d+\S*$/)?.[0];
+  if (goVersion !== GO_TOOLCHAIN) throw new Error(`Incorrect Go compiler in ${target} binary: expected ${GO_TOOLCHAIN}, got ${goVersion || 'unknown'}`);
   const settings = new Map([...output.matchAll(/^\s*build\s+([^=\s]+)=(.*)$/gm)].map(match => [match[1], match[2].trim()]));
   const [os, arch] = target.split('/');
   if (settings.get('GOOS') !== os || settings.get('GOARCH') !== arch || settings.get('CGO_ENABLED') !== '0') {
@@ -84,19 +87,23 @@ export function inspectGoBuild(output, target) {
   }
   const tags = settings.get('-tags')?.split(',') || [];
   if (BUILD_TAGS.some(tag => !tags.includes(tag))) throw new Error(`Missing full-capability tags in ${target} binary`);
-  return { go_version: output.split(/\r?\n/)[0].match(/go\d+\S*$/)?.[0], target, build_tags: tags };
+  return { go_version: goVersion, target, build_tags: tags };
 }
 
 export function verifyRuntime(info, target, stamp) {
   const [os, arch] = target.split('/');
-  if (info.goos !== os || info.goarch !== arch || info.version !== stamp.version || info.commit !== stamp.commit || info.built_at !== stamp.built_at || info.official_release_ready !== true ||
+  if (info.go_version !== GO_TOOLCHAIN || info.goos !== os || info.goarch !== arch || info.version !== stamp.version || info.commit !== stamp.commit || info.built_at !== stamp.built_at || info.official_release_ready !== true ||
       BUILD_TAGS.some(tag => info.capabilities?.[tag.slice(5)] !== true)) {
     throw new Error(`Runtime build-info verification failed for ${target}`);
   }
 }
 
 export function build(options, run = command, root = ROOT) {
-  const host = run('go', ['env', 'GOHOSTOS', 'GOHOSTARCH'], { capture: true }).split(/\s+/).join('/');
+  verifyNodeVersion();
+  const env = goEnvironment();
+  const [hostOS, hostArch, compiler] = run('go', ['env', 'GOHOSTOS', 'GOHOSTARCH', 'GOVERSION'], { capture: true, env }).split(/\s+/);
+  if (compiler !== GO_TOOLCHAIN) throw new Error(`Expected ${GO_TOOLCHAIN}, got ${compiler || 'unknown'}; refusing an unpinned build.`);
+  const host = `${hostOS}/${hostArch}`;
   const targets = options.targets.length ? options.targets : [host];
   targets.forEach(artifactName);
   const git = args => run('git', ['-c', `safe.directory=${root.replaceAll('\\', '/')}`, ...args], { capture: true, optional: true });
@@ -117,8 +124,8 @@ export function build(options, run = command, root = ROOT) {
       const [os, arch] = target.split('/');
       const file = artifactName(target), output = path.join(staging, file);
       console.log(`Compiling ${file}`);
-      run('go', goBuildArgs(target, output, stamp), { env: { ...process.env, CGO_ENABLED: '0', GOOS: os, GOARCH: arch } });
-      const inspection = inspectGoBuild(run('go', ['version', '-m', output], { capture: true }), target);
+      run('go', goBuildArgs(target, output, stamp), { env: { ...env, CGO_ENABLED: '0', GOOS: os, GOARCH: arch, GOAMD64: 'v1', GOARM64: 'v8.0' } });
+      const inspection = inspectGoBuild(run('go', ['version', '-m', output], { capture: true, env }), target);
       let runtimeInfo;
       if (target === host) {
         runtimeInfo = JSON.parse(run(output, ['--version-json'], { capture: true }));
@@ -128,14 +135,15 @@ export function build(options, run = command, root = ROOT) {
       artifacts.push({ file, sha256, ...inspection, verification: runtimeInfo ? 'runtime-and-go-build-info' : 'go-build-info', ...(runtimeInfo ? { runtime_info: runtimeInfo } : {}) });
     }
     fs.writeFileSync(path.join(staging, 'SHA256SUMS.txt'), artifacts.map(a => `${a.sha256}  ${a.file}\n`).join(''));
-    fs.writeFileSync(path.join(staging, 'build-manifest.json'), JSON.stringify({ ...stamp, artifacts }, null, 2) + '\n');
+    const toolchains = { go: GO_TOOLCHAIN, node: NODE_VERSION };
+    fs.writeFileSync(path.join(staging, 'build-manifest.json'), JSON.stringify({ ...stamp, toolchains, artifacts }, null, 2) + '\n');
     // Publish only after every requested target compiles and passes inspection.
     // Never clean dist: it can contain other builds or the user's runtime data.
     for (const file of [...artifacts.map(a => a.file), 'SHA256SUMS.txt', 'build-manifest.json']) {
       fs.renameSync(path.join(staging, file), path.join(outDir, file));
     }
     console.log(`Build complete: ${outDir}\n${artifacts.map(a => `  ${a.file}  ${a.sha256}`).join('\n')}`);
-    return { ...stamp, artifacts };
+    return { ...stamp, toolchains, artifacts };
   } finally {
     if (path.dirname(staging) !== outDir || !path.basename(staging).startsWith('.proxyfleet-build-')) throw new Error('Invalid staging cleanup path');
     fs.rmSync(staging, { recursive: true, force: true });
@@ -145,7 +153,7 @@ export function build(options, run = command, root = ROOT) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const options = parseArgs(process.argv.slice(2));
-    if (options.help) console.log('Usage: npm run build -- [--target os/arch] [--version VERSION] [--commit COMMIT] [--skip-webui]\nDefault: host target, full capabilities, rebuild WebUI, output to dist/. Repeat --target for multiple binaries.\nnpm run build:release builds Windows amd64 and Linux amd64 without publishing.');
+    if (options.help) console.log(`Usage: npm run build -- [--target os/arch] [--version VERSION] [--commit COMMIT] [--skip-webui]\nToolchains: ${GO_TOOLCHAIN}, Node ${NODE_VERSION}.\nDefault: Windows/Linux/macOS host target, full capabilities, rebuild WebUI, output to dist/. Repeat --target for multiple binaries.\nnpm run build:release builds Windows amd64 and Linux amd64 without publishing.`);
     else build(options);
   } catch (error) {
     console.error(`Build failed: ${error.message}`);

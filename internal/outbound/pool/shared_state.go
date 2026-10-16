@@ -244,12 +244,9 @@ func (s *sharedMemberState) recordFailureWithSourceLocked(cause error, threshold
 			s.blacklisted = true
 			s.manualBlacklist = false
 			s.blacklistedUntil = decision.Until
-			s.cooldownUntil = time.Time{}
 			s.blacklistedFast.Store(true)
-			if s.cooldownTimer != nil {
-				s.cooldownTimer.Stop()
-				s.cooldownTimer = nil
-			}
+			// Keep the independent cooldown: a later healthy probe may clear
+			// this automatic ban before the cooldown window has ended.
 		}
 	}
 	isBlocked := s.blacklisted || s.cooldownUntil.After(now)
@@ -273,7 +270,6 @@ func (s *sharedMemberState) recordFailureWithSourceLocked(cause error, threshold
 		}
 		if decision.Blacklisted {
 			entry.Blacklist(decision.Until)
-			entry.ClearCooldown() // The durable ban replaced the shared cooldown.
 		} else if decision.Cooldown {
 			entry.Cooldown(decision.Until)
 		}
@@ -293,33 +289,24 @@ func (s *sharedMemberState) recordSuccessWithLatency(latency time.Duration) {
 		return
 	}
 
+	// An already-open connection (possibly to another target) can succeed
+	// while this node is cooling down. That is not permission to end the hold.
+	cooling := s.isCoolingDownTransitionLocked(time.Now())
 	s.mu.Lock()
 	s.failures = 0
-	hadCooldown := s.cooldownUntil.After(time.Now())
-	s.cooldownUntil = time.Time{}
-	if s.cooldownTimer != nil {
-		s.cooldownTimer.Stop()
-		s.cooldownTimer = nil
-	}
-	blocked := s.blacklisted
+	blocked := s.blacklisted || cooling
 	s.mu.Unlock()
-	if !blocked {
-		s.blacklistedFast.Store(false)
-	}
+	s.blacklistedFast.Store(blocked)
 
 	if entry := s.entry.Load(); entry != nil {
-		entry.ClearCooldown()
 		if latency > 0 {
 			entry.RecordSuccessWithLatency(latency)
 		} else {
 			entry.RecordSuccess()
 		}
-		// Real traffic supplies new evidence of recovery. Cooldown expiry alone
-		// only restores routing eligibility, and a blacklist stays authoritative.
+		// Record transport evidence without overriding a live administrative
+		// ban, automatic blacklist, or cooldown deadline.
 		entry.MarkInitialCheckDone(!blocked)
-	}
-	if hadCooldown && !blocked {
-		s.publishBlacklist(false)
 	}
 	s.persistTransitionLocked()
 }
@@ -426,6 +413,7 @@ func (s *sharedMemberState) forceRelease() {
 	s.blacklistedFast.Store(false)
 
 	if entry := s.entry.Load(); entry != nil {
+		entry.InvalidateProbeResults()
 		entry.ClearBlacklist()
 		entry.ClearCooldown()
 	}
@@ -435,24 +423,30 @@ func (s *sharedMemberState) forceRelease() {
 	s.persistTransitionLocked()
 }
 
-// releaseAfterProbe makes a recovered node routable again when its blacklist
-// came from automatic failures. An administrator's explicit blacklist remains
-// authoritative until its deadline or an explicit release.
+// releaseAfterProbe clears only automatic failure blacklists. A healthy probe
+// does not prove another target's rate-limit/cooldown window has ended.
 func (s *sharedMemberState) releaseAfterProbe() {
-	s.transitionMu.Lock()
-	defer s.transitionMu.Unlock()
-	s.releaseAfterProbeLocked()
+	s.releaseAutomaticBlacklist()
 }
 
-func (s *sharedMemberState) releaseAfterProbeLocked() {
+// releaseAutomaticBlacklist is also used by explicit fail-open fallback. It
+// returns whether a blocked node became eligible, never bypassing a live hold.
+func (s *sharedMemberState) releaseAutomaticBlacklist() bool {
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+	return s.releaseAfterProbeLocked()
+}
+
+func (s *sharedMemberState) releaseAfterProbeLocked() bool {
 	if s.closed.Load() {
-		return
+		return false
 	}
 
 	now := time.Now()
 	s.mu.Lock()
 	wasBlocked := s.blacklisted || s.cooldownUntil.After(now)
 	manual := s.blacklisted && s.manualBlacklist && s.blacklistedUntil.After(now)
+	cooling := s.cooldownUntil.After(now)
 	s.failures = 0
 	if !manual {
 		s.blacklisted = false
@@ -463,24 +457,30 @@ func (s *sharedMemberState) releaseAfterProbeLocked() {
 			s.blacklistTimer = nil
 		}
 	}
-	s.cooldownUntil = time.Time{}
-	if s.cooldownTimer != nil {
-		s.cooldownTimer.Stop()
-		s.cooldownTimer = nil
+	if !cooling {
+		s.cooldownUntil = time.Time{}
+		if s.cooldownTimer != nil {
+			s.cooldownTimer.Stop()
+			s.cooldownTimer = nil
+		}
 	}
 	s.mu.Unlock()
-	s.blacklistedFast.Store(manual)
+	blocked := manual || cooling
+	s.blacklistedFast.Store(blocked)
 
 	if entry := s.entry.Load(); entry != nil {
 		if !manual {
 			entry.ClearBlacklist()
 		}
-		entry.ClearCooldown()
+		if !cooling {
+			entry.ClearCooldown()
+		}
 	}
-	if wasBlocked && !manual {
+	if wasBlocked && !blocked {
 		s.publishBlacklist(false)
 	}
 	s.persistTransitionLocked()
+	return wasBlocked && !blocked
 }
 
 func (s *sharedMemberState) incActive() {
@@ -799,6 +799,7 @@ func blacklistSharedMember(tag string, duration time.Duration) {
 		state.blacklistedFast.Store(true)
 		state.mu.Unlock()
 		if entry := state.entry.Load(); entry != nil {
+			entry.InvalidateProbeResults()
 			entry.Blacklist(until)
 			entry.ClearCooldown()
 		}

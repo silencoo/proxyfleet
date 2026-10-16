@@ -173,6 +173,7 @@ type entry struct {
 	probeAppliedID        uint64
 	probeAppliedSuccess   bool
 	probeCompletedAt      time.Time
+	probeInvalidatedAt    time.Time // administrative barrier; protected by probeMu
 	probeCall             *inFlightProbe
 	probeSlots            chan struct{}
 	probeLifecycleMu      *sync.RWMutex
@@ -1007,10 +1008,12 @@ func (m *Manager) ManualBlacklist(tag string, duration time.Duration) error {
 	e.mu.RUnlock()
 
 	if fn != nil {
-		// Blacklist in pool shared state (affects routing)
+		// The callback publishes routing and monitor state in one serialized
+		// transition. A second write here could overtake a concurrent release.
 		fn(duration)
+		return nil
 	}
-	// Also mark in monitor state (affects UI display)
+	e.invalidateProbeResults()
 	e.blacklistUntil(time.Now().Add(duration))
 	return nil
 }
@@ -1176,6 +1179,7 @@ func (e *entry) blacklistUntil(until time.Time) {
 	e.mu.Lock()
 	e.blacklist = true
 	e.until = until
+	e.available = false
 	e.mu.Unlock()
 }
 
@@ -1687,7 +1691,7 @@ func (h *EntryHandle) ApplyValidatedProbe(identity string, startedAt, completedA
 	e := h.ref
 	e.probeMu.Lock()
 	defer e.probeMu.Unlock()
-	if e.probeIdentity != identity || e.probeCall != nil || !e.probeCompletedAt.Before(startedAt) {
+	if e.probeIdentity != identity || e.probeCall != nil || !e.probeCompletedAt.Before(startedAt) || !e.probeInvalidatedAt.Before(startedAt) {
 		return false
 	}
 	e.mu.RLock()
@@ -1702,6 +1706,23 @@ func (h *EntryHandle) ApplyValidatedProbe(identity string, startedAt, completedA
 	}
 	e.markProbeResultAt(completedAt, latency, err)
 	return true
+}
+
+// InvalidateProbeResults gives an administrator's change precedence over older
+// in-flight and transaction-local probes. It does not cancel the callback or
+// reset its bounded admission slot. Call under the routing transition lock,
+// never from inside a probe publisher's applyRouting callback.
+func (h *EntryHandle) InvalidateProbeResults() {
+	if h != nil && h.ref != nil {
+		h.ref.invalidateProbeResults()
+	}
+}
+
+func (e *entry) invalidateProbeResults() {
+	e.probeMu.Lock()
+	defer e.probeMu.Unlock()
+	e.probeGeneration++
+	e.probeInvalidatedAt = time.Now()
 }
 
 // SetRelease assigns a release function.

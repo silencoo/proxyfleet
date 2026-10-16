@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-10-16
+
+### Added
+
+- Application-specific proxy access on the shared primary port: a unique application password selects the application and the proxy username identifies the account. Dedicated application Endpoints remain optional, and password rotation preserves existing account bindings.
+- Permanent account bindings by default (`session_ttl: "0"`), durable restart recovery, per-application node capacity limits, and explicit binding migration/release controls. `max_accounts_per_node: 1` reserves one account per node within an application; exhausted capacity fails closed instead of reusing a full node.
+- Application configuration and account-binding management in the refreshed WebUI, including shared-port credentials, optional dedicated access, permanent/paused status, capacity feedback and manual migration.
+
+### Fixed
+
+- Keep manual bans and unexpired cooldowns authoritative across healthy probes, successful existing connections, candidate preflight results and `fail_open`. A subsequent automatic blacklist no longer erases an active cooldown, and fail-open releases only automatic failure blacklists.
+- Reject probe results started before a manual ban or release, including transaction-local candidate probes. Serialize administrative routing/monitor updates and mark manually banned nodes unavailable without changing permanent account bindings or enabling automatic migration.
+- Preserve Clash VMess/Trojan `grpc-opts.grpc-service-name` through URI conversion into the outbound transport, including escaped characters. Existing cached imports need a subscription refresh or re-import. A corrected service name changes that node's stable identity; any binding to the old identity remains paused until explicitly migrated, never automatically reassigned.
+
+### Changed
+
+- Align compatible Go dependencies with upstream v3.2.0, including `x/net` v0.60.0, `x/crypto` v0.57.0, gRPC v1.83.2 and protobuf v1.36.11. Keep sing-box, gVisor and uTLS at their existing versions. Go 1.26.9 is intentional: Go 1.27 selects a new HTTP/2 implementation incompatible with sing-box v1.12.12's private transport reset hook.
+- Pin official local, Docker and CI builds to Go 1.26.9 and Node.js 22.23.3, verify compiler versions in binary metadata and native runtime output, and record both toolchains in the build manifest. Add macOS arm64/amd64 targets to the unified build command without changing the Windows/Linux release asset names.
+
 ## [3.4.0] - 2026-09-22
 
 ### Added

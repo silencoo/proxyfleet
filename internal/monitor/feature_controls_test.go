@@ -84,7 +84,7 @@ func TestClearDiagnosticsPreservesRoutingHealth(t *testing.T) {
 	if snapshot.HasDiagnostics || snapshot.SuccessCount != 0 || snapshot.FailureCount != 0 || len(snapshot.Timeline) != 0 {
 		t.Fatalf("diagnostics not cleared: %+v", snapshot)
 	}
-	if snapshot.LastProbeLatency != 42*time.Millisecond || !snapshot.Available || !snapshot.InitialCheckDone || !snapshot.Blacklisted {
+	if snapshot.LastProbeLatency != 42*time.Millisecond || snapshot.Available || !snapshot.InitialCheckDone || !snapshot.Blacklisted {
 		t.Fatalf("routing health changed while clearing diagnostics: %+v", snapshot)
 	}
 }

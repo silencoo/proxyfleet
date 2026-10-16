@@ -63,7 +63,7 @@ func TestPermanentFailuresStillReachBlacklistThreshold(t *testing.T) {
 }
 
 func TestCooldownRecoverySeparatesRetryEligibilityFromHealth(t *testing.T) {
-	for _, recovery := range []string{"lazy-expiry", "timer-expiry", "traffic-success"} {
+	for _, recovery := range []string{"lazy-expiry", "timer-expiry", "traffic-after-expiry"} {
 		t.Run(recovery, func(t *testing.T) {
 			ResetSharedStateStore()
 			t.Cleanup(ResetSharedStateStore)
@@ -83,31 +83,30 @@ func TestCooldownRecoverySeparatesRetryEligibilityFromHealth(t *testing.T) {
 			if got := proxyPool.selectEligibleMember(""); got != nil {
 				t.Fatal("cooling node remained eligible")
 			}
-			if recovery == "traffic-success" {
+			expired := time.Now().Add(-time.Second)
+			state.mu.Lock()
+			if state.cooldownTimer != nil {
+				state.cooldownTimer.Stop()
+				state.cooldownTimer = nil
+			}
+			state.cooldownUntil = expired
+			state.mu.Unlock()
+			switch recovery {
+			case "traffic-after-expiry":
 				state.recordSuccessWithLatency(time.Millisecond)
-			} else {
-				expired := time.Now().Add(-time.Second)
-				state.mu.Lock()
-				if state.cooldownTimer != nil {
-					state.cooldownTimer.Stop()
-					state.cooldownTimer = nil
-				}
-				state.cooldownUntil = expired
-				state.mu.Unlock()
-				if recovery == "timer-expiry" {
-					state.expireCooldown(expired)
-				} else {
-					state.isCoolingDown(time.Now())
-				}
+			case "timer-expiry":
+				state.expireCooldown(expired)
+			default:
+				state.isCoolingDown(time.Now())
 			}
 			if got := proxyPool.selectEligibleMember(""); got != member {
 				t.Fatal("recovered cooldown did not permit a retry")
 			}
 			snapshot := manager.Snapshot()[0]
-			if snapshot.Available != (recovery == "traffic-success") || snapshot.CoolingDown || snapshot.Blacklisted {
+			if snapshot.Available != (recovery == "traffic-after-expiry") || snapshot.CoolingDown || snapshot.Blacklisted {
 				t.Fatalf("retry eligibility confused with confirmed health: %+v", snapshot)
 			}
-			if recovery != "traffic-success" {
+			if recovery != "traffic-after-expiry" {
 				state.recordSuccess()
 				if !manager.Snapshot()[0].Available {
 					t.Fatal("successful retry did not restore health")
@@ -201,10 +200,10 @@ func TestSharedStateTransitionsPublishInStateOrder(t *testing.T) {
 	}()
 	<-trueEntered
 
-	successDone := make(chan struct{})
+	releaseDone := make(chan struct{})
 	go func() {
-		state.recordSuccess()
-		close(successDone)
+		state.forceRelease()
+		close(releaseDone)
 	}()
 
 	falsePublishedEarly := false
@@ -215,17 +214,17 @@ func TestSharedStateTransitionsPublishInStateOrder(t *testing.T) {
 	}
 	close(releaseTrue)
 	<-failureDone
-	<-successDone
+	<-releaseDone
 	if falsePublishedEarly {
-		t.Fatal("success notification overtook an in-flight failure notification")
+		t.Fatal("release notification overtook an in-flight failure notification")
 	}
 	select {
 	case <-falseEntered:
 	case <-time.After(time.Second):
-		t.Fatal("final success notification was not published")
+		t.Fatal("final release notification was not published")
 	}
 	if appliedBlocked.Load() || state.blacklistedFast.Load() || state.isBlocked(time.Now()) {
-		t.Fatal("notification order left a healthy node excluded")
+		t.Fatal("notification order left a released node excluded")
 	}
 }
 

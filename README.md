@@ -131,6 +131,8 @@ The dashboard's healthy percentage is healthy nodes divided by **all** nodes, wi
 
 Transient network failures use a short cooldown instead of immediately increasing the long-term blacklist streak. Real traffic confirms transport health only after receiving data (or a valid UDP datagram), not merely after opening a socket or sending a request. Early I/O failures are recorded once; unused connections, local cancellation/close, and normal EOF after data do not create false failures. Traffic logs leave unused connections `unconfirmed`. This is transport evidence, not a claim that an opaque HTTPS application request returned HTTP 200. New target-domain latency samples measure time from dial start to the first response, without extra requests; latency scheduling prefers this bounded EWMA and falls back to the global probe result. The unified pool can retry a different node after a failed dial and can optionally keep bounded, expiring session affinity; it never replays application data after an I/O failure. Dedicated per-node ports never retry through another node.
 
+Manual bans and unexpired cooldowns are routing constraints, not just health indicators. A successful probe, subscription preflight or existing connection cannot end a live cooldown, and a new automatic blacklist does not erase it. Even with `pool.fail_open: true`, fallback only releases automatic failure blacklists; protected members remain excluded. Expiry restores retry eligibility without fabricating a successful health check, and explicit manual release can clear the hold. Probes started before a manual ban/release are discarded when they finish, including transaction-local candidate checks. These rules preserve permanent application bindings: a protected node pauses its accounts rather than moving them to another node. Dedicated per-node diagnostic access still attempts only its exact node and is not an application binding.
+
 ### Named Pool Profiles
 
 Profiles precompute filtered views by region, protocol, source, composable node-name rules, and minimum quality. `tag_rules.any` requires at least one match, `must` requires every match, and `must_not` excludes any match. The legacy `name_regex` remains an additional `must` rule. A managed Endpoint can bind a Profile directly; authenticated shared endpoints can also use username `base@profile`. The WebUI shows live match counts, exclusion reasons, and safe samples before saving.
@@ -148,10 +150,10 @@ profiles:
     min_quality: 80
 ```
 
-### Scraping Jobs
+### Application Pools and Account Bindings
 
-The WebUI **System Settings → Job configuration** editor exposes every Job field
-and saves Jobs, Profiles and Endpoints together. **Scraping jobs** provides live
+The WebUI **System Settings → Application configuration** editor exposes every Job field
+and saves Jobs, Profiles and Endpoints together. **Applications** provides live
 status, manual benchmark triggers for auto Jobs, masked HTTP/SOCKS5 URL generation,
 and searchable, paginated session bindings with explicit release. Failed saves
 and revision conflicts preserve the draft. Manual selection needs no target URL.
@@ -159,9 +161,21 @@ and revision conflicts preserve the draft. Manual selection needs no target URL.
 Jobs separate node selection from connection behavior: `selection: manual`
 (default) uses your chosen Profile directly; `selection: auto` optionally
 benchmarks a target and picks a small set. Both support pooled connections
-(`pooled`) and durable session assignments (`pinned`), in `pool` or `hybrid` mode with one fixed
-Endpoint per Job. Pinned clients pass `<username>-session-<id>` as the proxy
-username; ordinary HTTP/SOCKS5 clients need no management API or SDK.
+(`pooled`) and durable session assignments (`pinned`) in `pool` or `hybrid` mode.
+New applications default to a **shared primary port, distinguished by unique app
+passwords**: `accountID:appPassword@host:2323`. Dedicated Endpoints are an optional
+advanced mode; old configurations retain their existing access mode. Pinned bindings are permanent by default
+(`session_ttl: "0"`), survive restarts, and pause on node failure without switching.
+`max_accounts_per_node` limits bindings per node within each application: 1 is
+exclusive, 0 is unlimited. Full nodes reject new accounts; paused and expired
+bindings still reserve capacity. The UI supports manual migration and same-node
+updates of legacy finite bindings. The stable Job name defines binding identity;
+rotating an app password preserves its bindings. Ordinary pool credentials still
+work on the same port; wrong or removed app credentials never fall back to them.
+Shared ingress requires an unfiltered authenticated primary Endpoint and unique
+16–255-byte app secrets. It supports HTTP, HTTPS CONNECT and SOCKS5 CONNECT (TCP),
+not SOCKS4/UDP. Dedicated pinned Endpoints retain `<base>-session-<id>` usernames.
+Ordinary HTTP/SOCKS5 clients need no management API or SDK.
 See [Job configuration, API, and Python integration](docs/jobs.md) for optional
 target benchmarks, explicit session recovery, and concurrency/timeout handling.
 
@@ -564,23 +578,28 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Development
 
-Use the unified build entry point with Node.js 22.12+ (recommended) or 20.19.x and the Go toolchain specified in `go.mod`:
+Official builds pin **Go 1.26.9** in `go.mod` and **Node.js 22.23.3** in `.node-version`. Local builds, Docker and GitHub CI use these same patch versions. Switch Node with your version manager before running the commands below (for example, `nvm install "$(cat .node-version)"`). The build checks Node and selects the exact Go toolchain via `GOTOOLCHAIN`; Go downloads and verifies it on first use if necessary, without changing your globally installed Go. Offline builds must preinstall/cache that toolchain.
 
 ```bash
 npm ci
-npm run build         # Current Windows/Linux host: check/build WebUI, then compile all capabilities
+npm run build         # Current Windows/Linux/macOS host: check/build WebUI, then compile all capabilities
 npm run build:release # Windows amd64 + Linux amd64; does not publish or upload
 npm run build -- --target linux/arm64
+npm run build -- --target darwin/arm64 # Intel Macs: darwin/amd64
 npm run build -- --version v3.3.3
 ```
 
-Output is always in `dist/`: `proxyfleet.exe` for Windows amd64 and `proxyfleet-linux-amd64` / `proxyfleet-linux-arm64` for Linux. `SHA256SUMS.txt` and `build-manifest.json` record this build's files, version, commit, UTC timestamp, capability tags, and verification method. Version and commit are detected from Git; modified or untracked sources append `-dirty` to the version. Source archives default to `dev` / `unknown`; override these with `--version` / `--commit`. Set `SOURCE_DATE_EPOCH` to fix the build timestamp.
+Output is always in `dist/`: `proxyfleet.exe` for Windows amd64 and `proxyfleet-linux-amd64` / `proxyfleet-linux-arm64` for Linux, and `proxyfleet-darwin-arm64` / `proxyfleet-darwin-amd64` for macOS. `SHA256SUMS.txt` and `build-manifest.json` record this build's files, version, commit, UTC timestamp, Go/Node versions, capability tags, and verification method. Version and commit are detected from Git; modified or untracked sources append `-dirty` to the version. Source archives default to `dev` / `unknown`; override these with `--version` / `--commit`. Set `SOURCE_DATE_EPOCH` to fix the build timestamp.
 
-Local builds, GitHub Releases, and Docker share `scripts/build.mjs` and `scripts/build-tags.txt`. All include QUIC, gRPC, WireGuard, gVisor, uTLS, and Clash API. The script checks target and tags in Go build metadata, and runs `--version-json` for native binaries; cross builds are marked as metadata-only verification. It publishes outputs only after every requested target compiles and passes inspection, and never cleans the output directory or edits runtime configuration. Checksums describe only this invocation's targets; other platform binaries remain untouched.
+Local builds, GitHub Releases, and Docker share `scripts/build.mjs` and `scripts/build-tags.txt`. All include QUIC, gRPC, WireGuard, gVisor, uTLS, and Clash API. The script checks the exact compiler version, target and tags in Go build metadata, and runs `--version-json` for native binaries; cross builds are marked as metadata-only verification. It publishes outputs only after every requested target compiles and passes inspection, and never cleans the output directory or edits runtime configuration. Checksums describe only this invocation's targets; other platform binaries remain untouched.
 
 Use `--skip-webui` only when the frontend was already built, such as the release workflow. Docker rebuilds WebUI in a separate stage before invoking the same script; supply image metadata with `--build-arg VERSION=... --build-arg COMMIT=...`. Builds do not replace or restart running services. Older binaries under `artifacts/jobs/` are historical validation output; use `dist/` going forward.
 
-Individual development checks:
+To upgrade the official toolchains, update `go.mod` / `.node-version`, the exact Docker image tags, and the Node engine in `package.json` / `package-lock.json` together. `npm run test:build` rejects drift between these files and CI. GitHub installs Go from `go.mod` with automatic version switching disabled; Docker also checks its compiler before downloading dependencies. Release download names remain unchanged. These pins standardize compilers, not the entire OS/base-image contents.
+
+Go 1.26.9 is a compatibility pin, not a request to install the newest Go release. With the updated `x/net`, Go 1.27 selects an HTTP/2 implementation that removes a private connection-pool hook used by sing-box v1.12.12, causing a link failure. Keep the pinned compiler until the core transport has been migrated and tested; do not independently bump the compiler or the sing-box/gVisor/uTLS group.
+
+Individual development checks (set `GOTOOLCHAIN=go1.26.9` when running Go commands directly, especially if your system Go is newer):
 
 ```bash
 npm ci
@@ -588,8 +607,8 @@ npm run test:build
 npm run check:webui
 npm run build:webui
 npm run test:e2e
-go test ./...
-go vet ./...
+GOTOOLCHAIN=go1.26.9 go test ./...
+GOTOOLCHAIN=go1.26.9 go vet ./...
 
 # webui/dist is embedded into the executable; CI verifies it matches the TypeScript/CSS source.
 # Verify the production/full-protocol build

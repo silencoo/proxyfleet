@@ -19,7 +19,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GO_VERSION_FILE: go.mod
+  GOTOOLCHAIN: local
+  GOWORK: 'off'
 
 jobs:
   test-build-release:
@@ -49,7 +50,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: ${{ env.GO_VERSION_FILE }}
+          go-version-file: go.mod
           cache: true
 
       - name: Run full test suite
@@ -61,7 +62,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: npm
 
       - name: Install WebUI browser test dependencies

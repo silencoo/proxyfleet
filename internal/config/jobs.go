@@ -12,23 +12,26 @@ import (
 // JobConfig separates a workload's candidate filter from its connection policy.
 // Durations are strings in both YAML and the management JSON API.
 type JobConfig struct {
-	Name             string `yaml:"name" json:"name"`
-	Mode             string `yaml:"mode" json:"mode"`
-	Selection        string `yaml:"selection" json:"selection"`
-	Profile          string `yaml:"profile" json:"profile"`
-	Endpoint         string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
-	TargetURL        string `yaml:"target_url" json:"target_url"`
-	Size             int    `yaml:"size" json:"size"`
-	Concurrency      int    `yaml:"concurrency" json:"concurrency"`
-	Timeout          string `yaml:"timeout" json:"timeout"`
-	RefreshInterval  string `yaml:"refresh_interval" json:"refresh_interval"`
-	SessionTTL       string `yaml:"session_ttl" json:"session_ttl"`
-	MaxSessions      int    `yaml:"max_sessions" json:"max_sessions"`
-	ProbeBatchSize   int    `yaml:"probe_batch_size" json:"probe_batch_size"`
-	ProbeConcurrency int    `yaml:"probe_concurrency" json:"probe_concurrency"`
-	MaxResponseBytes int64  `yaml:"max_response_bytes" json:"max_response_bytes"`
-	ExpectedStatus   int    `yaml:"expected_status" json:"expected_status"`
-	BodyContains     string `yaml:"body_contains,omitempty" json:"body_contains,omitempty"`
+	Name               string `yaml:"name" json:"name"`
+	Mode               string `yaml:"mode" json:"mode"`
+	Selection          string `yaml:"selection" json:"selection"`
+	Profile            string `yaml:"profile" json:"profile"`
+	Ingress            string `yaml:"ingress,omitempty" json:"ingress,omitempty"`
+	Password           string `yaml:"password,omitempty" json:"password,omitempty"`
+	Endpoint           string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	TargetURL          string `yaml:"target_url" json:"target_url"`
+	Size               int    `yaml:"size" json:"size"`
+	Concurrency        int    `yaml:"concurrency" json:"concurrency"`
+	Timeout            string `yaml:"timeout" json:"timeout"`
+	RefreshInterval    string `yaml:"refresh_interval" json:"refresh_interval"`
+	SessionTTL         string `yaml:"session_ttl" json:"session_ttl"`
+	MaxSessions        int    `yaml:"max_sessions" json:"max_sessions"`
+	MaxAccountsPerNode int    `yaml:"max_accounts_per_node,omitempty" json:"max_accounts_per_node,omitempty"`
+	ProbeBatchSize     int    `yaml:"probe_batch_size" json:"probe_batch_size"`
+	ProbeConcurrency   int    `yaml:"probe_concurrency" json:"probe_concurrency"`
+	MaxResponseBytes   int64  `yaml:"max_response_bytes" json:"max_response_bytes"`
+	ExpectedStatus     int    `yaml:"expected_status" json:"expected_status"`
+	BodyContains       string `yaml:"body_contains,omitempty" json:"body_contains,omitempty"`
 }
 
 const (
@@ -51,6 +54,41 @@ func (j JobConfig) RefreshEvery() time.Duration {
 }
 func (j JobConfig) LeaseTTL() time.Duration { d, _ := time.ParseDuration(j.SessionTTL); return d }
 
+// EffectiveIngress preserves pre-existing dedicated-endpoint and direct-node
+// jobs. New clients explicitly choose shared; a password also opts YAML into it.
+func (j JobConfig) EffectiveIngress() string {
+	if j.Ingress != "" {
+		return j.Ingress
+	}
+	if j.Endpoint != "" {
+		return "endpoint"
+	}
+	if j.Password != "" {
+		return "shared"
+	}
+	return "direct"
+}
+func (j JobConfig) SharedIngress() bool { return j.EffectiveIngress() == "shared" }
+func (j JobConfig) DirectIngress() bool { return j.EffectiveIngress() == "direct" }
+
+// This tag is only assigned by authenticated application ingress, never by
+// client input. Unknown/retired tags must fail closed in the pool.
+const SharedJobInboundPrefix = "app-auth/"
+
+func SharedJobInboundTag(name string) string { return SharedJobInboundPrefix + name }
+
+func ValidApplicationPassword(password string) bool {
+	if len(password) < 16 || len(password) > 255 {
+		return false
+	}
+	for _, r := range password {
+		if r < 32 || r == 127 {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Config) NormalizeJobs() error {
 	if len(c.Jobs) > 64 {
 		return fmt.Errorf("at most 64 jobs are supported")
@@ -62,6 +100,12 @@ func (c *Config) NormalizeJobs() error {
 	endpoints := make(map[string]EndpointConfig)
 	for _, e := range c.EffectiveEndpoints() {
 		endpoints[e.Name] = e
+	}
+	passwords := make(map[string]bool)
+	for _, endpoint := range endpoints {
+		if endpoint.Password != "" {
+			passwords[endpoint.Password] = true
+		}
 	}
 	seen, usedEndpoints := make(map[string]bool), make(map[string]bool)
 	for i := range c.Jobs {
@@ -75,6 +119,7 @@ func (c *Config) NormalizeJobs() error {
 		}
 		j.Profile = strings.ToLower(strings.TrimSpace(j.Profile))
 		j.Endpoint = strings.ToLower(strings.TrimSpace(j.Endpoint))
+		j.Ingress = strings.ToLower(strings.TrimSpace(j.Ingress))
 		if !profileNamePattern.MatchString(j.Name) || seen[j.Name] {
 			return fmt.Errorf("job %d has an invalid or duplicate name", i)
 		}
@@ -82,30 +127,45 @@ func (c *Config) NormalizeJobs() error {
 		if !profiles[j.Profile] {
 			return fmt.Errorf("job %q requires an existing profile", j.Name)
 		}
-		switch j.Mode {
-		case "pooled":
+		if j.Mode != "pooled" && j.Mode != "pinned" {
+			return fmt.Errorf("job %q mode must be pooled or pinned", j.Name)
+		}
+		if j.Password != "" {
+			if !ValidApplicationPassword(j.Password) {
+				return fmt.Errorf("job %q application password must be 16-255 bytes without control characters", j.Name)
+			}
+			if passwords[j.Password] {
+				return fmt.Errorf("job %q application password must be unique and different from endpoint passwords", j.Name)
+			}
+			passwords[j.Password] = true
+		}
+		switch j.EffectiveIngress() {
+		case "shared":
+			primary := c.PrimaryEndpoint()
+			if j.Endpoint != "" || (c.Mode != "pool" && c.Mode != "hybrid") || !primary.EnabledValue() || primary.Profile != "" {
+				return fmt.Errorf("shared job %q requires an enabled unfiltered primary endpoint in pool/hybrid mode and no dedicated endpoint", j.Name)
+			}
+			if primary.Username == "" || primary.Password == "" {
+				return fmt.Errorf("shared job %q requires authentication on the primary endpoint; anonymous fallback is not allowed", j.Name)
+			}
+			if !ValidApplicationPassword(j.Password) {
+				return fmt.Errorf("job %q requires a unique application password (16-255 bytes)", j.Name)
+			}
+		case "endpoint":
 			e, ok := endpoints[j.Endpoint]
 			if (c.Mode != "pool" && c.Mode != "hybrid") || !ok || !e.EnabledValue() || e.Profile != j.Profile || usedEndpoints[j.Endpoint] {
-				return fmt.Errorf("pooled job %q requires its own enabled endpoint bound to the same profile in pool/hybrid mode", j.Name)
+				return fmt.Errorf("job %q requires its own enabled endpoint bound to the same profile in pool/hybrid mode", j.Name)
+			}
+			if j.Mode == "pinned" && !ValidSessionCredentials(e.Username, e.Password) {
+				return fmt.Errorf("pinned job %q endpoint requires a username (1-118 bytes, no colon/control characters) and password (1-255 bytes)", j.Name)
 			}
 			usedEndpoints[j.Endpoint] = true
-		case "pinned":
-			if j.Endpoint == "" {
-				if c.Mode != "multi-port" && c.Mode != "hybrid" {
-					return fmt.Errorf("pinned job %q requires an endpoint in pool mode", j.Name)
-				}
-			} else {
-				e, ok := endpoints[j.Endpoint]
-				if (c.Mode != "pool" && c.Mode != "hybrid") || !ok || !e.EnabledValue() || e.Profile != j.Profile || usedEndpoints[j.Endpoint] {
-					return fmt.Errorf("pinned job %q requires its own enabled endpoint bound to the same profile in pool/hybrid mode", j.Name)
-				}
-				if !ValidSessionCredentials(e.Username, e.Password) {
-					return fmt.Errorf("pinned job %q endpoint requires a username (1-118 bytes, no colon/control characters) and password (1-255 bytes)", j.Name)
-				}
-				usedEndpoints[j.Endpoint] = true
+		case "direct":
+			if j.Mode != "pinned" || j.Endpoint != "" || (c.Mode != "multi-port" && c.Mode != "hybrid") {
+				return fmt.Errorf("direct job %q requires pinned mode and multi-port/hybrid with no endpoint", j.Name)
 			}
 		default:
-			return fmt.Errorf("job %q mode must be pooled or pinned", j.Name)
+			return fmt.Errorf("job %q ingress must be shared, endpoint or direct", j.Name)
 		}
 		j.TargetURL = strings.TrimSpace(j.TargetURL)
 		if j.AutomaticSelection() || j.TargetURL != "" {
@@ -125,6 +185,9 @@ func (c *Config) NormalizeJobs() error {
 		}
 		if j.MaxSessions == 0 {
 			j.MaxSessions = 1024
+		}
+		if j.MaxAccountsPerNode < 0 || j.MaxAccountsPerNode > 4096 {
+			return fmt.Errorf("job %q max_accounts_per_node must be between 0 (unlimited) and 4096", j.Name)
 		}
 		if j.ProbeBatchSize == 0 {
 			j.ProbeBatchSize = 32
@@ -148,12 +211,16 @@ func (c *Config) NormalizeJobs() error {
 		}{
 			{&j.Timeout, "15s", 100 * time.Millisecond, 2 * time.Minute},
 			{&j.RefreshInterval, "10m", time.Minute, 24 * time.Hour},
-			{&j.SessionTTL, "30m", time.Minute, 7 * 24 * time.Hour},
+			{&j.SessionTTL, "0", time.Minute, 7 * 24 * time.Hour},
 		} {
 			if *field.value == "" {
 				*field.value = field.fallback
 			}
 			d, err := time.ParseDuration(*field.value)
+			if field.value == &j.SessionTTL && err == nil && d == 0 {
+				*field.value = "0"
+				continue
+			}
 			if err != nil || d < field.min || d > field.max {
 				return fmt.Errorf("job %q has an invalid duration", j.Name)
 			}
