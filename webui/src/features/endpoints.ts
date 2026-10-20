@@ -57,6 +57,7 @@ class EndpointController implements EndpointsModule {
     this.mount.addEventListener('click', event => { void this.handleClick(event); });
     this.mount.addEventListener('input', event => this.markDirty(event));
     this.mount.addEventListener('change', event => this.markDirty(event));
+    document.addEventListener('proxyfleet:language', () => this.refreshProfileOptions());
   }
 
   load(endpoints: EndpointConfig[], profiles: ProfileConfig[] = []): void {
@@ -123,7 +124,7 @@ class EndpointController implements EndpointsModule {
     this.mount.innerHTML = `
       <section class="panel endpoint-panel" style="margin-bottom:16px">
         <div class="panel-header endpoint-panel-header">
-          <div><div class="panel-title">Endpoint Manager</div><div class="field-help">管理共享节点池的独立 HTTP / SOCKS5 入口；新增入口不会复制节点，也不会增加健康探测。</div></div>
+          <div><div class="panel-title">入口管理</div><div class="field-help">管理共享节点池的独立 HTTP / SOCKS5 入口；新增入口不会复制节点，也不会增加健康探测。</div></div>
           <button type="button" class="btn btn-sm" data-add-endpoint><svg class="icon"><use href="#i-plus"></use></svg><span>添加 Endpoint</span></button>
         </div>
         <div class="endpoint-mode-note">Endpoint 只在 pool / hybrid 模式启动；切换到 multi-port 时配置会保留，但监听保持停用。</div>

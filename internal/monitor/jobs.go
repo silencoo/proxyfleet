@@ -53,7 +53,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			if query.Get("state") != "" && session.State != query.Get("state") {
 				continue
 			}
-			if search != "" && !strings.Contains(strings.ToLower(session.Session+" "+session.Node+" "+session.Job), search) {
+			if search != "" && !strings.Contains(strings.ToLower(session.Session+" "+session.Node+" "+session.NodeName+" "+session.Job), search) {
 				continue
 			}
 			filtered = append(filtered, session)

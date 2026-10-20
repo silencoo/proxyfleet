@@ -193,3 +193,43 @@ func TestSharedApplicationValidation(t *testing.T) {
 		t.Fatal("credential round trip failed")
 	}
 }
+
+func TestJobFailurePolicyDefaultsValidationAndRoundTrip(t *testing.T) {
+	c := jobTestConfig()
+	if err := c.NormalizeJobs(); err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range c.Jobs {
+		if j.EffectiveFailurePolicy() != JobFailureStrict || j.AutomaticFailover() {
+			t.Fatal("unsafe default")
+		}
+	}
+	c.Jobs[0].Mode = "pinned"
+	c.Endpoints[0].Username = "worker"
+	c.Endpoints[0].Password = "secret"
+	c.Jobs[0].FailurePolicy = " FAILOVER "
+	if err := c.NormalizeJobs(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(c.Jobs)
+	var restored []JobConfig
+	if err := json.Unmarshal(data, &restored); err != nil || !restored[0].AutomaticFailover() || !c.Clone().Jobs[0].AutomaticFailover() {
+		t.Fatal("lost failover configuration")
+	}
+	for _, tc := range []string{"unknown", "direct", "pooled"} {
+		t.Run(tc, func(t *testing.T) {
+			d := c.Clone()
+			switch tc {
+			case "unknown":
+				d.Jobs[0].FailurePolicy = "typo"
+			case "direct":
+				d.Jobs[1].FailurePolicy = "failover"
+			case "pooled":
+				d.Jobs[0].Mode = "pooled"
+			}
+			if d.NormalizeJobs() == nil {
+				t.Fatal("unsupported recovery accepted")
+			}
+		})
+	}
+}

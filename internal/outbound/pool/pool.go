@@ -459,6 +459,7 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 		if !p.admitDial(member) {
 			return nil, errPoolClosed
 		}
+		failoverConfig, failoverLease, canFailover := p.failoverLeaseForDial(ctx, member)
 		dialStarted := time.Now()
 		conn, err := member.outbound.DialContext(ctx, network, destination)
 		if err == nil {
@@ -486,6 +487,11 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 			return nil, err // Changing remote nodes cannot fix a local shortage.
 		}
 		p.recordFailure(member, err)
+		if canFailover && attempt < maxAttempts {
+			if _, recoveryErr := p.failoverJob(failoverConfig, failoverLease, "dial_failed"); recoveryErr != nil {
+				return nil, fmt.Errorf("proxy dial failed; application failover unavailable: %w", recoveryErr)
+			}
+		}
 		if attempt < maxAttempts {
 			tried[member.tag] = struct{}{}
 		}
@@ -591,7 +597,7 @@ func (p *poolOutbound) pickMemberExcludingForTarget(ctx context.Context, network
 	profile := p.profileFromContext(ctx)
 	if job, ok := p.jobFromContext(ctx); ok {
 		if job.Mode == "pinned" {
-			return p.pickPinnedJobMember(ctx, job, network)
+			return p.pickPinnedJobMember(ctx, job, network, tried)
 		}
 		return p.pickJobMember(job, network, tried)
 	}
@@ -652,6 +658,11 @@ func (p *poolOutbound) selectHealthyMemberExcludingForTarget(network string, tri
 
 func (p *poolOutbound) maxAttempts(ctx context.Context) int {
 	if job, ok := p.jobFromContext(ctx); ok && job.Mode == "pinned" {
+		if job.AutomaticFailover() {
+			// One alternate connection attempt, independent of ordinary-pool retry.
+			// No replay after the tunnel is returned to the client.
+			return 2
+		}
 		return 1
 	}
 	if !p.options.RetryEnabled || len(p.members) <= 1 {

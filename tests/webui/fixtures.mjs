@@ -25,7 +25,7 @@ export async function mockAPI(page, transform = response => response) {
       body = {
         nodes: [],
         pagination: { page: 1, page_size: 50, total_items: 0, total_pages: 0 },
-        summary: { total_nodes: 0, healthy_nodes: 0, active_connections: 0, unavailable_nodes: 0 },
+        summary: { total_nodes: 0, healthy_nodes: 0, active_connections: 0, active_nodes: 0, unavailable_nodes: 0 },
         region_stats: {},
         region_healthy: {},
         top_latency_nodes: [],

@@ -2,6 +2,8 @@ export interface ProxyFleetI18n {
 	registerMessages?(messages: Record<string,string>): void;
   tr(source: string, values?: Record<string, string | number>): string;
   translateTree(root: ParentNode): void;
+  setText(element: Element | null, source: string, values?: Record<string, string | number>): void;
+  setDate(element: Element | null, value: string, timeOnly?: boolean): void;
   localizedAPIMessage(message: unknown, fallback?: string): string;
 }
 
@@ -15,10 +17,17 @@ export const tr = (source: string, values?: Record<string, string | number>): st
   const translated = window.proxyFleetI18n?.tr(source, values);
   if (translated !== undefined) return translated;
   let result = source;
-  Object.entries(values || {}).forEach(([key, value]) => {
-    result = result.replace(`{${key}}`, String(value));
-  });
-  return result;
+  return result.replace(/\{(\w+)\}/g, (placeholder, key) => values && Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : placeholder);
+};
+
+export const setText = (element: Element | null, source: string, values?: Record<string, string | number>): void => {
+  if (window.proxyFleetI18n) window.proxyFleetI18n.setText(element, source, values);
+  else if (element) element.textContent = tr(source, values);
+};
+
+export const setDate = (element: Element | null, value: string, timeOnly = false): void => {
+  if (window.proxyFleetI18n) window.proxyFleetI18n.setDate(element, value, timeOnly);
+  else if (element) element.textContent = timeOnly ? new Date(value).toLocaleTimeString(document.documentElement.lang) : new Date(value).toLocaleString(document.documentElement.lang);
 };
 
 export const translateTree = (root: ParentNode): void => {

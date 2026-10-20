@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test';
 import { mockAPI, navigate } from './fixtures.mjs';
 
-const baseJob = {name:'accounts', mode:'pinned', selection:'manual', profile:'hk-fast', endpoint:'hk-only', ingress:'endpoint', password:'', target_url:'', size:0, concurrency:8, timeout:'15s', refresh_interval:'10m', session_ttl:'0', max_sessions:1024, max_accounts_per_node:0, probe_batch_size:32, probe_concurrency:4, max_response_bytes:2097152, expected_status:200, body_contains:''};
+const baseJob = {name:'accounts', mode:'pinned', failure_policy:'strict', selection:'manual', profile:'hk-fast', endpoint:'hk-only', ingress:'endpoint', password:'', target_url:'', size:0, concurrency:8, timeout:'15s', refresh_interval:'10m', session_ttl:'0', max_sessions:1024, max_accounts_per_node:0, probe_batch_size:32, probe_concurrency:4, max_response_bytes:2097152, expected_status:200, body_contains:''};
 const autoJob = {...baseJob,name:'catalog',mode:'pooled',selection:'auto',endpoint:'catalog',target_url:'https://example.com/catalog',size:5};
 async function setup(page, {locale='zh',width=1280,role='admin'}={}) {
   const state = {jobs:[structuredClone(baseJob),structuredClone(autoJob)], calls:[], saves:[], saveStatus:200, saveWait:null, accessWait:null, accessStatus:200, releaseWait:null, persistAcquire:false, refreshing:false, profileRegex:'', migrations:[], migrationStatus:200, migrationWait:null,
     targets:[{node:'node-1',name:'US node 1',accounts:1,limit:1,available:false},{node:'node-2',name:'US node 2',accounts:1,limit:1,available:false},{node:'node-3',name:'US node 3',accounts:0,limit:1,available:true}],
-    sessions:Array.from({length:23},(_,i)=>({job:i===22?'deleted-job':'accounts',session:`account-${String(i+1).padStart(2,'0')}`,node:`node-${i%3+1}`,state:i===22?'removed':i===21?'expired':'ready',revision:`binding-${i}`,permanent:i<21,expires_at:'2027-01-01T12:00:00Z'}))};
+    sessions:Array.from({length:23},(_,i)=>({job:i===22?'deleted-job':'accounts',session:`account-${String(i+1).padStart(2,'0')}`,node:`node-${i%3+1}`,node_name:`US node ${i%3+1}`,state:i===22?'removed':i===21?'expired':'ready',revision:`binding-${i}`,permanent:i<21,expires_at:'2027-01-01T12:00:00Z'}))};
   await page.setViewportSize({width,height:900});
   await page.addInitScript(({locale,width})=>{localStorage.setItem('uiLanguage',locale);localStorage.setItem('themeMode',width===390?'dark':'light');},{locale,width});
   await mockAPI(page, async response=>{
@@ -29,7 +29,7 @@ async function setup(page, {locale='zh',width=1280,role='admin'}={}) {
     if(path==='/api/access')Object.assign(response.body.endpoints[1],{job:'accounts',job_mode:'pinned'});
     if(path==='/api/jobs')response.body={jobs:state.jobs.map(j=>({name:j.name,mode:j.mode,selection:j.selection,candidates:6,measured:j.selection==='auto'?4:0,refreshing:j.selection==='auto'&&state.refreshing,selected:j.selection==='auto'?[{node:'node-1',duration_ms:80,success_rate:.95}]:[{node:'node-1'},{node:'node-2'}]}))};
     if(path==='/api/jobs/sessions') {
-      const q=url.searchParams;let rows=state.sessions.filter(s=>(!q.get('job')||s.job===q.get('job'))&&(!q.get('state')||s.state===q.get('state'))&&(!q.get('q')||`${s.job} ${s.session} ${s.node}`.includes(q.get('q'))));
+      const q=url.searchParams;let rows=state.sessions.filter(s=>(!q.get('job')||s.job===q.get('job'))&&(!q.get('state')||s.state===q.get('state'))&&(!q.get('q')||`${s.job} ${s.session} ${s.node} ${s.node_name||''}`.includes(q.get('q'))));
       const pages=Math.ceil(rows.length/20),current=Math.min(Number(q.get('page')||1),pages||1);
       response.body={sessions:rows.slice((current-1)*20,current*20),pagination:{page:current,page_size:20,total_items:rows.length,total_pages:pages}};
     }
@@ -38,7 +38,7 @@ async function setup(page, {locale='zh',width=1280,role='admin'}={}) {
       if(state.accessWait)await state.accessWait;
       if(state.accessStatus!==200){response.status=state.accessStatus;response.body={error:'test acquire rejected'};return response;}
       if(state.persistAcquire&&!state.sessions.some(s=>s.job==='accounts'&&s.session===session))state.sessions.push({job:'accounts',session,node:'node-1',state:'ready',expires_at:'2027-01-01T12:00:00Z'});
-      response.body={job:'accounts',mode:'pinned',state:'ready',node:'node-1',session,proxy_url:`http://hk-session-${session}:hk-secret@127.0.0.1:23231`,concurrency:8,timeout:'15s',expires_at:'2027-01-01T12:00:00Z'};
+      response.body={job:'accounts',mode:'pinned',state:'ready',node:'node-1',node_name:'US node 1',session,proxy_url:`http://hk-session-${session}:hk-secret@127.0.0.1:23231`,concurrency:8,timeout:'15s',expires_at:'2027-01-01T12:00:00Z'};
     }
     if(path.endsWith('/nodes')&&path.startsWith('/api/jobs/'))response.body={nodes:state.targets};
     if(path.endsWith('/migrate')) {
@@ -48,7 +48,7 @@ async function setup(page, {locale='zh',width=1280,role='admin'}={}) {
       response.status=state.migrationStatus;
       if(response.status!==200){response.body={error:'migration rejected; original binding unchanged'};return response;}
       if(!binding||binding.revision!==requestBody.expected_revision){response.status=409;response.body={error:'binding changed; reload before migrating'};return response;}
-      Object.assign(binding,{node:requestBody.node,permanent:true,revision:'migrated-'+binding.revision,state:'ready',expires_at:'0001-01-01T00:00:00Z'});
+      Object.assign(binding,{node:requestBody.node,node_name:state.targets.find(n=>n.node===requestBody.node)?.name,permanent:true,revision:'migrated-'+binding.revision,state:'ready',expires_at:'0001-01-01T00:00:00Z'});
       response.body={...binding};
     }
     if(path.endsWith('/release')) {if(state.releaseWait)await state.releaseWait;state.sessions=state.sessions.filter(s=>!(s.job===path.split('/')[3]&&s.session===request.postDataJSON().session));response.body={ok:true};}
@@ -61,6 +61,160 @@ async function setup(page, {locale='zh',width=1280,role='admin'}={}) {
 const settings=async page=>{await navigate(page, 'settings');await expect(page.locator('#job-1-name')).toHaveValue('catalog');await expect.poll(()=>page.locator('#settingsTab form').evaluate(el=>el.inert)).toBe(false);};
 const jobs=async page=>{await navigate(page, 'jobs');await expect(page.locator('.job-status-card')).toHaveCount(2);await expect(page.locator('[data-session-count]')).toContainText('23');};
 const save=page=>page.locator('#settingsTab button[type="submit"]').click();
+
+test('application policy, binding rows and dynamic counts retranslate both ways without changing accounts',async({page},testInfo)=>{
+  const state=await setup(page,{locale:'en'});
+  Object.assign(state.jobs[0],{ingress:'shared',endpoint:'',password:'fixture-application-password',max_accounts_per_node:1});
+  state.sessions[0].node_name='全部'; // User-provided names are data, not translation keys.
+  await jobs(page);
+  await page.locator('[data-access-session]').fill('locale-test-account');
+  await page.locator('[data-migrate-job]').first().click();
+  await expect(page.locator('[data-binding-target] option')).toHaveCount(3);
+  await page.locator('[data-binding-target]').selectOption('node-3');
+  const calls=state.calls.filter(c=>c.startsWith('POST '));
+  for(const locale of ['zh-CN','en','zh-CN']) {
+    await page.evaluate(locale=>window.setLanguage(locale),locale);
+    const en=locale==='en',card=page.locator('[data-status-job="accounts"]');
+    await expect(card).toContainText(en?'Auto-bind on first connection':'首次连接自动绑定');
+    await expect(card).toContainText(en?'Permanent · survives restarts':'永久 · 重启保留');
+    await expect(card).toContainText(en?'One account per node, per app':'一账号一节点（按应用）');
+    await expect(page.locator('[data-session-count]')).toHaveText(en?'23 sessions · page 1 / 2':'共 23 条 · 1 / 2 页');
+    await expect(page.locator('.job-session-table tbody tr').first()).toContainText(en?'Permanent binding':'永久绑定');
+    await expect(page.locator('.job-session-table tbody tr').first().locator('.job-node-identity strong')).toHaveText('全部');
+    await expect(page.locator('[data-access-session]')).toHaveValue('locale-test-account');
+    await expect(page.locator('[data-acquire-job]')).toHaveText(en?'Create / view account binding':'创建 / 查看账号绑定');
+    await expect(page.locator('[data-session-job] option').first()).toHaveText(en?'All applications':'全部应用');
+    await expect(page.locator('[data-session-state] option[value="paused"]')).toHaveText(en?'Paused':'已暂停');
+    await expect(page.locator('[data-binding-target]')).toHaveValue('node-3');
+    await expect(page.locator('[data-binding-target] option[value="node-1"]')).toContainText(en?'Current node':'当前节点');
+    await expect(card).toContainText(en?'Endpoint:':'代理入口:');
+    const timestamp=page.locator('[data-jobs-updated] time');
+    const expectedTime=await timestamp.evaluate((el,locale)=>new Date(el.dateTime).toLocaleTimeString(locale),locale);
+    await expect(timestamp).toHaveText(expectedTime);
+    await expect(page.locator('[data-jobs-updated]')).toContainText(en?'Status updated at':'状态更新于');
+  }
+  expect(state.calls.filter(c=>c.startsWith('POST '))).toEqual(calls);
+  expect(state.migrations).toEqual([]);expect(state.saves).toEqual([]);
+  await page.locator('[data-status-job="accounts"]').scrollIntoViewIfNeeded();
+  await page.screenshot({path:testInfo.outputPath('localized-application-policy.png')});
+});
+
+for(const [locale,width] of [['zh',1280],['en',390]])test(`application policy explains automatic pinning without creating bindings in ${locale}`,async({page},testInfo)=>{
+  const state=await setup(page,{locale,width});
+  Object.assign(state.jobs[0],{ingress:'shared',endpoint:'',password:'fixture-application-password',max_accounts_per_node:1});
+  await jobs(page);
+  const card=page.locator('[data-status-job="accounts"]');
+  await expect(card).toContainText(locale==='en'?'Auto-bind on first connection':'首次连接自动绑定');
+  await expect(card).toContainText(locale==='en'?'Permanent · survives restarts':'永久 · 重启保留');
+  await expect(card).toContainText(locale==='en'?'One account per node, per app':'一账号一节点（按应用）');
+  await expect(card).toContainText(locale==='en'?'Strict pin · pause on failure':'严格固定 · 故障暂停');
+  await expect(card).toContainText(locale==='en'?'Use Profile nodes':'按节点分组选取');
+  await expect(card).toContainText(locale==='en'?'Full capacity is rejected':'满额拒绝');
+  await expect(card).not.toContainText('manual');
+  await expect(page.locator('[data-job-access-help]')).toContainText(locale==='en'?'Optional:':'可选操作');
+  await expect(page.locator('[data-job-access-help]')).toContainText(locale==='en'?'reserves an account slot':'占用账号名额');
+  await page.screenshot({path:testInfo.outputPath('application-policy.png')});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.locator('#jobAccessName').selectOption('catalog');
+  await expect(page.locator('[data-job-access-help]')).toContainText(locale==='en'?'No account binding is created':'不建立账号绑定');
+  await expect(page.locator('[data-acquire-job]')).toHaveText(locale==='en'?'Get application access':'获取应用入口');
+  await expect(page.locator('#jobAccessSession')).toBeDisabled();
+  expect(state.calls.filter(c=>c.startsWith('POST /api/jobs/'))).toEqual([]);
+  expect(state.saves).toHaveLength(0);
+});
+
+test('policy summary distinguishes finite lifetimes, failover, direct ingress and missing config',async({page})=>{
+  const state=await setup(page,{locale:'en'});
+  Object.assign(state.jobs[0],{session_ttl:'48h',max_accounts_per_node:4,failure_policy:'failover'});
+  await jobs(page);
+  const policy=page.locator('[data-status-job="accounts"] .job-policy-summary');
+  await expect(policy).toContainText('48h · survives restarts');
+  await expect(policy).toContainText('4 accounts per app');
+  await expect(policy).toContainText('Failover · change node automatically');
+  await expect(policy).not.toContainText('Permanent');
+  await expect(page.locator('[data-status-job="catalog"]')).not.toContainText('New binding lifetime');
+  Object.assign(state.jobs[0],{ingress:'direct',endpoint:'',failure_policy:'strict',max_accounts_per_node:0});
+  await page.locator('[data-reload-jobs]').click();
+  await expect(policy).toContainText('Create via API / panel');
+  await expect(policy).toContainText('Unlimited per application');
+  await expect(page.locator('[data-job-access-help]')).toContainText('Direct node connections do not create bindings');
+  await page.route('**/api/settings',route=>route.fulfill({json:{mode:'pool',jobs:[]}}));
+  await page.locator('[data-reload-jobs]').click();
+  await expect(page.locator('[data-status-job="accounts"]')).toContainText('Binding policy cannot be confirmed');
+  await expect(policy).toHaveCount(0);
+  expect(state.calls.filter(c=>c.startsWith('POST /api/jobs/'))).toEqual([]);
+});
+
+test('node-source labels clarify automatic binding without changing saved enum values',async({page})=>{
+  const state=await setup(page);await settings(page);
+  const row=page.locator('[data-job-row]').first();await row.locator('summary').first().click();
+  await expect(row.locator('[data-manual-note]')).toContainText('不表示需要手动创建账号绑定');
+  await expect(row.locator('[data-binding-note]')).toContainText('新账号首次连接自动绑定');
+  await page.locator('#job-0-ingress').selectOption('direct');
+  await expect(row.locator('[data-binding-note]')).toContainText('不会自动绑定');
+  await page.locator('#job-0-ingress').selectOption('shared');
+  await page.locator('#job-0-mode').selectOption('pooled');
+  await expect(row.locator('[data-binding-note]')).toContainText('不建立账号绑定');
+  await page.locator('#job-0-mode').selectOption('pinned');
+  await expect(row.locator('[data-binding-note]')).toContainText('新账号首次连接自动绑定');
+  await save(page);await expect.poll(()=>state.saves.length).toBe(1);
+  expect(state.saves[0].body.jobs[0]).toMatchObject({mode:'pinned',selection:'manual',ingress:'shared',session_ttl:'0',failure_policy:'strict'});
+});
+
+for(const [locale,width] of [['zh',1280],['en',390]])test(`binding node names replace opaque IDs with expandable details in ${locale}`,async({page},testInfo)=>{
+  const state=await setup(page,{locale,width});
+  const id='node-df9d669626564aed8583ce5c36a7686c055481513fb05fceb739423c26512515';
+  const name='[D]🇺🇸 US-CN2-9929-CMIN2 · 美国长名称节点';
+  Object.assign(state.sessions[0],{node:id,node_name:name});
+  Object.assign(state.targets[0],{node:id,name});
+  await jobs(page);
+  const row=page.locator('.job-session-table tbody tr').first();
+  await expect(row.locator('.job-node-identity > strong')).toHaveText(name);
+  await expect(row.locator('.job-node-id code')).toBeHidden();
+  await row.locator('summary').focus();await page.keyboard.press('Enter');
+  await expect(row.locator('.job-node-id code')).toHaveText(id);
+  await page.evaluate(()=>{Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.__copiedNodeID=value;}}});});
+  await row.locator('[data-copy-job-node]').click();
+  expect(await page.evaluate(()=>window.__copiedNodeID)).toBe(id);
+  expect(state.calls.filter(c=>c.startsWith('POST /api/jobs/'))).toEqual([]);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await row.evaluate(el=>el.scrollIntoView({block:'center',inline:'nearest'}));
+  await page.screenshot({path:testInfo.outputPath('binding-node-name.png')});
+  await row.locator('[data-migrate-job]').click();
+  await expect(page.locator('[data-binding-identity] .job-node-identity > strong')).toHaveText(name);
+  await page.locator('#bindingTarget').selectOption('node-3');
+  await page.locator('[data-binding-save]').click();
+  await expect(page.locator('#confirmMessage')).toContainText(name);
+  await expect(page.locator('#confirmMessage')).toContainText('US node 3');
+  await page.keyboard.press('Escape');await page.locator('[data-binding-cancel]').click();
+  expect(state.migrations).toHaveLength(0);
+  await page.locator('#jobSessionSearch').fill('US-CN2-9929');
+  await expect(page.locator('.job-session-table tbody tr')).toHaveCount(1);
+  await expect(page.locator('.job-node-identity > strong').first()).toHaveText(name);
+});
+
+test('unknown and untrusted node names remain identifiable without executing markup',async({page})=>{
+  const state=await setup(page);
+  Object.assign(state.sessions[0],{node:'node-removed',node_name:undefined,state:'paused'});
+  state.sessions[1].node_name='<img src=x onerror="window.__nodeNameExecuted=true">';
+  await jobs(page);
+  const rows=page.locator('.job-session-table tbody tr');
+  await expect(rows.nth(0).locator('.job-node-identity > strong')).toHaveText('节点名称不可用');
+  await rows.nth(0).locator('summary').click();
+  await expect(rows.nth(0).locator('code')).toHaveText('node-removed');
+  await expect(rows.nth(1).locator('.job-node-identity > strong')).toHaveText(state.sessions[1].node_name);
+  await expect(rows.nth(1).locator('img')).toHaveCount(0);
+  expect(await page.evaluate(()=>window.__nodeNameExecuted)).toBeUndefined();
+});
+
+test('access helper shows the node name while keeping the full identity available',async({page})=>{
+  await setup(page);await jobs(page);
+  await page.locator('#jobAccessSession').fill('account-01');await page.locator('[data-acquire-job]').click();
+  await expect(page.locator('[data-access-result] .job-node-identity > strong')).toHaveText('US node 1');
+  await expect(page.locator('[data-access-result] code')).toBeHidden();
+  await page.locator('[data-access-result] summary').click();
+  await expect(page.locator('[data-access-result] code')).toHaveText('node-1');
+});
 
 for(const body of ['<html>gateway response</html>','[]','null','{}'])test(`invalid successful save response preserves the draft (${body})`,async({page},testInfo)=>{
   const locale=body==='{}'?'en':'zh',width=body.startsWith('<html>')?390:1280;
@@ -715,4 +869,39 @@ test('shared account helper rejects malformed IDs and displays masked server-iss
   await page.locator('#jobAccessSession').fill('account-01');await page.locator('[data-acquire-job]').click();
   await expect(page.locator('#jobAccessURL')).toHaveValue('http://account-01:application-accounts-secret@127.0.0.1:23230');
   await expect(page.locator('#jobAccessURL')).toHaveAttribute('type','password');
+});
+
+for(const [locale,width] of [['zh',390],['en',1280]])test(`application failover setting and audit are scoped and accessible in ${locale}`,async({page},testInfo)=>{
+ const state=await setup(page,{locale,width});await settings(page);
+ await page.locator('[data-job-row]').first().locator('summary').first().click();
+ const policy=page.locator('#job-0-failure_policy');await expect(policy).toHaveValue('strict');
+ await policy.focus();await expect(policy).toBeFocused();await policy.selectOption('failover');await expect(policy).toHaveValue('failover');
+ await expect(page.locator('[data-job-row]').first().locator('[data-failover-help]')).toContainText('Cloudflare');
+ await page.locator('[data-pinned-fields]').first().evaluate(el=>el.scrollIntoView({block:'center'}));
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ await page.screenshot({path:testInfo.outputPath('failover-settings.png')});
+ await save(page);await expect.poll(()=>state.saves.length).toBe(1);
+ expect(state.saves[0].body.jobs[0].failure_policy).toBe('failover');expect(state.saves[0].body.jobs[1].failure_policy).toBe('strict');
+ state.sessions[0].failover_count=2;state.sessions[0].last_failover={at:'2026-10-16T18:00:00Z',from_node:'node-old',to_node:'node-1',from_name:'US old node',to_name:'US node 1',reason:'node_missing'};
+ await jobs(page);await expect(page.locator('[data-status-job="accounts"]')).toContainText(locale==='en'?'Failover':'故障转移');
+ const history=page.locator('.job-failover-history').first();await history.locator('summary').first().focus();await page.keyboard.press('Enter');
+ await expect(history).toContainText('US old node');await expect(history).toContainText('US node 1');
+ await history.evaluate(el=>el.scrollIntoView({block:'center'}));await page.screenshot({path:testInfo.outputPath('failover-history.png')});
+ expect(state.migrations).toHaveLength(0);expect(state.calls.filter(c=>c.startsWith('POST /api/jobs/'))).toEqual([]);
+});
+
+test('failover draft survives failed save and unsupported modes reset to strict',async({page})=>{
+ const state=await setup(page);await settings(page);await page.locator('[data-job-row]').first().locator('summary').first().click();
+ await page.locator('#job-0-failure_policy').selectOption('failover');state.saveStatus=500;await save(page);
+ await expect(page.locator('#job-0-failure_policy')).toHaveValue('failover');await expect(page.locator('#settingsSaveStatus')).not.toHaveText('');
+ await page.locator('#job-0-ingress').selectOption('direct');await expect(page.locator('#job-0-failure_policy')).toBeDisabled();await expect(page.locator('#job-0-failure_policy')).toHaveValue('strict');
+ await page.locator('#job-0-ingress').selectOption('shared');await expect(page.locator('#job-0-failure_policy')).toBeEnabled();await page.locator('#job-0-failure_policy').selectOption('failover');
+ await page.locator('#job-0-mode').selectOption('pooled');await expect(page.locator('#job-0-failure_policy')).toBeHidden();
+ state.saveStatus=200;await save(page);await expect.poll(()=>state.saves.length).toBe(2);expect(state.saves[1].body.jobs[0].failure_policy).toBe('strict');
+});
+
+test('failover history is escaped and malformed history is rejected',async({page})=>{
+ const state=await setup(page);state.sessions[0].failover_count=1;state.sessions[0].last_failover={at:'2026-10-16T18:00:00Z',from_node:'old',to_node:'node-1',from_name:'<img src=x onerror="window.__bad=true">',reason:'dial_failed'};
+ await jobs(page);const history=page.locator('.job-failover-history').first();await history.locator('summary').first().click();await expect(history).toContainText('<img');await expect(history.locator('img')).toHaveCount(0);expect(await page.evaluate(()=>window.__bad)).toBeUndefined();
+ state.sessions[0].last_failover.at={bad:true};await page.locator('[data-session-search]').fill('account');await expect(page.locator('[data-session-error]')).not.toHaveText('');
 });

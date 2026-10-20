@@ -59,7 +59,7 @@ func (m *Manager) ListJobSessions() []jobs.SessionInfo {
 	result := []jobs.SessionInfo{}
 	if m.jobStore != nil {
 		for _, lease := range m.jobStore.Leases() {
-			result = append(result, jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: "unavailable", ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version()})
+			result = append(result, jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: "unavailable", ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version(), FailoverCount: lease.FailoverCount, LastFailover: lease.LastFailover})
 		}
 	}
 	return result

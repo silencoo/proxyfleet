@@ -37,13 +37,15 @@ type Measurement struct {
 }
 
 type Lease struct {
-	Job       string    `json:"job"`
-	Session   string    `json:"session"`
-	Node      string    `json:"node"`
-	Policy    string    `json:"policy"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Permanent bool      `json:"permanent,omitempty"`
-	Revision  string    `json:"revision,omitempty"`
+	Job           string         `json:"job"`
+	Session       string         `json:"session"`
+	Node          string         `json:"node"`
+	Policy        string         `json:"policy"`
+	ExpiresAt     time.Time      `json:"expires_at"`
+	Permanent     bool           `json:"permanent,omitempty"`
+	Revision      string         `json:"revision,omitempty"`
+	FailoverCount uint64         `json:"failover_count,omitempty"`
+	LastFailover  *FailoverEvent `json:"last_failover,omitempty"`
 }
 
 func (l Lease) Expired(now time.Time) bool { return !l.Permanent && !now.Before(l.ExpiresAt) }
@@ -79,32 +81,38 @@ type Status struct {
 }
 
 type Access struct {
-	Job            string    `json:"job"`
-	Mode           string    `json:"mode"`
-	Selection      string    `json:"selection"`
-	State          string    `json:"state"` // ready, paused, expired, or policy_changed
-	Session        string    `json:"session,omitempty"`
-	Node           string    `json:"node,omitempty"`
-	ProxyURL       string    `json:"proxy_url,omitempty"`
-	ExpiresAt      time.Time `json:"expires_at,omitempty"`
-	Permanent      bool      `json:"permanent,omitempty"`
-	Revision       string    `json:"revision,omitempty"`
-	Concurrency    int       `json:"concurrency"`
-	Timeout        string    `json:"timeout"`
-	TimeoutMS      int64     `json:"timeout_ms"`
-	ExpectedStatus int       `json:"expected_status"`
-	BodyContains   string    `json:"body_contains,omitempty"`
+	Job            string         `json:"job"`
+	Mode           string         `json:"mode"`
+	Selection      string         `json:"selection"`
+	State          string         `json:"state"` // ready, paused, expired, or policy_changed
+	Session        string         `json:"session,omitempty"`
+	Node           string         `json:"node,omitempty"`
+	NodeName       string         `json:"node_name,omitempty"`
+	ProxyURL       string         `json:"proxy_url,omitempty"`
+	ExpiresAt      time.Time      `json:"expires_at,omitempty"`
+	Permanent      bool           `json:"permanent,omitempty"`
+	Revision       string         `json:"revision,omitempty"`
+	Concurrency    int            `json:"concurrency"`
+	Timeout        string         `json:"timeout"`
+	TimeoutMS      int64          `json:"timeout_ms"`
+	ExpectedStatus int            `json:"expected_status"`
+	BodyContains   string         `json:"body_contains,omitempty"`
+	FailoverCount  uint64         `json:"failover_count,omitempty"`
+	LastFailover   *FailoverEvent `json:"last_failover,omitempty"`
 }
 
 // SessionInfo is a read-only view of an existing binding, without credentials.
 type SessionInfo struct {
-	Job       string    `json:"job"`
-	Session   string    `json:"session"`
-	Node      string    `json:"node"`
-	State     string    `json:"state"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Permanent bool      `json:"permanent,omitempty"`
-	Revision  string    `json:"revision"`
+	Job           string         `json:"job"`
+	Session       string         `json:"session"`
+	Node          string         `json:"node"`
+	NodeName      string         `json:"node_name,omitempty"`
+	State         string         `json:"state"`
+	ExpiresAt     time.Time      `json:"expires_at"`
+	Permanent     bool           `json:"permanent,omitempty"`
+	Revision      string         `json:"revision"`
+	FailoverCount uint64         `json:"failover_count,omitempty"`
+	LastFailover  *FailoverEvent `json:"last_failover,omitempty"`
 }
 
 type NodeCapacity struct {
@@ -216,6 +224,9 @@ func PolicyWithCertVerifyMode(j config.JobConfig, profile config.ProfileConfig, 
 	// Admission limits must not invalidate existing bindings or target measurements.
 	// Omitting this new field when zero preserves legacy policy hashes.
 	j.MaxAccountsPerNode = 0
+	// Explicitly enabling/disabling recovery applies to existing bindings without
+	// renewing them or invalidating their original candidate/security policy.
+	j.FailurePolicy = ""
 	// Authentication rotation is not a node-selection policy change.
 	j.Password, j.Ingress = "", ""
 	j.Selection = j.EffectiveSelection()
@@ -504,6 +515,7 @@ func (s *Store) Migrate(j config.JobConfig, policy string, request Migration, el
 		}
 	}
 	updated := newLease(j, policy, request.Session, request.Node)
+	updated.FailoverCount, updated.LastFailover = old.FailoverCount, old.LastFailover
 	s.leases[key] = updated
 	if err := s.saveLocked(); err != nil {
 		s.leases[key] = old
@@ -555,6 +567,9 @@ func (s *Store) saveLocked() error {
 	data, err := json.Marshal(s.leases)
 	if err != nil {
 		return err
+	}
+	if len(data) > 4<<20 {
+		return errors.New("job session state is too large")
 	}
 	return config.WriteFileAtomic(s.path, data, 0600)
 }

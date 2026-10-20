@@ -8,9 +8,12 @@
     let topLatencyNodesCache = [];
     let nodeSearchTimer = null;
     let nodeRequestGeneration = 0;
+    let lastNodeQuery = '';
     let currentRole = 'viewer';
     let sweepWasActive = false;
     let currentRegionFilter = 'all';
+    let currentStatusFilter = 'all';
+    let currentActivityFilter = 'all';
     let isEditMode = false;
     let configNodes = [];
     let configNodesRevealAll = false;
@@ -51,6 +54,42 @@
     ];
 
     const TRANSLATIONS = {
+      '住宅': 'Residential',
+      '综合质量分': 'Overall quality score',
+      '当前权限角色': 'Current permission role',
+      '管理员': 'Admin',
+      '操作员': 'Operator',
+      '查看者': 'Viewer',
+      '入口管理': 'Endpoint manager',
+      '节点分组': 'Named Profiles',
+      '当前小时': 'Current hour',
+      '记录连接、TTFB、传输量与重试结果；默认关闭。': 'Records connections, TTFB, transfers and retries. Disabled by default.',
+      '正在加载…': 'Loading…',
+      '订阅节点：{count}': 'Subscription nodes: {count}',
+      '订阅节点：{count} · 跳过：{skipped}': 'Subscription nodes: {count} · skipped: {skipped}',
+      '正在同步…': 'Syncing…',
+      '同步失败': 'Sync failed',
+      '已跳过 {count} 个节点': 'Skipped {count} nodes',
+      '同步正常': 'Up to date',
+      '延迟：{latency} ms': 'Latency: {latency} ms',
+      '重置时间：{time}': 'Resets at {time}',
+      '{capability} 已编译': '{capability} compiled',
+      '{capability} 未编译': '{capability} not compiled',
+      '地区 / 类型': 'Region / type',
+      '节点状态': 'Node status',
+      '使用情况': 'Usage',
+      '使用中': 'Active',
+      '空闲': 'Idle',
+      '等待连接数据': 'Waiting for connection data',
+      '{count} 个使用中节点': '{count} active nodes',
+      '1 个使用中节点': '1 active node',
+      '使用中节点数未知': 'Active node count unavailable',
+      '不可用': 'Unavailable',
+      '使用中指本机当前连接数大于 0，不代表机场在线设备数。不可用包含拉黑、冷却及检测失败；各组筛选同时生效。': 'Active means this instance has open connections, not the provider’s online device count. Unavailable includes blocked, cooling and failed checks. Filter groups are combined.',
+      '清除筛选': 'Clear filters',
+      '正在更新节点列表；下方可能仍是上次的结果。': 'Updating nodes; previous results may still be shown below.',
+      '节点列表更新失败；下方为上次结果，可能不符合当前筛选。请重试刷新。': 'Node update failed. Previous results below may not match these filters. Retry with Refresh dashboard.',
+      '没有符合当前筛选的节点。': 'No nodes match these filters.',
       '监控看板': 'Dashboard',
       '运行中心': 'Operations',
       '探测预算': 'Probe budget',
@@ -137,7 +176,7 @@
       '区域总数': 'Total nodes',
       '区域可用': 'Available',
       '调用失败': 'Failures',
-      '名称 (Name/Tag)': 'Name / tag',
+      '名称 / 标签': 'Name / tag',
       '端口': 'Port',
       '延迟 / 质量': 'Latency / quality',
       '连接': 'Connections',
@@ -163,24 +202,23 @@
       '成功率': 'Success rate',
       '成功 / 失败': 'Success / failure',
       '最近调用时间线': 'Recent call timeline',
-      '控制台日志 (Console Logs)': 'Console logs',
       '自动滚动': 'Auto scroll',
       '清空日志': 'Clear logs',
       '界面偏好': 'Interface preferences',
       '界面语言': 'Interface language',
       '语言设置保存在当前浏览器并立即生效': 'The language preference is stored in this browser and applied immediately.',
       '基础配置': 'General',
-      '运行模式 (Mode)': 'Runtime mode',
+      '运行模式': 'Runtime mode',
       'pool - 单端口负载池': 'pool - single-port load balancing',
       'multi-port - 多端口模式': 'multi-port - one port per node',
       'hybrid - 混合模式': 'hybrid - pool and per-node ports',
-      '外部 IP (External IP)': 'External IP',
-      '探测策略 (Probe)': 'Probe policy',
+      '外部 IP': 'External IP',
+      '探测策略': 'Probe policy',
       '自动探测模式': 'Automatic probe mode',
       'all - 每轮全量': 'all - full pool each pass',
       'sample - 分批轮转': 'sample - rotating batches',
       'manual - 仅手动': 'manual - explicit probes only',
-      '探测目标 (Probe Target)': 'Probe target',
+      '探测目标': 'Probe target',
       '自动探测间隔': 'Automatic probe interval',
       '单位支持 ms / s / m / h，可组合填写，例如 30s、5m、1h30m；最短 10s。': 'Units: ms, s, m, and h. Combinations such as 30s, 5m, or 1h30m are supported. Minimum: 10s.',
       '自动探测间隔格式无效，请填写 30s、5m 或 1h30m 等格式。': 'Invalid automatic probe interval. Use a value such as 30s, 5m, or 1h30m.',
@@ -193,14 +231,14 @@
       '探测并发数': 'Probe concurrency',
       '跳过 SSL 证书验证': 'Skip SSL certificate verification',
       '大池建议使用 adaptive：优先失败或过期节点，复用真实流量的被动健康结果，并受每小时预算约束；sample 仍按顺序轮转；manual 会关闭启动和定时探测，但顶部“批量探测”仍可随时手动执行。策略变更需重启程序生效。': 'For large pools, sample probes a bounded rotating batch each pass. Manual disables startup and scheduled probes; Probe all remains available. Restart the process to apply policy changes.',
-      '监听配置 (Listener)': 'Pool listener',
+      '监听配置': 'Pool listener',
       '监听地址': 'Listen address',
       '监听端口': 'Listen port',
       '用户名 (可选)': 'Username (optional)',
       '密码 (可选)': 'Password (optional)',
-      '多端口配置 (Multi-Port)': 'Per-node listeners',
+      '多端口配置': 'Per-node listeners',
       '起始端口': 'Base port',
-      '节点池配置 (Pool)': 'Proxy pool',
+      '节点池配置': 'Proxy pool',
       '调度模式': 'Scheduling mode',
       'sequential - 轮询': 'sequential - round robin',
       'random - 随机': 'random',
@@ -219,7 +257,7 @@
       '启用有界会话保持': 'Enable bounded session affinity',
       '全部节点不可用时尝试恢复': 'Fail open when every node is unavailable',
       '重试和会话保持只应用于统一池入口；每节点独立端口始终固定到对应节点。延迟模式在小样本内选择低延迟节点，并在容差内优先分配给当前连接较少的节点。': 'Retries and session affinity apply only to the unified pool listener. Dedicated ports always use their assigned node. Latency mode samples a bounded set and balances active connections among nodes inside the latency tolerance.',
-      '管理面板 (Management)': 'Management UI',
+      '管理面板': 'Management UI',
       '访问密码': 'Access password',
       'GeoIP 地域路由': 'GeoIP region routing',
       '启用 GeoIP 地域路由': 'Enable GeoIP region routing',
@@ -260,7 +298,7 @@
       '系统密码': 'System password',
       '请输入密码...': 'Enter password...',
       '验证授权': 'Sign in',
-      '节点名称 Name': 'Node name',
+      '节点名称': 'Node name',
       '节点 URI': 'Node URI',
       'vless://... 或 anytls://...': 'vless://... or anytls://...',
       '映射端口 (可选)': 'Mapped port (optional)',
@@ -276,12 +314,12 @@
       '探测': 'Probe',
       '解封': 'Release',
       '拉黑': 'Block',
-      '拉黑 Blocked': 'Blocked',
-      '冷却 Cooling': 'Cooling down',
+      '已拉黑': 'Blocked',
+      '冷却中': 'Cooling down',
       '解除冷却': 'Release cooldown',
-      '未测试 Unknown': 'Not tested',
-      '异常 Error': 'Error',
-      '在线 Healthy': 'Healthy',
+      '未检测': 'Not tested',
+      '检测失败': 'Error',
+      '在线': 'Healthy',
       '探测中...': 'Probing...',
       '已解封': 'Node released',
       '拉黑失败': 'Failed to block node',
@@ -304,7 +342,7 @@
       '诊断记录已清空': 'Diagnostic records cleared',
       '清空 Console 日志？': 'Clear console logs?',
       '只会清除当前内存中的 Console 日志，磁盘日志和归档不受影响。': 'Only the in-memory console log is cleared. Log files and archives are unchanged.',
-      'Console 日志已清空': 'Console logs cleared',
+      '控制台日志已清空': 'Console logs cleared',
       '立即重载核心？': 'Reload the core now?',
       '重载成功': 'Core reloaded',
       '配置未变更': 'No configuration changes',
@@ -439,7 +477,7 @@
       '组合地域、协议、来源、质量与节点名称规则；静态成员视图在池创建时预计算。': 'Combine region, protocol, source, quality, and node-name rules. Static membership is precomputed when the pool is created.',
       '添加 Profile': 'Add Profile',
       '尚未配置 Profile。所有连接继续使用全局池。': 'No Profile is configured. All connections continue to use the global pool.',
-      '访问助手 (Access Assistant)': 'Access Assistant',
+      '访问助手': 'Access Assistant',
       '生成 HTTP / SOCKS5 URI 与 curl 命令；复制内容来自当前运行配置。': 'Generate HTTP / SOCKS5 URIs and curl commands from the current runtime configuration.',
       '读取中': 'Loading',
       '默认入口': 'Default Endpoint',
@@ -502,7 +540,7 @@
       '名称规则': 'Name rules',
       '质量': 'Quality',
       '质量 {quality}': 'Quality {quality}',
-      '{reason} excluded: {count}': '{reason} excluded: {count}',
+      '{reason} 排除：{count}': '{reason} excluded: {count}',
       '命中': 'Matched',
       '排除': 'Excluded',
       '命中样本': 'Matched samples',
@@ -553,10 +591,24 @@
 
     function tr(source, values) {
       let result = currentLanguage === 'en' ? (TRANSLATIONS[source] || source) : source;
-      if (values) {
-        Object.keys(values).forEach(key => { result = result.replace(`{${key}}`, values[key]); });
-      }
-      return result;
+      return values ? result.replace(/\{(\w+)\}/g, (placeholder, key) => Object.hasOwn(values, key) ? String(values[key]) : placeholder) : result;
+    }
+
+    // Explicit ownership for dynamic messages: retranslate from the source and
+    // values, never reverse-translate rendered text or mistake user data for copy.
+    function setLocalizedText(element, source, values) {
+      if (!element) return;
+      const rendered = tr(source, values);
+      element.__i18nMessage = { source, values, rendered };
+      element.textContent = rendered;
+    }
+
+    function setLocalizedDate(element, value, timeOnly=false) {
+      if (!element) return;
+      const date = new Date(value);
+      const rendered = Number.isNaN(date.getTime()) ? '—' : timeOnly ? date.toLocaleTimeString(currentLanguage) : date.toLocaleString(currentLanguage);
+      element.__i18nDate = { value, timeOnly, rendered };
+      element.textContent = rendered;
     }
 
     function translateTree(root) {
@@ -565,20 +617,45 @@
       let node;
       while ((node = walker.nextNode())) {
         const parent = node.parentElement;
-        if (!parent || parent.closest('script, style, svg')) continue;
+        if (!parent || parent.closest('script, style, svg, textarea, [translate="no"]')) continue;
+        if (parent.dataset.localDate) {
+          const date = new Date(parent.dataset.localDate);
+          node.nodeValue = Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(currentLanguage);
+          continue;
+        }
+        if (parent.__i18nMessage?.rendered === node.nodeValue) {
+          const {source, values} = parent.__i18nMessage;
+          node.nodeValue = tr(source, values);
+          parent.__i18nMessage.rendered = node.nodeValue;
+          continue;
+        }
+        if (parent.__i18nDate?.rendered === node.nodeValue) {
+          const {value, timeOnly} = parent.__i18nDate, date = new Date(value);
+          node.nodeValue = Number.isNaN(date.getTime()) ? '—' : timeOnly ? date.toLocaleTimeString(currentLanguage) : date.toLocaleString(currentLanguage);
+          parent.__i18nDate.rendered = node.nodeValue;
+          continue;
+        }
         const trimmed = node.nodeValue.trim();
         if (!trimmed) continue;
-        if (!node.__i18nSource) node.__i18nSource = trimmed;
-        const translated = currentLanguage === 'en' ? (TRANSLATIONS[node.__i18nSource] || node.__i18nSource) : node.__i18nSource;
-        node.nodeValue = node.nodeValue.replace(trimmed, translated);
+        const source = node.__i18nRendered === trimmed ? node.__i18nSource : trimmed;
+        if (!Object.hasOwn(TRANSLATIONS, source)) continue;
+        node.__i18nSource = source;
+        const translated = tr(source);
+        node.nodeValue = node.nodeValue.replace(trimmed, () => translated);
+        node.__i18nRendered = translated;
       }
       root.querySelectorAll('[placeholder], [title], [aria-label]').forEach(element => {
+        if (element.closest('[translate="no"]')) return;
         ['placeholder', 'title', 'aria-label'].forEach(attribute => {
           if (!element.hasAttribute(attribute)) return;
           const dataKey = `i18n${attribute.replace(/(^|-)([a-z])/g, (_, __, letter) => letter.toUpperCase())}`;
-          if (!element.dataset[dataKey]) element.dataset[dataKey] = element.getAttribute(attribute);
-          const source = element.dataset[dataKey];
-          element.setAttribute(attribute, currentLanguage === 'en' ? (TRANSLATIONS[source] || source) : source);
+          const current = element.getAttribute(attribute);
+          const previous = element.__i18nAttributes?.[attribute];
+          const source = element.dataset[dataKey] || (previous?.rendered === current ? previous.source : current);
+          if (!Object.hasOwn(TRANSLATIONS, source)) return;
+          const rendered = tr(source);
+          (element.__i18nAttributes ||= {})[attribute] = {source, rendered};
+          element.setAttribute(attribute, rendered);
         });
       });
     }
@@ -683,6 +760,7 @@
       if (field.tagName === 'TEXTAREA') field.classList.toggle('masked', !reveal);
       else field.type = reveal ? 'text' : 'password';
       button.setAttribute('aria-pressed', String(reveal));
+      button.dataset.i18nAriaLabel = button.dataset.i18nTitle = reveal ? '隐藏敏感信息' : '显示敏感信息';
       button.setAttribute('aria-label', tr(reveal ? '隐藏敏感信息' : '显示敏感信息'));
       button.setAttribute('title', tr(reveal ? '隐藏敏感信息' : '显示敏感信息'));
       const use = button.querySelector('use');
@@ -691,7 +769,7 @@
 
     function syncAutoRefreshButton() {
       document.getElementById('autoRefreshIcon').setAttribute('href', isAutoRefresh ? '#i-pause' : '#i-play');
-      document.getElementById('autoRefreshLabel').textContent = tr(isAutoRefresh ? '关闭自动刷新' : '开启自动刷新');
+      setLocalizedText(document.getElementById('autoRefreshLabel'),isAutoRefresh ? '关闭自动刷新' : '开启自动刷新');
     }
 
     function setLanguage(language) {
@@ -705,6 +783,8 @@
       document.dispatchEvent(new CustomEvent('proxyfleet:language'));
       syncAutoRefreshButton();
       syncThemeSelector(localStorage.getItem('themeMode') || 'auto');
+      updateDashboardStats({summary:nodeSummaryCache});
+      renderNodes();
       if (document.getElementById('dashboardTab').classList.contains('active')) filterByRegion(currentRegionFilter);
       if (document.getElementById('manageTab').classList.contains('active')) loadConfigNodes();
       if (document.getElementById('debugTab').classList.contains('active')) loadDebugData();
@@ -820,7 +900,7 @@
       return /[\u3400-\u9fff]/.test(raw) ? tr(fallback) : raw;
     }
 
-    window.proxyFleetI18n = { tr, translateTree, localizedAPIMessage, registerMessages: messages => { Object.assign(TRANSLATIONS, messages); translateTree(document.body); } };
+    window.proxyFleetI18n = { tr, translateTree, setText:setLocalizedText, setDate:setLocalizedDate, localizedAPIMessage, registerMessages: messages => { Object.assign(TRANSLATIONS, messages); translateTree(document.body); } };
 
     async function readAPIJSON(response, fallback='请求失败') {
       let payload = null;
@@ -847,7 +927,7 @@
       currentRole = ROLE_RANK[role] ? role : 'viewer';
       const badge = document.getElementById('roleBadge');
       if (badge) {
-        badge.textContent = currentRole.toUpperCase();
+        setLocalizedText(badge, {admin:'管理员',operator:'操作员',viewer:'查看者'}[currentRole]);
         badge.className = `badge ${currentRole === 'admin' ? 'badge-healthy' : (currentRole === 'operator' ? 'badge-warning' : 'badge-offline')}`;
       }
       document.querySelectorAll('[data-min-role]').forEach(element => {
@@ -895,7 +975,7 @@
           refresh();
           if (isAutoRefresh) startAutoRefresh();
         }
-        else { err.textContent = tr('身份验证失败'); err.style.display = 'block'; }
+        else { setLocalizedText(err,'身份验证失败'); err.style.display = 'block'; }
       } catch (ex) { err.textContent = ex.message; err.style.display = 'block'; }
     }
 
@@ -1016,20 +1096,27 @@
 
     async function refresh() {
       const requestGeneration = ++nodeRequestGeneration;
+      clearTimeout(nodeSearchTimer);
+      syncNodeFilters();
       document.getElementById('dashboardRefresh').disabled = true;
       const params = new URLSearchParams({
         page: String(nodeTableState.page),
         page_size: String(nodeTableState.pageSize),
         region: currentRegionFilter,
-        status: 'all',
+        status: currentStatusFilter,
+        activity: currentActivityFilter,
         sort: nodeTableState.sortKey,
         order: nodeTableState.sortDir,
       });
       if (nodeTableState.search) params.set('search', nodeTableState.search);
+      // Keep background refreshes quiet, but distinguish changed queries from old rows.
+      if (params.toString() !== lastNodeQuery || !document.getElementById('nodeFilterFeedback').hidden) nodeFilterFeedback('loading');
+      else document.getElementById('nodeResults').setAttribute('aria-busy', 'true');
       try {
         const res = await fetch(`/api/nodes?${params.toString()}`);
         const data = await readAPIJSON(res, '加载数据失败');
         if (requestGeneration !== nodeRequestGeneration) return;
+        lastNodeQuery = params.toString();
         allNodesCache = Array.isArray(data.nodes) ? data.nodes : [];
         nodePaginationMeta = data.pagination || { page: 1, page_size: nodeTableState.pageSize, total_items: allNodesCache.length, total_pages: allNodesCache.length ? 1 : 0 };
         nodeTableState.page = Number(nodePaginationMeta.page) || 1;
@@ -1040,7 +1127,8 @@
         updateSweepProgress(data.probe_sweep);
         updateDashboardStats(data);
         renderNodes();
-        document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString(currentLanguage);
+        nodeFilterFeedback('');
+        setLocalizedDate(document.getElementById('lastUpdate'), new Date().toISOString(), true);
         document.getElementById('lastUpdate').dateTime = new Date().toISOString();
         document.getElementById('dashboardFailure').hidden = true;
         document.getElementById('sidebarStatus').classList.remove('is-stale');
@@ -1049,6 +1137,7 @@
         if (requestGeneration !== nodeRequestGeneration) return;
         document.getElementById('dashboardFailure').hidden = false;
         document.getElementById('sidebarStatus').classList.add('is-stale');
+        nodeFilterFeedback('error');
         console.error('Failed to refresh dashboard:', e);
       } finally {
         if (requestGeneration === nodeRequestGeneration) document.getElementById('dashboardRefresh').disabled = false;
@@ -1078,17 +1167,21 @@
       const healthy = Number(summary.healthy_nodes) || 0;
       const unavailable = Number(summary.unavailable_nodes ?? summary.blacklisted_nodes) || 0;
       const unknown = Number(summary.unknown_nodes ?? Math.max(0, total - healthy - unavailable)) || 0;
-      document.getElementById('healthyNodeRate').textContent = total > 0
-        ? tr('全部节点的 {rate}% · {unknown} 个未知', {rate: (100 * healthy / total).toFixed(1), unknown})
-        : tr('暂无节点');
+      setLocalizedText(document.getElementById('healthyNodeRate'), total > 0 ? '全部节点的 {rate}% · {unknown} 个未知' : '暂无节点', {rate: (100 * healthy / total).toFixed(1), unknown});
       document.getElementById('totalNodes').textContent = Number(summary.total_nodes) || 0;
       document.getElementById('healthyNodes').textContent = Number(summary.healthy_nodes) || 0;
       document.getElementById('activeConnections').textContent = Number(summary.active_connections) || 0;
+      updateActiveNodeCount(summary);
       document.getElementById('blacklistedNodes').textContent = unavailable;
 
       if(document.getElementById('dashboardTab').classList.contains('active')) {
         updateDashboardCharts();
       }
+    }
+
+    function updateActiveNodeCount(summary) {
+      setLocalizedText(document.getElementById('activeNodeCount'), Number.isInteger(summary.active_nodes) && summary.active_nodes >= 0
+        ? (summary.active_nodes === 1 ? '1 个使用中节点' : '{count} 个使用中节点') : '使用中节点数未知', {count:summary.active_nodes});
     }
 
     function initEchart(id) {
@@ -1150,6 +1243,11 @@
       connectTrafficSSE();
     }
 
+    function regionLabel(region) {
+      const key = String(region || 'other').toLowerCase();
+      return key === 'resident' ? tr('住宅') : key === 'other' ? tr('其他') : key.toUpperCase();
+    }
+
     function updateDashboardCharts() {
       if(!regionChartInst) regionChartInst = initEchart('regionChart');
       if(!latencyChartInst) latencyChartInst = initEchart('latencyChart');
@@ -1168,7 +1266,8 @@
       });
 
       const regionData = Object.keys(regionStats).map(k => ({
-        name: k,
+        name: regionLabel(k),
+        regionKey: k,
         value: regionStats[k].total,
         itemStyle: getRegionChartStyle(k, regionStats[k])
       }));
@@ -1179,8 +1278,8 @@
         tooltip: { trigger: 'item',
           backgroundColor: getCssVar('--bg-panel'), borderColor: getCssVar('--border'), textStyle: { color: getCssVar('--text-main') },
           formatter: (params) => {
-             const stat = regionStats[params.name];
-             return `${params.name}<br/>${tr('区域总数')}: ${stat.total}<br/>${tr('区域可用')}: ${stat.healthy}`;
+             const stat = regionStats[params.data.regionKey];
+             return `${escapeHtml(params.name)}<br/>${tr('区域总数')}: ${stat.total}<br/>${tr('区域可用')}: ${stat.healthy}`;
           }
         },
         legend: { bottom: 0, textStyle: { color: getCssVar('--text-muted') } },
@@ -1270,13 +1369,56 @@
     function filterByRegion(region) {
       if (currentRegionFilter !== region) nodeTableState.page = 1;
       currentRegionFilter = region;
-      document.querySelectorAll('.region-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.region === region));
+      refresh();
+    }
+
+    function filterByStatus(status) {
+      if (!['all', 'healthy', 'blacklisted', 'cooling', 'unavailable', 'unknown'].includes(status)) return;
+      if (currentStatusFilter !== status) nodeTableState.page = 1;
+      currentStatusFilter = status;
+      refresh();
+    }
+
+    function filterByActivity(activity) {
+      if (!['all', 'active', 'idle'].includes(activity)) return;
+      if (currentActivityFilter !== activity) nodeTableState.page = 1;
+      currentActivityFilter = activity;
+      refresh();
+    }
+
+    function syncNodeFilters() {
+      for (const [selector, key, value] of [['#regionFilter [data-region]', 'region', currentRegionFilter], ['#nodeStatusFilter [data-status]', 'status', currentStatusFilter], ['#nodeActivityFilter [data-activity]', 'activity', currentActivityFilter]]) {
+        document.querySelectorAll(selector).forEach(button => {
+          const active = button.dataset[key] === value;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-pressed', String(active));
+        });
+      }
+      document.getElementById('clearNodeFilters').disabled = currentRegionFilter === 'all' && currentStatusFilter === 'all' && currentActivityFilter === 'all' && !nodeTableState.search;
+    }
+
+    function nodeFilterFeedback(state) {
+      const feedback = document.getElementById('nodeFilterFeedback');
+      feedback.hidden = !state;
+      setLocalizedText(feedback, state ? (state === 'error' ? '节点列表更新失败；下方为上次结果，可能不符合当前筛选。请重试刷新。' : '正在更新节点列表；下方可能仍是上次的结果。') : '');
+      feedback.classList.toggle('is-error', state === 'error');
+      document.getElementById('nodeResults').setAttribute('aria-busy', String(state === 'loading'));
+    }
+
+    function clearNodeFilters() {
+      currentRegionFilter = currentStatusFilter = currentActivityFilter = 'all';
+      nodeTableState.search = '';
+      nodeTableState.page = 1;
+      document.getElementById('nodeSearch').value = '';
       refresh();
     }
 
     function setNodeSearch(value) {
       nodeTableState.search = normalizeNodeName(value).trim().toLocaleLowerCase();
       nodeTableState.page = 1;
+      ++nodeRequestGeneration; // Ignore a previous query even during the search debounce.
+      syncNodeFilters();
+      nodeFilterFeedback('loading');
       clearTimeout(nodeSearchTimer);
       nodeSearchTimer = setTimeout(refresh, 300);
     }
@@ -1290,6 +1432,15 @@
     function changeNodePage(delta) {
       const pageCount = Math.max(1, Number(nodePaginationMeta.total_pages) || 1);
       nodeTableState.page = Math.min(pageCount, Math.max(1, nodeTableState.page + delta));
+      refresh();
+    }
+
+    function jumpNodePage() {
+      const input = document.getElementById('nodePageJump');
+      input.max = String(Math.max(1, Number(nodePaginationMeta.total_pages) || 1));
+      input.required = true;
+      if (!input.reportValidity()) return;
+      nodeTableState.page = Number(input.value);
       refresh();
     }
 
@@ -1314,6 +1465,10 @@
     }
 
     function renderNodes() {
+      const jump = document.getElementById('nodePageJump');
+      jump.value = String(nodeTableState.page);
+      jump.max = String(Math.max(1, Number(nodePaginationMeta.total_pages) || 1));
+      setLocalizedText(document.getElementById('emptyState'),currentRegionFilter !== 'all' || currentStatusFilter !== 'all' || currentActivityFilter !== 'all' || nodeTableState.search ? '没有符合当前筛选的节点。' : '暂无数据');
       const tbody = document.getElementById('nodesTableBody');
       const nodes = allNodesCache;
       const total = Number(nodePaginationMeta.total_items) || 0;
@@ -1328,20 +1483,20 @@
         const ms = Number(n.last_latency_ms) || -1;
         const score = Math.max(0, Math.min(100, Number(n.quality_score) || 0));
         let badge = '', statusText = '';
-        if (n.blacklisted) { badge = 'badge-error'; statusText = tr('拉黑 Blocked'); }
-        else if (n.cooling_down) { badge = 'badge-warning'; statusText = tr('冷却 Cooling'); }
-        else if (!n.initial_check_done) { badge = 'badge-offline'; statusText = tr('未测试 Unknown'); }
-        else if (!n.available) { badge = 'badge-error'; statusText = tr('异常 Error'); }
-        else { badge = 'badge-healthy'; statusText = tr('在线 Healthy'); }
+        if (n.blacklisted) { badge = 'badge-error'; statusText = tr('已拉黑'); }
+        else if (n.cooling_down) { badge = 'badge-warning'; statusText = tr('冷却中'); }
+        else if (!n.initial_check_done) { badge = 'badge-offline'; statusText = tr('未检测'); }
+        else if (!n.available) { badge = 'badge-error'; statusText = tr('检测失败'); }
+        else { badge = 'badge-healthy'; statusText = tr('在线'); }
         const actions = canOperate ? `
             <button type="button" class="btn btn-sm" onclick="probeNode(${inlineStringArg(n.tag)})">${iconMarkup('search')}<span>${tr('探测')}</span></button>
             ${(n.blacklisted || n.cooling_down) ? `<button type="button" class="btn btn-sm btn-primary" onclick="releaseNode(${inlineStringArg(n.tag)})">${iconMarkup('unlock')}<span>${tr(n.cooling_down && !n.blacklisted ? '解除冷却' : '解封')}</span></button>` : `<button type="button" class="btn btn-sm btn-danger" onclick="blacklistNode(${inlineStringArg(n.tag)})">${iconMarkup('ban')}<span>${tr('拉黑')}</span></button>`}` : `<span class="badge badge-offline">${tr('只读')}</span>`;
         return `<tr>
           <td><span class="badge ${badge}">${statusText}</span></td>
-          <td><span style="display:inline-flex;align-items:center;gap:6px">${iconMarkup('map')} ${getNodeRegion(n).toUpperCase()}</span></td>
-          <td><div style="font-weight:500">${escapeHtml(getNodeDisplayName(n))}</div><div style="font-size:11px;color:var(--text-muted)">${escapeHtml(n.tag)}</div></td>
+          <td><span style="display:inline-flex;align-items:center;gap:6px">${iconMarkup('map')} ${regionLabel(getNodeRegion(n))}</span></td>
+          <td translate="no"><div style="font-weight:500">${escapeHtml(getNodeDisplayName(n))}</div><div style="font-size:11px;color:var(--text-muted)">${escapeHtml(n.tag)}</div></td>
           <td class="tt-mono">${n.port || '-'}</td>
-          <td><div style="display:flex;align-items:center;gap:8px"><span class="tt-mono" style="width:48px">${ms>=0 ? ms+'ms' : '-'}</span><div class="lat-bar"><div class="lat-fill" style="width:${score}%;background:${score >= 80 ? 'var(--success)' : (score >= 55 ? 'var(--warning)' : 'var(--error)')}"></div></div><span class="tt-mono" title="综合质量分">${score.toFixed(0)}</span></div></td>
+          <td><div style="display:flex;align-items:center;gap:8px"><span class="tt-mono" style="width:48px">${ms>=0 ? ms+'ms' : '-'}</span><div class="lat-bar"><div class="lat-fill" style="width:${score}%;background:${score >= 80 ? 'var(--success)' : (score >= 55 ? 'var(--warning)' : 'var(--error)')}"></div></div><span class="tt-mono" title="${tr('综合质量分')}">${score.toFixed(0)}</span></div></td>
           <td class="tt-mono">${n.active_connections||0}</td>
           <td class="tt-mono" style="color:${n.failure_count>0 ? 'var(--error)' : 'inherit'}">${n.failure_count||0}</td>
           <td>${actions}</td>
@@ -1354,7 +1509,7 @@
       try {
         const r = await fetch('/api/nodes/'+encodeURIComponent(tag)+'/probe', {method:'POST'});
         const d = await readAPIJSON(r, '请求失败');
-        showToast(`Latency: ${d.latency_ms}ms`); refresh();
+        showToast(tr('延迟：{latency} ms', {latency:d.latency_ms})); refresh();
       } catch(e) { showToast(e.message, 'error'); }
     }
 
@@ -1443,9 +1598,9 @@
         if(!d.enabled) { btn.style.display='none'; return; }
         btn.style.display='inline-flex';
         const skipped = Math.max(0, Number(d.skipped_nodes) || 0);
-        document.getElementById('subscriptionStatus').textContent = `[Sub: ${d.node_count}${skipped ? ` · Skip: ${skipped}` : ''}]`;
+        setLocalizedText(document.getElementById('subscriptionStatus'), skipped ? '订阅节点：{count} · 跳过：{skipped}' : '订阅节点：{count}', {count:d.node_count,skipped});
         const trend = document.getElementById('subscriptionTrend');
-        trend.textContent = d.is_refreshing ? 'Syncing...' : (d.last_error ? 'ERR' : (skipped ? `SKIP ${skipped}` : 'OK'));
+        setLocalizedText(trend, d.is_refreshing ? '正在同步…' : (d.last_error ? '同步失败' : (skipped ? '已跳过 {count} 个节点' : '同步正常')), {count:skipped});
         trend.title = skipped && Array.isArray(d.node_failures) ? d.node_failures.map(item => `${item.name || item.tag}: ${item.error}`).join('\n') : '';
       } catch(e){ console.error('Failed to load subscription status:', e); }
     }
@@ -1624,14 +1779,14 @@
       }
     }
 
-    function showAddNodeModal() { isEditMode=false; document.getElementById('nodeModalTitle').textContent=tr('添加节点'); document.getElementById('nodeName').value=''; document.getElementById('nodeUri').value=''; document.getElementById('nodePort').value=''; document.getElementById('nodeModalOverlay').classList.add('show');}
+    function showAddNodeModal() { isEditMode=false; setLocalizedText(document.getElementById('nodeModalTitle'),'添加节点'); document.getElementById('nodeName').value=''; document.getElementById('nodeUri').value=''; document.getElementById('nodePort').value=''; document.getElementById('nodeModalOverlay').classList.add('show');}
     async function showEditNodeModal(id) {
       try {
         const response = await fetch('/api/nodes/config/' + encodeURIComponent(id));
         const payload = await readAPIJSON(response, '加载节点失败');
         if (!payload.node) throw new Error(tr('加载节点失败'));
         const n = payload.node;
-        isEditMode=true; document.getElementById('nodeModalTitle').textContent=tr('编辑节点');
+        isEditMode=true; setLocalizedText(document.getElementById('nodeModalTitle'),'编辑节点');
         document.getElementById('nodeName').value=n.name; document.getElementById('nodeUri').value=n.uri; document.getElementById('nodePort').value=n.port||''; document.getElementById('nodeEditName').value=n.id;
         document.getElementById('nodeModalOverlay').classList.add('show');
       } catch (error) {
@@ -1842,7 +1997,7 @@
       const capabilities = document.getElementById('buildInfoCapabilities');
       if (!status || !error || !capabilities) return;
       status.className = 'badge badge-offline';
-      status.textContent = tr('读取中');
+      setLocalizedText(status,'读取中');
       error.classList.remove('show');
       error.textContent = '';
       capabilities.replaceChildren();
@@ -1858,24 +2013,24 @@
         for (const [name, enabled] of entries) {
           const badge = document.createElement('span');
           badge.className = `capability-badge ${enabled ? 'enabled' : 'disabled'}`;
-          badge.textContent = `${name.toUpperCase()} ${enabled ? 'ON' : 'OFF'}`;
+          setLocalizedText(badge, enabled ? '{capability} 已编译' : '{capability} 未编译', {capability:name.toUpperCase()});
           capabilities.appendChild(badge);
         }
         if (info.official_release_ready) {
           status.className = 'badge badge-healthy';
-          status.textContent = tr('完整发行构建');
+          setLocalizedText(status,'完整发行构建');
           status.title = tr('官方协议能力均已编译');
         } else {
           const missing = Array.isArray(info.missing_features) ? info.missing_features : [];
           status.className = 'badge badge-warning';
-          status.textContent = tr('功能受限构建');
+          setLocalizedText(status,'功能受限构建');
           status.title = missing.length ? `${tr('缺少编译能力')}: ${missing.join(', ')}` : tr('部分编译能力不可用');
           error.textContent = status.title;
           error.classList.add('show');
         }
       } catch (buildInfoError) {
         status.className = 'badge badge-error';
-        status.textContent = tr('读取失败');
+        setLocalizedText(status,'读取失败');
         error.textContent = buildInfoError.message || tr('构建信息加载失败');
         error.classList.add('show');
       }
@@ -2021,7 +2176,7 @@
         _savedCoreSnapshot = _buildCoreSnapshot();
         settingsLoaded = true;
         document.getElementById('settingsSaveStatus').textContent = '';
-      } catch(e){ if (generation !== settingsLoadGeneration) return; console.error('Failed to load settings:', e); showToast(e.message || tr('加载数据失败'), 'error'); document.getElementById('settingsSaveStatus').textContent = tr('设置加载失败，请重试。'); }
+      } catch(e){ if (generation !== settingsLoadGeneration) return; console.error('Failed to load settings:', e); showToast(e.message || tr('加载数据失败'), 'error'); setLocalizedText(document.getElementById('settingsSaveStatus'),'设置加载失败，请重试。'); }
       finally { if (generation === settingsLoadGeneration) document.querySelector('#settingsTab form').inert = false; }
     }
     function _buildCoreSnapshot() {
@@ -2269,7 +2424,7 @@
       try {
       // Save core settings if changed
       if (coreChanged) {
-        saveBtn.disabled = true; saveLabel.textContent = tr('保存中...'); saveBtn.style.opacity = '0.6';
+        saveBtn.disabled = true; setLocalizedText(saveLabel,'保存中...'); saveBtn.style.opacity = '0.6';
         const p = {
           jobs: window.proxyFleetJobs?.serialize() || [],
           profiles: window.proxyFleetProfiles?.serialize() || [],
@@ -2362,7 +2517,7 @@
           const result = r.ok ? await readAPIJSON(r, '保存失败') : await r.json().catch(() => ({}));
           if(!r.ok) {
             if (r.status === 412 || r.status === 428) {
-              document.getElementById('settingsSaveStatus').textContent = tr('设置已变更，草稿已保留。请重新载入最新配置后再编辑。');
+              setLocalizedText(document.getElementById('settingsSaveStatus'),'设置已变更，草稿已保留。请重新载入最新配置后再编辑。');
             } else {
               showToast(localizedAPIMessage(result?.error, '保存失败'), 'error');
               document.getElementById('settingsSaveStatus').textContent = localizedAPIMessage(result?.error, '配置保存失败，草稿已保留。');
@@ -2377,15 +2532,15 @@
           subscriptionETag = committedETag || subscriptionETag;
           coreRestartRequired = !!result.need_restart;
           coreAuthChanged = !!result.auth_changed;
-        } catch(e){ showToast(e.message || tr('保存失败'), 'error'); document.getElementById('settingsSaveStatus').textContent = tr(coreResponseOK ? '保存结果无法确认，草稿已保留。请重新载入设置核对。' : '配置保存失败，草稿已保留。'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
+        } catch(e){ showToast(e.message || tr('保存失败'), 'error'); setLocalizedText(document.getElementById('settingsSaveStatus'),coreResponseOK ? '保存结果无法确认，草稿已保留。请重新载入设置核对。' : '配置保存失败，草稿已保留。'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
         _savedCoreSnapshot = currentCoreSnapshot;
         window.proxyFleetJobs?.markSaved();
-        document.getElementById('settingsSaveStatus').textContent = tr('配置已保存');
+        setLocalizedText(document.getElementById('settingsSaveStatus'),'配置已保存');
       }
 
       // Save subscription config through a fetched, one-time preview plan.
       if (subChanged) {
-        saveBtn.disabled = true; saveLabel.textContent = tr('保存中...'); saveBtn.style.opacity = '0.6';
+        saveBtn.disabled = true; setLocalizedText(saveLabel,'保存中...'); saveBtn.style.opacity = '0.6';
         const subPayload = {
           sources: subSources, enabled: subEnabled, interval: subInterval,
           fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate,
@@ -2397,7 +2552,7 @@
           const previewResponse = await fetch('/api/subscription/preview', {method:'POST', headers:{'Content-Type':'application/json', 'If-Match': subscriptionETag}, body:JSON.stringify(subPayload)});
           if (previewResponse.status === 412 || previewResponse.status === 428) {
             hideFullscreenLoading();
-            document.getElementById('settingsSaveStatus').textContent = tr('设置已变更，草稿已保留。请重新载入最新配置后再编辑。');
+            setLocalizedText(document.getElementById('settingsSaveStatus'),'设置已变更，草稿已保留。请重新载入最新配置后再编辑。');
             saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return;
           }
           const preview = await readAPIJSON(previewResponse, '订阅预览失败');
@@ -2421,7 +2576,7 @@
           const sr = await fetch('/api/subscription/config', {method:'PUT', headers:{'Content-Type':'application/json', 'If-Match': subscriptionETag}, body:JSON.stringify(applyPayload)});
           hideFullscreenLoading();
           if (sr.status === 412 || sr.status === 428) {
-            document.getElementById('settingsSaveStatus').textContent = tr('设置已变更，草稿已保留。请重新载入最新配置后再编辑。');
+            setLocalizedText(document.getElementById('settingsSaveStatus'),'设置已变更，草稿已保留。请重新载入最新配置后再编辑。');
             saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return;
           }
           const sd = await readAPIJSON(sr, '订阅配置保存失败');
@@ -2431,16 +2586,16 @@
           // failed save or cause the next Job edit to use a stale revision.
           window.proxyFleetSubscriptions?.load(sd.sources || subSources, []);
           _savedSubSnapshot = JSON.stringify({sources: window.proxyFleetSubscriptions?.serialize() || subSources, enabled: subEnabled, interval: subInterval, fetch_concurrency: subFetchConcurrency, allow_private_networks: subAllowPrivate, max_removed_ratio: subMaxRemovedRatio, min_available_ratio: subMinAvailableRatio, quarantine_new_nodes: subQuarantine, node_failure_policy: subNodeFailurePolicy});
-          document.getElementById('settingsSaveStatus').textContent = tr('配置已保存');
+          setLocalizedText(document.getElementById('settingsSaveStatus'),'配置已保存');
           try {
             const statusResponse = await fetch('/api/subscription/status');
             const statusData = await readAPIJSON(statusResponse, '订阅源状态加载失败');
             window.proxyFleetSubscriptions?.setStatuses(statusData.sources || []);
           } catch (error) {
-            document.getElementById('settingsSaveStatus').textContent = tr('订阅已保存，但状态读取失败，请重新载入状态。');
+            setLocalizedText(document.getElementById('settingsSaveStatus'),'订阅已保存，但状态读取失败，请重新载入状态。');
           }
           showToast(sd.node_count !== undefined ? tr('已保存，获取 {count} 个节点', {count: sd.node_count}) : tr('设置已保存'));
-        } catch(e){ hideFullscreenLoading(); showToast(e.message || tr('订阅配置保存失败'), 'error'); document.getElementById('settingsSaveStatus').textContent = tr('配置保存失败，草稿已保留。'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
+        } catch(e){ hideFullscreenLoading(); showToast(e.message || tr('订阅配置保存失败'), 'error'); setLocalizedText(document.getElementById('settingsSaveStatus'),'配置保存失败，草稿已保留。'); saveBtn.disabled = false; saveLabel.textContent = originalText; saveBtn.style.opacity = '1'; return; }
       } else if (coreChanged && !coreRestartRequired) {
         showToast(tr('已保存并重载成功'));
       }
@@ -2488,7 +2643,7 @@
           body.innerHTML = `<tr><td colspan="11" class="table-empty">结构化流量日志未启用</td></tr>`;
           return;
         }
-        summary.textContent = tr('最近 {count} 条 · 写入队列累计丢弃 {dropped} 条', {count: events.length, dropped: Number(data.dropped) || 0});
+        setLocalizedText(summary,'最近 {count} 条 · 写入队列累计丢弃 {dropped} 条',{count: events.length, dropped: Number(data.dropped) || 0});
         body.innerHTML = events.length ? events.map(event => `<tr>
           <td>${formatDateTime(event.timestamp)}</td>
           <td><span class="badge ${event.success ? 'badge-healthy' : 'badge-error'}">${event.success ? tr('成功') : tr('失败')}</span></td>
@@ -2566,7 +2721,7 @@
         await readAPIJSON(response, '请求失败');
         _lastLogsPayload = null;
         renderConsoleLogs('');
-        showToast(tr('Console 日志已清空'));
+        showToast(tr('控制台日志已清空'));
       } catch (error) {
         showToast(error.message || tr('请求失败'), 'error');
       }
@@ -2586,7 +2741,7 @@
         ]);
         const budget = probeData.budget || {};
         document.getElementById('opsProbeBudget').textContent = `${Number(budget.used) || 0} / ${Number(budget.limit) > 0 ? budget.limit : '∞'}`;
-        document.getElementById('opsProbeWindow').textContent = budget.next_reset ? `Reset ${new Date(budget.next_reset).toLocaleTimeString()}` : (budget.mode || '-');
+        setLocalizedText(document.getElementById('opsProbeWindow'), budget.next_reset ? '重置时间：{time}' : (budget.mode || '-'), {time:budget.next_reset ? new Date(budget.next_reset).toLocaleTimeString(currentLanguage) : ''});
         document.getElementById('opsProbeDue').textContent = Number(budget.due) || 0;
         document.getElementById('opsPassiveSkipped').textContent = Number(budget.passive_skipped) || 0;
         operationsHistoryCache = Array.isArray(historyData.history) ? historyData.history : [];
@@ -2615,7 +2770,7 @@
     function formatDateTime(value) {
       if (!value || value === '0001-01-01T00:00:00Z') return '-';
       const date = new Date(value);
-      return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
+      return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString(currentLanguage);
     }
 
     function renderOperationsHistory() {
