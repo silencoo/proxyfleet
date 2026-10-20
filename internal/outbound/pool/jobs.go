@@ -211,7 +211,7 @@ func (p *poolOutbound) ListJobSessions() []jobs.SessionInfo {
 		if v, ok := views[lease.Job]; ok {
 			state = p.jobLeaseState(v.job, lease, v.values[lease.Node], v.candidates)
 		}
-		info := jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: state, ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version()}
+		info := jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, NodeName: p.options.Metadata[lease.Node].Name, State: state, ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version(), FailoverCount: lease.FailoverCount, LastFailover: lease.LastFailover}
 		p.jobStore.DescribeActivity(&info, views[lease.Job].job)
 		result = append(result, info)
 	}
@@ -268,18 +268,11 @@ func (p *poolOutbound) pickJobMember(j config.JobConfig, network string, tried m
 	return best, nil
 }
 
-func (p *poolOutbound) pickPinnedJobMember(ctx context.Context, j config.JobConfig, network string) (*memberState, error) {
+func (p *poolOutbound) pickPinnedJobMember(ctx context.Context, j config.JobConfig, network string, tried map[string]struct{}) (*memberState, error) {
 	if network != "tcp" {
 		return nil, jobs.ErrUnavailable
 	}
-	metadata := adapter.ContextFrom(ctx)
-	if metadata == nil {
-		return nil, jobs.ErrConflict
-	}
-	session, valid := config.ProxySessionID(p.options.JobEndpoints[j.Name].Username, metadata.User)
-	if j.SharedIngress() {
-		session, valid = metadata.User, config.ValidProxySessionID(metadata.User)
-	}
+	session, valid := p.jobSession(ctx, j)
 	if !valid {
 		return nil, jobs.ErrConflict
 	}
@@ -295,6 +288,9 @@ func (p *poolOutbound) pickPinnedJobMember(ctx context.Context, j config.JobConf
 	}
 	if a.State != "ready" {
 		return nil, fmt.Errorf("%w: pinned session is %s", jobs.ErrUnavailable, a.State)
+	}
+	if _, failed := tried[a.Node]; failed {
+		return nil, jobs.ErrUnavailable
 	}
 	return p.memberByTag[a.Node], nil
 }
@@ -567,12 +563,20 @@ func (p *poolOutbound) AcquireJob(name, session string) (jobs.Access, error) {
 	if err != nil {
 		return a, err
 	}
+	if j.AutomaticFailover() && l.Policy == key && !l.Expired(time.Now()) {
+		if reason := p.jobFailoverReason(j, l); reason != "" {
+			l, err = p.failoverJob(j, l, reason)
+			if err != nil {
+				return jobs.Access{}, err
+			}
+		}
+	}
 	return p.accessForLease(j, l, status.Candidates), nil
 }
 
 func (p *poolOutbound) accessForLease(j config.JobConfig, l jobs.Lease, candidates int) jobs.Access {
 	a := jobs.Access{Job: j.Name, Mode: j.Mode, Selection: j.EffectiveSelection(), Concurrency: j.Concurrency, Timeout: j.Timeout, TimeoutMS: j.RequestTimeout().Milliseconds(), ExpectedStatus: j.ExpectedStatus, BodyContains: j.BodyContains,
-		Session: l.Session, Node: l.Node, ExpiresAt: l.ExpiresAt, Permanent: l.Permanent, Revision: l.Version()}
+		Session: l.Session, Node: l.Node, NodeName: p.options.Metadata[l.Node].Name, ExpiresAt: l.ExpiresAt, Permanent: l.Permanent, Revision: l.Version(), FailoverCount: l.FailoverCount, LastFailover: l.LastFailover}
 	// An existing session may retain a healthy node outside the current top N.
 	var sample jobs.Measurement
 	if j.AutomaticSelection() {

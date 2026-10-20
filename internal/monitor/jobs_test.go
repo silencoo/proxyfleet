@@ -74,7 +74,7 @@ func (*jobAPIFixture) ListJobs() []jobs.Status {
 	return []jobs.Status{{Name: "accounts", Mode: "pinned"}}
 }
 func (*jobAPIFixture) ListJobSessions() []jobs.SessionInfo {
-	return []jobs.SessionInfo{{Job: "accounts", Session: "account-a", Node: "node-a", State: "ready"}, {Job: "deleted", Session: "account-b", Node: "node-b", State: "removed"}}
+	return []jobs.SessionInfo{{Job: "accounts", Session: "account-a", Node: "node-a", NodeName: "[D] US-CN2-9929", State: "ready"}, {Job: "deleted", Session: "account-b", Node: "node-b", State: "removed"}}
 }
 func (*jobAPIFixture) RefreshJob(context.Context, string) (jobs.Status, error) {
 	return jobs.Status{Name: "accounts"}, nil
@@ -124,6 +124,9 @@ func TestJobsAPIRequiresAdminAndValidatesBodies(t *testing.T) {
 	}{
 		{string(RoleViewer), "", 403, ""}, {string(RoleAdmin), "?page_size=1&page=2", 200, `"job":"deleted"`},
 		{string(RoleAdmin), "?job=accounts&q=ACCOUNT-A&state=ready", 200, `"total_items":1`},
+		{string(RoleAdmin), "?q=us-cn2-9929", 200, `"node_name":"[D] US-CN2-9929"`},
+		{string(RoleAdmin), "?q=node-a", 200, `"total_items":1`},
+		{string(RoleAdmin), "?q=missing-node-name", 200, `"total_items":0`},
 		{string(RoleAdmin), "?page_size=101", 400, ""}, {string(RoleAdmin), "?page=-1", 400, ""},
 		{string(RoleAdmin), "?job=missing&page=20", 200, `"page":1`},
 	} {

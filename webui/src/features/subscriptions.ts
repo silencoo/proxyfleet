@@ -58,7 +58,7 @@ const durationMilliseconds = (value: string): number => {
 const formatDate = (value?: string): string => {
   if (!value || value.startsWith('0001-01-01')) return '—';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? '—' : `<time data-local-date="${escapeHTML(value)}">${date.toLocaleString(document.documentElement.lang)}</time>`;
 };
 
 class SubscriptionController implements SubscriptionsModule {

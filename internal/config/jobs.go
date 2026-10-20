@@ -15,6 +15,7 @@ type JobConfig struct {
 	Name               string `yaml:"name" json:"name"`
 	Mode               string `yaml:"mode" json:"mode"`
 	Selection          string `yaml:"selection" json:"selection"`
+	FailurePolicy      string `yaml:"failure_policy,omitempty" json:"failure_policy,omitempty"`
 	Profile            string `yaml:"profile" json:"profile"`
 	Ingress            string `yaml:"ingress,omitempty" json:"ingress,omitempty"`
 	Password           string `yaml:"password,omitempty" json:"password,omitempty"`
@@ -38,7 +39,20 @@ type JobConfig struct {
 const (
 	JobSelectionManual = "manual"
 	JobSelectionAuto   = "auto"
+	JobFailureStrict   = "strict"
+	JobFailureFailover = "failover"
 )
+
+func (j JobConfig) EffectiveFailurePolicy() string {
+	if j.FailurePolicy == "" {
+		return JobFailureStrict
+	}
+	return j.FailurePolicy
+}
+
+func (j JobConfig) AutomaticFailover() bool {
+	return j.Mode == "pinned" && (j.SharedIngress() || j.EffectiveIngress() == "endpoint") && j.EffectiveFailurePolicy() == JobFailureFailover
+}
 
 func (j JobConfig) EffectiveSelection() string {
 	if j.Selection == "" {
@@ -120,12 +134,20 @@ func (c *Config) NormalizeJobs() error {
 		j.Mode = strings.ToLower(strings.TrimSpace(j.Mode))
 		j.Selection = strings.ToLower(strings.TrimSpace(j.Selection))
 		j.Selection = j.EffectiveSelection()
+		j.FailurePolicy = strings.ToLower(strings.TrimSpace(j.FailurePolicy))
+		j.FailurePolicy = j.EffectiveFailurePolicy()
+		if j.FailurePolicy != JobFailureStrict && j.FailurePolicy != JobFailureFailover {
+			return fmt.Errorf("job %q failure_policy must be strict or failover", j.Name)
+		}
 		if j.Selection != JobSelectionManual && j.Selection != JobSelectionAuto {
 			return fmt.Errorf("job %q selection must be manual or auto", j.Name)
 		}
 		j.Profile = strings.ToLower(strings.TrimSpace(j.Profile))
 		j.Endpoint = strings.ToLower(strings.TrimSpace(j.Endpoint))
 		j.Ingress = strings.ToLower(strings.TrimSpace(j.Ingress))
+		if j.FailurePolicy == JobFailureFailover && !j.AutomaticFailover() {
+			return fmt.Errorf("job %q failover requires pinned mode with shared or endpoint ingress", j.Name)
+		}
 		if !profileNamePattern.MatchString(j.Name) || seen[j.Name] {
 			return fmt.Errorf("job %d has an invalid or duplicate name", i)
 		}

@@ -1,5 +1,5 @@
 import { copyText, readJSON } from '../api';
-import { localizedAPIMessage, tr, translateTree } from '../i18n';
+import { localizedAPIMessage, tr, translateTree, setText } from '../i18n';
 
 export interface ProfileConfig {
   name: string;
@@ -82,12 +82,20 @@ class ProfileController implements ProfilesModule {
   private profiles: ProfileConfig[] = [];
   private access: AccessInfo | null = null;
   private previewTimer: number | undefined;
+  private previews = new WeakMap<HTMLElement, ProfilePreview>();
 
   constructor(private readonly mount: HTMLElement) {
     this.renderShell();
     this.mount.addEventListener('click', event => this.handleClick(event));
     this.mount.addEventListener('input', event => this.handleFormChange(event));
     this.mount.addEventListener('change', event => this.handleFormChange(event));
+    document.addEventListener('proxyfleet:language', () => {
+      this.renderProfileOptions(); this.renderEndpointOptions(); this.renderAccessOutput();
+      this.mount.querySelectorAll<HTMLElement>('[data-profile-row]').forEach(row => {
+        const preview = this.previews.get(row), output = row.querySelector<HTMLElement>('[data-profile-preview]');
+        if (preview && output) output.innerHTML = this.previewHTML(preview);
+      });
+    });
     void this.loadAccess();
   }
 
@@ -158,11 +166,11 @@ class ProfileController implements ProfilesModule {
   private renderShell(): void {
     this.mount.innerHTML = `
       <section class="panel profile-panel" style="margin-bottom:16px">
-        <div class="panel-header"><div><div class="panel-title">Named Profiles</div><div class="field-help">组合地域、协议、来源、质量与节点名称规则；静态成员视图在池创建时预计算。</div></div><button type="button" class="btn btn-sm" data-add-profile><svg class="icon"><use href="#i-plus"></use></svg><span>添加 Profile</span></button></div>
+        <div class="panel-header"><div><div class="panel-title">节点分组</div><div class="field-help">组合地域、协议、来源、质量与节点名称规则；静态成员视图在池创建时预计算。</div></div><button type="button" class="btn btn-sm" data-add-profile><svg class="icon"><use href="#i-plus"></use></svg><span>添加 Profile</span></button></div>
         <div class="profile-list" data-profile-list></div>
       </section>
       <section class="panel access-panel" style="margin-bottom:16px">
-        <div class="panel-header"><div><div class="panel-title">访问助手 (Access Assistant)</div><div class="field-help">生成 HTTP / SOCKS5 URI 与 curl 命令；复制内容来自当前运行配置。</div></div><span class="badge badge-offline" data-access-status>读取中</span></div>
+        <div class="panel-header"><div><div class="panel-title">访问助手</div><div class="field-help">生成 HTTP / SOCKS5 URI 与 curl 命令；复制内容来自当前运行配置。</div></div><span class="badge badge-offline" data-access-status>读取中</span></div>
         <div class="access-grid">
           <div class="form-group"><label>Endpoint</label><select class="setting-input" data-access-endpoint><option value="">默认入口</option></select></div>
           <div class="form-group"><label>协议</label><select class="setting-input" data-access-scheme><option value="http">HTTP</option><option value="socks5">SOCKS5</option></select></div>
@@ -281,10 +289,10 @@ class ProfileController implements ProfilesModule {
     this.mount.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach(button => { button.disabled = !uri; });
     const help = this.mount.querySelector<HTMLElement>('[data-access-help]');
     if (help) {
-      if (pinned) help.textContent = tr('此入口属于 pinned 任务 {job}，需要会话 ID。请在“抓取任务”的访问助手中生成地址。', {job:endpoint.job || endpoint.name});
-      else if (endpoint.profile) help.textContent = tr('Endpoint {endpoint} 已固定到 Profile {profile}，客户端无需修改用户名。', {endpoint: endpoint.name, profile: endpoint.profile});
-      else if (endpoint.username) help.textContent = tr('可选择 Profile；访问用户名会自动生成为 base@profile。');
-      else help.textContent = tr('该 Endpoint 未启用认证；如需客户端选择 Profile，请为入口配置用户名和密码，或将 Endpoint 固定到一个 Profile。');
+      if (pinned) setText(help,'此入口属于 pinned 任务 {job}，需要会话 ID。请在“抓取任务”的访问助手中生成地址。',{job:endpoint.job || endpoint.name});
+      else if (endpoint.profile) setText(help,'Endpoint {endpoint} 已固定到 Profile {profile}，客户端无需修改用户名。',{endpoint: endpoint.name, profile: endpoint.profile});
+      else if (endpoint.username) setText(help,'可选择 Profile；访问用户名会自动生成为 base@profile。');
+      else setText(help,'该 Endpoint 未启用认证；如需客户端选择 Profile，请为入口配置用户名和密码，或将 Endpoint 固定到一个 Profile。');
       if (endpoint.status !== 'running') help.textContent += tr(' 当前状态：{status}{message}。', {status: endpoint.status, message: endpoint.message ? ` (${localizedAPIMessage(endpoint.message, '状态异常')})` : ''});
     }
   }
@@ -333,6 +341,7 @@ class ProfileController implements ProfilesModule {
   }
 
   private async loadPreview(row: HTMLElement): Promise<void> {
+    this.previews.delete(row);
     const status = row.querySelector<HTMLElement>('[data-profile-preview-status]');
     const output = row.querySelector<HTMLElement>('[data-profile-preview]');
     if (!status || !output) return;
@@ -348,13 +357,14 @@ class ProfileController implements ProfilesModule {
       });
       const preview = await readJSON<ProfilePreview>(response);
       if (row.dataset.previewSequence !== sequence) return;
-      status.textContent = tr('{matched}/{total} 命中', {matched: preview.matched, total: preview.total});
+      this.previews.set(row, preview);
+      setText(status,'{matched}/{total} 命中',{matched: preview.matched, total: preview.total});
       status.className = preview.matched ? 'badge badge-healthy' : 'badge badge-warning';
       output.innerHTML = this.previewHTML(preview);
       translateTree(output);
     } catch (error) {
       if (row.dataset.previewSequence !== sequence) return;
-      status.textContent = tr('预览失败');
+      setText(status,'预览失败');
       status.className = 'badge badge-error';
       output.innerHTML = `<div class="profile-preview-error" role="alert">${escapeHTML(localizedAPIMessage(error instanceof Error ? error.message : '', '无法计算匹配预览'))}</div>`;
     }
@@ -364,7 +374,7 @@ class ProfileController implements ProfilesModule {
     if (!preview.total) return `<div class="profile-preview-empty">${tr('当前运行配置中没有可预览节点。')}</div>`;
     const reasonLabels: Record<string,string> = {region:'地域', protocol:'协议', source:'来源', tag_rule:'名称规则', quality:'质量'};
     const reasons = Object.entries(preview.excluded || {}).filter(([, count]) => count > 0)
-      .map(([reason, count]) => `<span class="profile-preview-chip">${tr('{reason} excluded: {count}', {reason: tr(reasonLabels[reason] || reason), count})}</span>`).join('');
+      .map(([reason, count]) => `<span class="profile-preview-chip">${tr('{reason} 排除：{count}', {reason: tr(reasonLabels[reason] || reason), count})}</span>`).join('');
     const samples = (items: ProfilePreviewSample[], kind: string) => items.length ? `<div class="profile-preview-samples"><strong>${tr(kind)}</strong>${items.map(item => `<span title="${escapeHTML([item.region, item.protocol, item.source, tr('质量 {quality}', {quality: item.quality.toFixed(0)}), item.rule ? `${item.rule_group}: ${item.rule}` : ''].filter(Boolean).join(' · '))}">${escapeHTML(item.name)}</span>`).join('')}</div>` : '';
     return `<div class="profile-preview-summary"><span><strong>${preview.matched}</strong> ${tr('命中')}</span><span><strong>${preview.total - preview.matched}</strong> ${tr('排除')}</span>${reasons}</div>${samples(preview.matched_samples || [], '命中样本')}${samples(preview.excluded_samples || [], '未命中样本')}`;
   }

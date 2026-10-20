@@ -60,7 +60,7 @@ func (m *Manager) ListJobSessions() []jobs.SessionInfo {
 	result := []jobs.SessionInfo{}
 	if m.jobStore != nil {
 		for _, lease := range m.jobStore.Leases() {
-			info := jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: "unavailable", ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version()}
+			info := jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: "unavailable", ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version(), FailoverCount: lease.FailoverCount, LastFailover: lease.LastFailover}
 			m.mu.RLock()
 			if m.cfg != nil {
 				for _, j := range m.cfg.Jobs {

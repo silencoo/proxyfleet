@@ -25,8 +25,8 @@
       document.documentElement.setAttribute('data-theme', visual);
     })();
   </script>
-  <script type="module" crossorigin src="/assets/index-D6-6XopO.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-KeTps5xY.css">
+  <script type="module" crossorigin src="/assets/index-Do-IY6EJ.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-Bu_zmkD4.css">
 </head>
 <body>
   <a class="skip-link" href="#mainContent">跳到主要内容</a>
@@ -115,6 +115,7 @@
           <div class="stat-panel">
             <div class="stat-title">活跃连接数</div>
             <div class="stat-value" style="color: var(--primary);" id="activeConnections">0</div>
+            <div class="stat-sub" id="activeNodeCount">等待连接数据</div>
           </div>
           <div class="stat-panel">
             <div class="stat-title">异常/拉黑</div>
@@ -149,8 +150,8 @@
           <div class="panel-header">
             <h2 class="panel-title">节点监控列表</h2><div class="page-actions"><button type="button" class="btn" onclick="toggleAutoRefresh()" id="autoRefreshBtn"><svg class="icon"><use id="autoRefreshIcon" href="#i-pause"></use></svg><span id="autoRefreshLabel">关闭自动刷新</span></button><button type="button" class="btn" id="dashboardRefresh" onclick="refresh()"><svg class="icon"><use href="#i-refresh"></use></svg><span>刷新看板</span></button></div>
           </div>
-        <div class="region-filters" id="regionFilter">
-          <span style="color: var(--text-muted); font-size: 12px; margin-top: 4px;">过滤:</span>
+        <div class="region-filters" id="regionFilter" role="group" aria-labelledby="nodeRegionLabel">
+          <span class="node-filter-label" id="nodeRegionLabel">地区 / 类型</span>
           <button type="button" class="region-btn active" data-region="all" onclick="filterByRegion('all')">全部</button>
           <button type="button" class="region-btn" data-region="jp" onclick="filterByRegion('jp')">JP</button>
           <button type="button" class="region-btn" data-region="kr" onclick="filterByRegion('kr')">KR</button>
@@ -158,29 +159,45 @@
           <button type="button" class="region-btn" data-region="hk" onclick="filterByRegion('hk')">HK</button>
           <button type="button" class="region-btn" data-region="tw" onclick="filterByRegion('tw')">TW</button>
           <button type="button" class="region-btn" data-region="sg" onclick="filterByRegion('sg')">SG</button>
-          <button type="button" class="region-btn" data-region="resident" onclick="filterByRegion('resident')">Resident</button>
+          <button type="button" class="region-btn" data-region="resident" onclick="filterByRegion('resident')">住宅</button>
           <button type="button" class="region-btn" data-region="other" onclick="filterByRegion('other')">其他</button>
         </div>
-
-
+        <div class="region-filters" id="nodeStatusFilter" role="group" aria-labelledby="nodeStatusLabel" aria-describedby="nodeStatusHelp">
+          <span class="node-filter-label" id="nodeStatusLabel">节点状态</span>
+          <button type="button" class="region-btn active" data-status="all" aria-pressed="true" onclick="filterByStatus('all')">全部</button>
+          <button type="button" class="region-btn" data-status="healthy" aria-pressed="false" onclick="filterByStatus('healthy')">在线</button>
+          <button type="button" class="region-btn" data-status="blacklisted" aria-pressed="false" onclick="filterByStatus('blacklisted')">已拉黑</button>
+          <button type="button" class="region-btn" data-status="cooling" aria-pressed="false" onclick="filterByStatus('cooling')">冷却中</button>
+          <button type="button" class="region-btn" data-status="unavailable" aria-pressed="false" onclick="filterByStatus('unavailable')">不可用</button>
+          <button type="button" class="region-btn" data-status="unknown" aria-pressed="false" onclick="filterByStatus('unknown')">未检测</button>
+        </div>
+        <div class="region-filters" id="nodeActivityFilter" role="group" aria-labelledby="nodeActivityLabel" aria-describedby="nodeStatusHelp">
+          <span class="node-filter-label" id="nodeActivityLabel">使用情况</span>
+          <button type="button" class="region-btn active" data-activity="all" aria-pressed="true" onclick="filterByActivity('all')">全部</button>
+          <button type="button" class="region-btn" data-activity="active" aria-pressed="false" onclick="filterByActivity('active')">使用中</button>
+          <button type="button" class="region-btn" data-activity="idle" aria-pressed="false" onclick="filterByActivity('idle')">空闲</button>
+        </div>
+        <p class="node-filter-help" id="nodeStatusHelp">使用中指本机当前连接数大于 0，不代表机场在线设备数。不可用包含拉黑、冷却及检测失败；各组筛选同时生效。</p>
           <div class="table-toolbar">
             <div class="table-search">
               <svg class="icon"><use href="#i-search"></use></svg>
-              <input id="nodeSearch" class="setting-input" type="search" placeholder="搜索名称、标签、地域或端口" oninput="setNodeSearch(this.value)" />
+              <input id="nodeSearch" class="setting-input" type="search" aria-label="搜索名称、标签、地域或端口" placeholder="搜索名称、标签、地域或端口" oninput="setNodeSearch(this.value)" />
             </div>
+            <button type="button" class="btn btn-sm" id="clearNodeFilters" onclick="clearNodeFilters()" disabled>清除筛选</button>
             <label class="table-page-size">每页
               <select id="nodePageSize" class="setting-input" onchange="setNodePageSize(this.value)">
                 <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option>
               </select>
             </label>
           </div>
-          <div class="table-container">
+          <p id="nodeFilterFeedback" class="node-filter-help" role="status" hidden></p>
+          <div class="table-container" id="nodeResults" aria-busy="false">
             <table>
               <thead>
                 <tr>
                   <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="status" onclick="sortNodeTable('status')">状态<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
                   <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="region" onclick="sortNodeTable('region')">地域<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
-                  <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="name" onclick="sortNodeTable('name')">名称 (Name/Tag)<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
+                  <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="name" onclick="sortNodeTable('name')">名称 / 标签<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
                   <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="port" onclick="sortNodeTable('port')">端口<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
                   <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="latency" onclick="sortNodeTable('latency')">延迟 / 质量<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
                   <th><button type="button" class="sort-button" data-sort-table="nodes" data-sort-key="connections" onclick="sortNodeTable('connections')">连接<svg class="icon sort-indicator"><use href="#i-sort"></use></svg></button></th>
@@ -197,6 +214,7 @@
           <div class="pagination" id="nodePagination">
             <span id="nodePageInfo">0 / 0</span>
             <button type="button" class="btn btn-sm" id="nodePrevPage" onclick="changeNodePage(-1)" aria-label="上一页"><svg class="icon"><use href="#i-chevron-left"></use></svg></button>
+            <label for="nodePageJump">页码</label><input id="nodePageJump" class="setting-input" type="number" min="1" step="1" value="1" onkeydown="if(event.key==='Enter'){event.preventDefault();jumpNodePage();}"><button type="button" class="btn btn-sm" onclick="jumpNodePage()">跳转</button>
             <button type="button" class="btn btn-sm" id="nodeNextPage" onclick="changeNodePage(1)" aria-label="下一页"><svg class="icon"><use href="#i-chevron-right"></use></svg></button>
           </div>
         </div>
@@ -334,7 +352,7 @@
       <div id="logsTab" class="tab-content"><div class="page-heading"><h1>控制台日志</h1></div>
         <div class="panel" style="margin-bottom:16px">
           <div class="panel-header">
-            <div class="panel-title">控制台日志 (Console Logs)</div>
+            <div class="panel-title">控制台日志</div>
             <div style="display:flex; align-items:center; gap:12px;">
               <label style="font-size:13px; color:var(--text-muted); display:flex; align-items:center; gap:6px;"><input type="checkbox" id="autoScrollLogs" checked> 自动滚动</label>
               <button type="button" class="btn btn-sm btn-danger" data-min-role="operator" onclick="clearConsoleLogs()"><svg class="icon"><use href="#i-trash"></use></svg><span>清空日志</span></button>
@@ -360,7 +378,7 @@
       <div id="jobsTab" class="tab-content" data-min-role="admin"><div id="jobRuntimeMount"></div></div>
       <div id="settingsTab" class="tab-content">
         <div class="settings-content">
-          <div class="page-heading"><h1>系统设置</h1><span class="badge badge-offline" id="roleBadge" title="当前权限角色">ADMIN</span></div>
+          <div class="page-heading"><h1>系统设置</h1><span class="badge badge-offline" id="roleBadge" title="当前权限角色">管理员</span></div>
           <section class="panel preferences-panel"><div class="panel-header"><h2 class="panel-title">界面偏好</h2></div><div class="preferences-grid">
             <div class="form-group"><label for="settingLanguage">界面语言</label><select id="settingLanguage" class="setting-input" onchange="setLanguage(this.value)"><option value="zh-CN">简体中文</option><option value="en">English</option></select></div>
             <div class="form-group"><label for="settingTheme">外观</label><select id="settingTheme" class="setting-input" onchange="setThemeMode(this.value)"><option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div>
@@ -387,7 +405,7 @@
               <div class="panel-header"><div class="panel-title">基础配置</div></div>
               <div class="settings-grid">
                 <div class="form-group">
-                  <label>运行模式 (Mode)</label>
+                  <label>运行模式</label>
                   <select id="settingMode" class="setting-input">
                     <option value="pool">pool - 单端口负载池</option>
                     <option value="multi-port">multi-port - 多端口模式</option>
@@ -395,7 +413,7 @@
                   </select>
                 </div>
                 <div class="form-group">
-                  <label>外部 IP (External IP)</label>
+                  <label>外部 IP</label>
                   <input type="text" id="settingExternalIP" class="setting-input" placeholder="0.0.0.0" />
                 </div>
 
@@ -403,7 +421,7 @@
             </div>
 
             <div class="panel" style="margin-bottom: 16px;">
-              <div class="panel-header"><div class="panel-title">探测策略 (Probe)</div></div>
+              <div class="panel-header"><div class="panel-title">探测策略</div></div>
               <div class="settings-grid">
                 <div class="form-group">
                   <label for="settingProbeMode">自动探测模式</label>
@@ -414,7 +432,7 @@
                     <option value="manual">manual - 仅手动</option>
                   </select>
                 </div>
-                <div class="form-group"><label for="settingProbeTarget">探测目标 (Probe Target)</label><input type="text" id="settingProbeTarget" class="setting-input" placeholder="www.apple.com:80" /></div>
+                <div class="form-group"><label for="settingProbeTarget">探测目标</label><input type="text" id="settingProbeTarget" class="setting-input" placeholder="www.apple.com:80" /></div>
                 <div class="form-group">
                   <label for="settingProbeInterval">自动探测间隔</label>
                   <input type="text" id="settingProbeInterval" class="setting-input" placeholder="5m" aria-describedby="settingProbeIntervalHelp settingProbeIntervalError" oninput="clearDurationError('settingProbeInterval', 'settingProbeIntervalError')" onblur="normalizeDurationInput('settingProbeInterval')" />
@@ -444,7 +462,7 @@
             <div id="endpointSettingsMount"></div>
 
             <div class="panel" style="margin-bottom: 16px;">
-              <div class="panel-header"><div class="panel-title">多端口配置 (Multi-Port)</div></div>
+              <div class="panel-header"><div class="panel-title">多端口配置</div></div>
               <div class="settings-grid">
                 <div class="form-group"><label>监听地址</label><input type="text" id="settingMPAddr" class="setting-input" placeholder="0.0.0.0" /></div>
                 <div class="form-group"><label>起始端口</label><input type="number" id="settingMPBasePort" class="setting-input" min="1" max="65535" placeholder="10000" /></div>
@@ -454,7 +472,7 @@
             </div>
 
             <div class="panel" style="margin-bottom: 16px;">
-              <div class="panel-header"><div class="panel-title">节点池配置 (Pool)</div></div>
+              <div class="panel-header"><div class="panel-title">节点池配置</div></div>
               <div class="settings-grid">
                 <div class="form-group">
                   <label for="settingPoolMode">调度模式</label>
@@ -485,7 +503,7 @@
             <div id="jobSettingsMount"></div>
 
             <div class="panel" style="margin-bottom: 16px;">
-              <div class="panel-header"><div class="panel-title">管理面板 (Management)</div></div>
+              <div class="panel-header"><div class="panel-title">管理面板</div></div>
               <div class="settings-grid">
                 <div class="form-group"><label>监听地址</label><input type="text" id="settingMgmtListen" class="setting-input" placeholder="0.0.0.0:8080" /></div>
                 <div class="form-group"><label for="settingMgmtPassword">管理员密码</label><div class="sensitive-field"><input type="password" id="settingMgmtPassword" class="setting-input" /><button type="button" class="sensitive-toggle" aria-label="显示敏感信息" title="显示敏感信息" aria-pressed="false" onclick="toggleSensitiveField('settingMgmtPassword', this)"><svg class="icon"><use href="#i-eye"></use></svg></button></div></div>
@@ -632,7 +650,7 @@
       <form onsubmit="handleNodeSubmit(event)">
         <div class="modal-body">
           <div class="form-group">
-            <label>节点名称 Name</label>
+            <label>节点名称</label>
             <input type="text" id="nodeName" placeholder="HK-01" />
           </div>
           <div class="form-group">

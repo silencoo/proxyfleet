@@ -101,7 +101,7 @@ test('shows release capabilities and the new cost/safety controls', async ({ pag
 
   await expect(page.locator('#buildInfoIdentity')).toHaveText('ProxyFleet v3.2.0-test');
   await expect(page.locator('#buildInfoStatus')).toHaveText('完整发行构建');
-  await expect(page.locator('#buildInfoCapabilities')).toContainText('QUIC ON');
+  await expect(page.locator('#buildInfoCapabilities')).toContainText('QUIC 已编译');
   await expect(page.locator('#settingProbeMaxPerDay')).toHaveValue('5000');
   await expect(page.locator('#settingSubNodeFailurePolicy')).toHaveValue('skip');
 });
@@ -112,7 +112,7 @@ test('edits named profiles and generates profile-aware proxy commands', async ({
   await navigate(page, 'settings');
 
   const mount = page.locator('#profileSettingsMount');
-  await expect(mount.getByText('Named Profiles')).toBeVisible();
+  await expect(mount.getByText('节点分组', {exact:true})).toBeVisible();
   await expect(mount.locator('[data-profile-row]')).toHaveCount(1);
   await expect(mount.locator('[data-field="name"]')).toHaveValue('hk-fast');
   await expect(mount.locator('[data-field="tag_any"]')).toHaveValue('HK|Hong Kong');
@@ -171,7 +171,7 @@ test('manages shared-pool endpoints with status, profile binding, and delete con
   await navigate(page, 'settings');
 
   const mount = page.locator('#endpointSettingsMount');
-  await expect(mount.getByText('Endpoint Manager')).toBeVisible();
+  await expect(mount.getByText('入口管理', {exact:true})).toBeVisible();
   await expect(mount.locator('[data-endpoint-row]')).toHaveCount(2);
   await expect(mount.locator('[data-endpoint-row]').first().locator('[data-endpoint-status]')).toHaveText('运行中');
   await expect(mount.locator('[data-endpoint-row]').nth(1).locator('[data-field="profile"]')).toHaveValue('hk-fast');

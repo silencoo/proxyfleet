@@ -145,6 +145,7 @@ profiles:
 #     profile: hk-fast
 #     ingress: shared
 #     password: replace-accounts-app-secret # 与 catalog 不同，共用端口
+#     failure_policy: strict # 默认故障暂停；浏览器应用可选 failover（统一端口/独立入口）
 #     session_ttl: "0"       # 默认永久绑定，重启保留；旧绑定通过界面迁移/更新转换
 #     max_sessions: 1024
 #     max_accounts_per_node: 1 # 按应用独立计算；0 不限，1 为一账号一节点，满额拒绝新绑定

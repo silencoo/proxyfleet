@@ -210,7 +210,7 @@ Named Profiles 可按地域、协议、来源、节点名称正则和最低质�
 
 WebUI **系统设置 → 应用配置**可编辑全部 Job 参数，与 Profile 和 Endpoint 一起保存；**应用代理**页面提供运行状态、自动测速、HTTP/SOCKS5 地址生成，以及会话搜索、分页和显式释放。凭据默认遮罩，保存失败或配置冲突保留草稿。手动模式无需填写测速目标。
 
-节点来源与连接策略独立配置：默认 `selection: manual` 直接使用指定 Profile 的可用节点，无需目标 URL 或 Job 测速预热；显式设置 `selection: auto` 才按目标站点实测优选少量节点。两种来源均支持 `pooled`（新连接分配节点）和 `pinned`（固定会话节点）；`pool` / `hybrid` 模式可同时使用。新应用默认**共用主端口、按应用密码区分**：`账号ID:应用密码@地址:2323`；主入口必须启用、无 Profile 过滤且有普通池用户名/密码。应用密码须为 16–255 字节且与所有应用及入口密码不同。普通池原凭据继续可用，错误或已删除的应用密码不会退回普通池。共享端口支持 HTTP、HTTPS CONNECT、SOCKS5 CONNECT（TCP），不支持 SOCKS4/UDP；需要后者可另留普通入口。独立入口是可选高级配置，旧应用不自动转换，仍使用 `<入口用户名>-session-<账号ID>`。普通 HTTP/SOCKS5 客户端无需调用管理 API 或接入 SDK。每个 Job 对应一个应用，name 是稳定应用 ID，换应用密码不改变绑定。账号绑定默认永久（`session_ttl: "0"`），持久化且重启保留，节点失效只暂停、不自动切换。`max_accounts_per_node` 按应用限制每节点账号数，1 为一账号一节点，0 不限；满额拒绝新绑定，暂停/过期记录仍占名额。界面可按应用查看、解绑、手动迁移或原节点更新绑定。已有有限期绑定需显式更新才能转为永久，降低上限不会驱逐已有账号。配置、管理 API、限制和 Python 接入示例见 [Jobs 使用文档](docs/jobs.md)。
+节点来源与连接策略独立配置：默认 `selection: manual` 直接使用指定 Profile 的可用节点，无需目标 URL 或 Job 测速预热；显式设置 `selection: auto` 才按目标站点实测优选少量节点。两种来源均支持 `pooled`（新连接分配节点）和 `pinned`（固定会话节点）；`pool` / `hybrid` 模式可同时使用。新应用默认**共用主端口、按应用密码区分**：`账号ID:应用密码@地址:2323`；主入口必须启用、无 Profile 过滤且有普通池用户名/密码。应用密码须为 16–255 字节且与所有应用及入口密码不同。普通池原凭据继续可用，错误或已删除的应用密码不会退回普通池。共享端口支持 HTTP、HTTPS CONNECT、SOCKS5 CONNECT（TCP），不支持 SOCKS4/UDP；需要后者可另留普通入口。独立入口是可选高级配置，旧应用不自动转换，仍使用 `<入口用户名>-session-<账号ID>`。普通 HTTP/SOCKS5 客户端无需调用管理 API 或接入 SDK。每个 Job 对应一个应用，name 是稳定应用 ID，换应用密码不改变绑定。账号绑定默认永久（`session_ttl: "0"`），持久化且重启保留，默认 `failure_policy: strict`，节点失效只暂停、不自动切换。无头浏览器等可容忍出口变化的应用可显式启用 `failure_policy: failover`，在节点消失、不可用或 TCP 建连失败时保留原会话 ID 自动迁移；不续期、不突破应用容量，30 秒内最多迁移一次，不处理 Cloudflare 验证。`max_accounts_per_node` 按应用限制每节点账号数，1 为一账号一节点，0 不限；满额拒绝新绑定，暂停/过期记录仍占名额。界面可按应用查看、解绑、手动迁移或原节点更新绑定。已有有限期绑定需显式更新才能转为永久，降低上限不会驱逐已有账号。配置、管理 API、限制和 Python 接入示例见 [Jobs 使用文档](docs/jobs.md)。
 
 ## 协议支持注意事项
 
@@ -265,6 +265,8 @@ proxies:
 - 系统设置可维护 Named Profiles，并通过访问助手生成可完整复制的代理 URI/curl 命令。
 
 ## 管理 API（核心）
+
+`GET /api/nodes` 支持组合 `region`、`status`、`activity` 和 `search`，先筛选再分页。`activity=active` 表示当前连接数大于 0，`activity=idle` 表示没有活跃连接；省略或 `all` 不限制使用情况。使用情况与健康状态、账号绑定相互独立。`summary.active_nodes` 是本实例全部使用中节点的数量，不是当前页数量，也**不是机场统计的在线设备数**。
 
 - `POST /api/auth`
 - `GET|PUT /api/settings`

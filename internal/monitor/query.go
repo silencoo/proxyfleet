@@ -16,6 +16,7 @@ type NodeQuery struct {
 	Search   string
 	Region   string
 	Status   string
+	Activity string
 	Sort     string
 	Order    string
 }
@@ -34,16 +35,17 @@ type NodeSummary struct {
 	UnknownNodes        int     `json:"unknown_nodes"`
 	BlacklistedNodes    int     `json:"blacklisted_nodes"`
 	ActiveConnections   int64   `json:"active_connections"`
+	ActiveNodes         int     `json:"active_nodes"`
 	AverageQualityScore float64 `json:"average_quality_score"`
 }
 
 func parseNodeQuery(r *http.Request) (NodeQuery, bool, error) {
-	query := NodeQuery{Page: 1, PageSize: 50, Region: "all", Status: "all", Sort: "latency", Order: "asc"}
+	query := NodeQuery{Page: 1, PageSize: 50, Region: "all", Status: "all", Activity: "all", Sort: "latency", Order: "asc"}
 	if r == nil {
 		return query, false, nil
 	}
 	values := r.URL.Query()
-	paginated := values.Has("page") || values.Has("page_size") || values.Has("search") || values.Has("region") || values.Has("status") || values.Has("sort") || values.Has("order")
+	paginated := values.Has("page") || values.Has("page_size") || values.Has("search") || values.Has("region") || values.Has("status") || values.Has("activity") || values.Has("sort") || values.Has("order")
 	if value := strings.TrimSpace(values.Get("page")); value != "" {
 		page, err := strconv.Atoi(value)
 		if err != nil || page < 1 {
@@ -73,6 +75,14 @@ func parseNodeQuery(r *http.Request) (NodeQuery, bool, error) {
 	default:
 		return query, paginated, errors.New("unsupported node status filter")
 	}
+	if value := strings.ToLower(strings.TrimSpace(values.Get("activity"))); value != "" {
+		query.Activity = value
+	}
+	switch query.Activity {
+	case "all", "active", "idle":
+	default:
+		return query, paginated, errors.New("unsupported node activity filter")
+	}
 	if value := strings.ToLower(strings.TrimSpace(values.Get("sort"))); value != "" {
 		query.Sort = value
 	}
@@ -100,6 +110,9 @@ func queryNodes(snapshots []Snapshot, query NodeQuery) ([]Snapshot, NodePaginati
 		if !nodeMatchesStatus(snapshot, query.Status) {
 			continue
 		}
+		if !nodeMatchesActivity(snapshot, query.Activity) {
+			continue
+		}
 		if query.Search != "" {
 			haystack := strings.ToLower(strings.Join([]string{snapshot.Name, snapshot.Tag, region, snapshot.Country, strconv.Itoa(int(snapshot.Port))}, " "))
 			if !strings.Contains(haystack, query.Search) {
@@ -124,7 +137,9 @@ func queryNodes(snapshots []Snapshot, query NodeQuery) ([]Snapshot, NodePaginati
 	if total > 0 {
 		totalPages = (total + query.PageSize - 1) / query.PageSize
 	}
-	if totalPages > 0 && query.Page > totalPages {
+	if totalPages == 0 {
+		query.Page = 1
+	} else if query.Page > totalPages {
 		query.Page = totalPages
 	}
 	start := (query.Page - 1) * query.PageSize
@@ -136,6 +151,19 @@ func queryNodes(snapshots []Snapshot, query NodeQuery) ([]Snapshot, NodePaginati
 		end = total
 	}
 	return append([]Snapshot(nil), filtered[start:end]...), NodePagination{Page: query.Page, PageSize: query.PageSize, TotalItems: total, TotalPages: totalPages}
+}
+
+// Activity is independent of health: an unhealthy node can still have open
+// connections, while a healthy (or account-pinned) node can be idle.
+func nodeMatchesActivity(snapshot Snapshot, activity string) bool {
+	switch activity {
+	case "active":
+		return snapshot.ActiveConnections > 0
+	case "idle":
+		return snapshot.ActiveConnections <= 0
+	default:
+		return true
+	}
 }
 
 func nodeMatchesStatus(snapshot Snapshot, status string) bool {
@@ -234,6 +262,9 @@ func summarizeNodes(snapshots []Snapshot) NodeSummary {
 			summary.BlacklistedNodes++
 		}
 		summary.ActiveConnections += int64(snapshot.ActiveConnections)
+		if snapshot.ActiveConnections > 0 {
+			summary.ActiveNodes++
+		}
 		qualityTotal += snapshot.QualityScore
 	}
 	if len(snapshots) > 0 {

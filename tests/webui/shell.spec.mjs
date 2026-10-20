@@ -145,7 +145,7 @@ test('viewer can use preferences without fetching or revealing admin settings',a
   await expect(page.locator('#settingsTab')).toHaveClass(/active/);
   await expect(page.locator('#settingTheme')).toBeVisible();
   await expect(page.locator('#adminSettings')).toBeHidden();
-  await expect(page.locator('#roleBadge')).toHaveText('VIEWER');
+  await expect(page.locator('#roleBadge')).toHaveText('Viewer');
   await page.locator('#settingTheme').selectOption('dark');
   expect(calls).not.toContain('/api/settings');
   expect(calls).not.toContain('/api/jobs');

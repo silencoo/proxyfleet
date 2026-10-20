@@ -79,6 +79,7 @@ jobs:
     password: replace-accounts-app-secret
     concurrency: 4
     timeout: 15s
+    failure_policy: strict   # opt-in failover for transport recovery, not accounts
     session_ttl: "0"          # default: permanent; optional finite lifetime 1m–168h
     max_sessions: 1024
     max_accounts_per_node: 1 # per application; 0 means unlimited
@@ -145,7 +146,58 @@ ProxyFleet health checks remain independent of Job target benchmarks. `size` doe
 not truncate a manual Profile; narrow the Profile itself to choose fewer nodes.
 An empty/unavailable Profile fails closed. Profile membership can change as your
 inventory changes; an existing pinned session retains its node or pauses if that
-node is no longer eligible. It never switches to another node automatically.
+node is no longer eligible under the default `failure_policy: strict`. Opt-in transport recovery is described below.
+
+## Opt-in application failover
+
+Candidate selection and node-failure policy are independent. Existing applications
+remain strictly pinned; enable recovery only for workloads that tolerate exit changes:
+
+```yaml
+# Keep the existing name, profile, ingress, password/endpoint and session_ttl.
+mode: pinned
+failure_policy: failover      # default: strict
+```
+
+- Supported on shared application ports and dedicated application Endpoints, not
+  legacy `ingress: direct` node ports or `pooled` jobs. No client SDK, preflight
+  management request, password change or new session ID is required.
+- On a new connection (or explicit `/acquire`), a missing or confirmed unavailable
+  node can be atomically replaced from the same application's eligible Profile.
+  Unknown health during restart and failed/stale **target** benchmarks alone do
+  not trigger this transport recovery. Eligible alternatives still obey automatic
+  selection when configured; there is no global-pool or direct fallback.
+- Alternatives are checked against current transport health: blacklist expiry
+  alone does not make a failed node a safe replacement. Confirmed healthy nodes
+  take priority; unknown nodes are tried only when no confirmed healthy candidate
+  exists. A full healthy set fails closed rather than bypassing its account caps.
+- A failed TCP dial may make **one** alternate connection attempt, independently
+  of ordinary-pool retry settings. Cancellation and local resource exhaustion do
+  not cause migration. Traffic already sent over an established tunnel is never
+  replayed, and existing tunnels are not moved or forcibly closed. Parallel browser
+  connections can temporarily use old and new exits; this is not browser-session
+  atomicity. Login/cookie state and site verification may need client recovery.
+- At most one automatic migration per binding per **30 seconds**, persisted across
+  restarts. Capacity is checked atomically per application. No spare eligible node,
+  exhausted capacity, cooldown, persistence failure or runtime handoff fails closed
+  and leaves the binding intact; no capacity limits are bypassed.
+- Expiry, permanent status and candidate/security policy are preserved. Expired or
+  policy-changed bindings still require explicit action. Toggling this setting
+  applies to existing bindings without invalidating them; it neither renews them
+  nor moves healthy bindings. Returning to `strict` keeps the current node.
+- Concurrent failures coalesce on the latest revision. A late failure cannot
+  overwrite manual migration or release/reacquire. Recovery never automatically
+  switches back to the original node after it becomes healthy.
+- Binding lists and access responses expose `failover_count` and `last_failover`
+  (`at`, `from_node`, `to_node`, optional display names, `reason`). The UI displays
+  the latest transition and count; only the latest event is retained, not a full
+  audit log. Listing bindings never triggers migration.
+
+This recovers **transport availability**, not Cloudflare verification. HTTPS
+content is opaque to the proxy; HTTP 403/429, verification pages or target feedback
+alone do not trigger failover. A different node is not guaranteed to have a different
+public IP or to be accepted by the site. Keep long-lived social accounts on `strict`.
+An existing client's intentional session rotation/retirement may continue unchanged.
 
 ## Optional automatic selection
 
@@ -316,8 +368,8 @@ the application's login state explicitly. Alternatively use a new session ID wit
 a fresh application session, and clean up the old assignment later. Even expired
 IDs never silently rebind. `/release` ends the binding, so old clients must stop
 using that ID before another client reuses it.
-There is no per-job global blacklist on a pinned failure and no automatic node
-switch for an existing session.
+Under `failure_policy: strict` (the default), there is no automatic node switch
+for an existing session. This remains the recommended policy for account identities.
 
 Existing installations: explicit `session_ttl: 30m` or other finite values retain
 their meaning. Set `session_ttl: "0"` for new permanent bindings, then use a

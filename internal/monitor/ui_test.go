@@ -244,7 +244,7 @@ func TestEmbeddedWebUIExposesAdaptivePoolSettings(t *testing.T) {
 		`id="settingStickyMax"`,
 		`function togglePoolStrategySettings()`,
 		`n.cooling_down`,
-		`'冷却 Cooling': 'Cooling down'`,
+		`'冷却中': 'Cooling down'`,
 	}
 	for _, value := range required {
 		if !strings.Contains(html, value) {

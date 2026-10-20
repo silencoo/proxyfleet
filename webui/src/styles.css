@@ -608,6 +608,12 @@
 .job-session-table { width:100%; border-collapse:collapse; table-layout:fixed; margin:12px 0; }
 .job-session-table th, .job-session-table td { text-align:left; padding:12px 8px; vertical-align:top; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
 .job-session-table th:last-child { width:180px; }
+.job-node-identity { min-width:0; overflow-wrap:anywhere; }
+.job-node-identity > strong { display:block; font-weight:500; }
+.job-node-id { margin-top:4px; font-size:12px; color:var(--text-muted); }
+.job-node-id > summary { cursor:pointer; width:fit-content; padding:4px 0; }
+.job-node-id > code { display:block; margin:4px 0 8px; white-space:normal; overflow-wrap:anywhere; }
+.job-access-result .job-node-identity, [data-binding-identity] .job-node-identity { margin-top:8px; }
 .job-binding-editor { margin-bottom:16px; }
 .job-binding-editor [data-binding-identity], .job-binding-editor .field-help { overflow-wrap:anywhere; margin-bottom:12px; }
 .job-binding-editor select { max-width:100%; }
@@ -720,4 +726,24 @@ h2.panel-title { font-size: 14px; }
 @media (max-width: 600px) {
   .job-password-row { flex-wrap: wrap; }
   .jobs-editor .job-password-row input { flex-basis: 100%; }
+}
+
+.job-failover-history { margin-top: 6px; max-width: 26rem; overflow-wrap: anywhere; }
+.job-failover-history > div { margin-top: 6px; }
+
+.node-filter-label { color: var(--text-muted); font-size: 12px; display: flex; align-items: center; min-width: 80px; }
+.node-filter-help { margin: 8px 16px 0; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+#nodeFilterFeedback { margin: 0 16px 12px; }
+#nodeFilterFeedback.is-error { color: var(--error); }
+#nodePageJump { width: 72px; }
+#clearNodeFilters { margin-right: auto; }
+.job-policy-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin: 12px 0; }
+.job-policy-summary dt { color: var(--text-muted); font-size: 12px; margin-bottom: 4px; }
+.job-policy-summary dd { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.job-policy-note { font-size: 13px; line-height: 1.6; margin: 12px 0; overflow-wrap: anywhere; }
+.job-status-card .panel-header { flex-wrap: wrap; gap: 8px; }
+.job-status-card .job-actions > span { font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .node-filter-label { flex-basis: 100%; }
+  #nodePageInfo { flex-basis: 100%; text-align: left; }
 }

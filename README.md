@@ -165,7 +165,10 @@ benchmarks a target and picks a small set. Both support pooled connections
 New applications default to a **shared primary port, distinguished by unique app
 passwords**: `accountID:appPassword@host:2323`. Dedicated Endpoints are an optional
 advanced mode; old configurations retain their existing access mode. Pinned bindings are permanent by default
-(`session_ttl: "0"`), survive restarts, and pause on node failure without switching.
+(`session_ttl: "0"`), survive restarts, and pause on node failure without switching by default.
+Opt-in `failure_policy: failover` recovers eligible pinned application traffic on
+node removal/unavailability or TCP dial failure while preserving session IDs and
+lifetimes; strict account bindings are unchanged. See [Jobs](docs/jobs.md#opt-in-application-failover) for limits.
 `max_accounts_per_node` limits bindings per node within each application: 1 is
 exclusive, 0 is unlimited. Full nodes reject new accounts; paused and expired
 bindings still reserve capacity. The UI supports manual migration and same-node
@@ -506,6 +509,8 @@ Features:
 When all management role passwords are empty, loopback requests run as administrator without a login.
 
 ## Management API
+
+`GET /api/nodes` combines `region`, `status`, `activity`, and `search` filters before pagination. `activity=active` selects nodes with `active_connections > 0`; `activity=idle` selects nodes with no active connections; omitted or `all` leaves usage unfiltered. Activity is independent of health and account bindings. `summary.active_nodes` counts active nodes across the whole instance, not just the returned page, and is **not** a subscription provider's online device count.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

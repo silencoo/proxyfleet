@@ -122,6 +122,42 @@ func TestJobSessionListingIsReadOnlyAndIncludesRemovedJobs(t *testing.T) {
 	}
 }
 
+func TestBindingNodeNamesAreDisplayMetadataOnly(t *testing.T) {
+	p := jobPoolFixture(t)
+	j := &p.options.Jobs[1]
+	j.Selection, j.SessionTTL = "manual", "0"
+	for node, meta := range p.options.Metadata {
+		meta.Name = "US " + node
+		p.options.Metadata[node] = meta
+	}
+	access, err := p.AcquireJob("accounts", "account-a")
+	if err != nil || access.NodeName != "US "+access.Node {
+		t.Fatalf("acquire lacks node name: %+v %v", access, err)
+	}
+	before, _ := p.jobStore.Lease("accounts", "account-a")
+	p.setMemberEligible(p.memberByTag[access.Node], false)
+	meta := p.options.Metadata[access.Node]
+	meta.Name = "[D]🇺🇸 renamed node"
+	p.options.Metadata[access.Node] = meta
+	paused, err := p.AcquireJob("accounts", "account-a")
+	if err != nil || paused.State != "paused" || paused.NodeName != meta.Name || paused.Node != before.Node || paused.Revision != before.Version() {
+		t.Fatalf("paused binding lost current display name or identity: %+v %v", paused, err)
+	}
+	sessions := p.ListJobSessions()
+	if len(sessions) != 1 || sessions[0].NodeName != meta.Name {
+		t.Fatalf("list lacks latest name: %+v", sessions)
+	}
+	delete(p.options.Metadata, access.Node)
+	sessions = p.ListJobSessions()
+	if sessions[0].NodeName != "" || sessions[0].Node != before.Node {
+		t.Fatalf("missing metadata must retain the original node ID: %+v", sessions)
+	}
+	after, _ := p.jobStore.Lease("accounts", "account-a")
+	if before != after {
+		t.Fatal("display name lookup changed durable binding")
+	}
+}
+
 func TestNewSessionSkipsUnhealthyCachedCandidates(t *testing.T) {
 	p := jobPoolFixture(t)
 	p.jobStatus(p.options.Jobs[1])
