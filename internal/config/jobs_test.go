@@ -193,3 +193,33 @@ func TestSharedApplicationValidation(t *testing.T) {
 		t.Fatal("credential round trip failed")
 	}
 }
+
+func TestIdleRetentionValidation(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		valid bool
+	}{{"", true}, {"0", true}, {"24h", true}, {"720h", true}, {"30s", false}, {"-1h", false}, {"721h", false}, {"oops", false}} {
+		t.Run(tc.value, func(t *testing.T) {
+			c := jobTestConfig()
+			c.Jobs = c.Jobs[:1]
+			c.Jobs[0].Mode = "pinned"
+			c.Jobs[0].SessionIdleTimeout = tc.value
+			c.Endpoints[0].Username, c.Endpoints[0].Password = "worker", "secret"
+			if err := c.NormalizeJobs(); (err == nil) != tc.valid {
+				t.Fatalf("validation: %v", err)
+			}
+		})
+	}
+	for _, kind := range []string{"direct", "pooled"} {
+		c := jobTestConfig()
+		if kind == "direct" {
+			c.Jobs = c.Jobs[1:]
+		} else {
+			c.Jobs = c.Jobs[:1]
+		}
+		c.Jobs[0].SessionIdleTimeout = "24h"
+		if c.NormalizeJobs() == nil {
+			t.Fatal("accepted idle retention for", kind)
+		}
+	}
+}

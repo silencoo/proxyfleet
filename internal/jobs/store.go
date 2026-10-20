@@ -37,13 +37,14 @@ type Measurement struct {
 }
 
 type Lease struct {
-	Job       string    `json:"job"`
-	Session   string    `json:"session"`
-	Node      string    `json:"node"`
-	Policy    string    `json:"policy"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Permanent bool      `json:"permanent,omitempty"`
-	Revision  string    `json:"revision,omitempty"`
+	LastUsedAt time.Time `json:"last_used_at,omitzero"`
+	Job        string    `json:"job"`
+	Session    string    `json:"session"`
+	Node       string    `json:"node"`
+	Policy     string    `json:"policy"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Permanent  bool      `json:"permanent,omitempty"`
+	Revision   string    `json:"revision,omitempty"`
 }
 
 func (l Lease) Expired(now time.Time) bool { return !l.Permanent && !now.Before(l.ExpiresAt) }
@@ -53,6 +54,7 @@ func (l Lease) Version() string {
 	if l.Revision != "" {
 		return l.Revision
 	}
+	l.LastUsedAt = time.Time{} // Mutable activity must not change legacy CAS revisions.
 	data, _ := json.Marshal(l)
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
@@ -98,13 +100,16 @@ type Access struct {
 
 // SessionInfo is a read-only view of an existing binding, without credentials.
 type SessionInfo struct {
-	Job       string    `json:"job"`
-	Session   string    `json:"session"`
-	Node      string    `json:"node"`
-	State     string    `json:"state"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Permanent bool      `json:"permanent,omitempty"`
-	Revision  string    `json:"revision"`
+	LastUsedAt        time.Time `json:"last_used_at,omitzero"`
+	ActiveConnections int       `json:"active_connections"`
+	ReclaimAt         time.Time `json:"reclaim_at,omitzero"`
+	Job               string    `json:"job"`
+	Session           string    `json:"session"`
+	Node              string    `json:"node"`
+	State             string    `json:"state"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	Permanent         bool      `json:"permanent,omitempty"`
+	Revision          string    `json:"revision"`
 }
 
 type NodeCapacity struct {
@@ -152,6 +157,9 @@ type measurements struct {
 }
 
 type Store struct {
+	active           map[string]int
+	activityDirty    bool
+	openedAt         time.Time
 	probeSlots       chan struct{}
 	mu               sync.Mutex
 	path             string
@@ -169,7 +177,7 @@ func ContextWith(ctx context.Context, store *Store) context.Context {
 func FromContext(ctx context.Context) *Store { s, _ := ctx.Value(contextKey{}).(*Store); return s }
 
 func Open(path string) (*Store, error) {
-	s := &Store{path: path, leases: make(map[string]Lease), scores: make(map[string]*measurements), probeSlots: make(chan struct{}, 16)}
+	s := &Store{openedAt: time.Now(), active: make(map[string]int), path: path, leases: make(map[string]Lease), scores: make(map[string]*measurements), probeSlots: make(chan struct{}, 16)}
 	if path == "" {
 		return s, nil
 	}
@@ -216,6 +224,7 @@ func PolicyWithCertVerifyMode(j config.JobConfig, profile config.ProfileConfig, 
 	// Admission limits must not invalidate existing bindings or target measurements.
 	// Omitting this new field when zero preserves legacy policy hashes.
 	j.MaxAccountsPerNode = 0
+	j.SessionIdleTimeout = ""
 	// Authentication rotation is not a node-selection policy change.
 	j.Password, j.Ingress = "", ""
 	j.Selection = j.EffectiveSelection()
@@ -447,7 +456,7 @@ func (s *Store) Acquire(j config.JobConfig, policy, session string, ranked []Sel
 }
 
 func newLease(j config.JobConfig, policy, session, node string) Lease {
-	l := Lease{Job: j.Name, Session: session, Node: node, Policy: policy, Revision: rand.Text(), Permanent: j.LeaseTTL() == 0}
+	l := Lease{LastUsedAt: time.Now().UTC(), Job: j.Name, Session: session, Node: node, Policy: policy, Revision: rand.Text(), Permanent: j.LeaseTTL() == 0}
 	if !l.Permanent {
 		l.ExpiresAt = time.Now().Add(j.LeaseTTL())
 	}

@@ -211,7 +211,9 @@ func (p *poolOutbound) ListJobSessions() []jobs.SessionInfo {
 		if v, ok := views[lease.Job]; ok {
 			state = p.jobLeaseState(v.job, lease, v.values[lease.Node], v.candidates)
 		}
-		result = append(result, jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: state, ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version()})
+		info := jobs.SessionInfo{Job: lease.Job, Session: lease.Session, Node: lease.Node, State: state, ExpiresAt: lease.ExpiresAt, Permanent: lease.Permanent, Revision: lease.Version()}
+		p.jobStore.DescribeActivity(&info, views[lease.Job].job)
+		result = append(result, info)
 	}
 	return result
 }
@@ -284,6 +286,12 @@ func (p *poolOutbound) pickPinnedJobMember(ctx context.Context, j config.JobConf
 	a, err := p.AcquireJob(j.Name, session)
 	if err != nil {
 		return nil, err
+	}
+	if use, ok := ctx.Value(jobConnectionUseKey{}).(*jobConnectionUse); ok {
+		use.done, err = p.jobStore.Hold(j.Name, session, a.Revision)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if a.State != "ready" {
 		return nil, fmt.Errorf("%w: pinned session is %s", jobs.ErrUnavailable, a.State)

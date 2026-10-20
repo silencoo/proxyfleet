@@ -433,6 +433,13 @@ func (p *poolOutbound) initializeMembersLocked() error {
 }
 
 func (p *poolOutbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	use := &jobConnectionUse{}
+	ctx = context.WithValue(ctx, jobConnectionUseKey{}, use)
+	defer func() {
+		if use.done != nil {
+			use.done()
+		}
+	}()
 	if p.closed.Load() {
 		return nil, errPoolClosed
 	}
@@ -472,7 +479,12 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 			event.ConnectMS = connectDuration.Milliseconds()
 			event.ErrorCategory = "unconfirmed"
 			traffic := newTrafficSession(event, requestStarted)
-			return p.wrapConn(conn, member, traffic, p.newTrafficObservation(ctx, member, targetKey, dialStarted, traffic)), nil
+			wrapped := p.wrapConn(conn, member, traffic, p.newTrafficObservation(ctx, member, targetKey, dialStarted, traffic))
+			if use.done != nil {
+				wrapped = &jobConnection{Conn: wrapped, done: use.done}
+				use.done = nil
+			}
+			return wrapped, nil
 		}
 		p.decActive(member)
 		trafficlog.Record(p.failedTrafficEvent(ctx, member, destination.String(), network, attempt, requestStarted, time.Since(dialStarted), err))

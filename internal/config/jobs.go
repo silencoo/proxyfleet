@@ -24,6 +24,7 @@ type JobConfig struct {
 	Concurrency        int    `yaml:"concurrency" json:"concurrency"`
 	Timeout            string `yaml:"timeout" json:"timeout"`
 	RefreshInterval    string `yaml:"refresh_interval" json:"refresh_interval"`
+	SessionIdleTimeout string `yaml:"session_idle_timeout,omitempty" json:"session_idle_timeout,omitempty"`
 	SessionTTL         string `yaml:"session_ttl" json:"session_ttl"`
 	MaxSessions        int    `yaml:"max_sessions" json:"max_sessions"`
 	MaxAccountsPerNode int    `yaml:"max_accounts_per_node,omitempty" json:"max_accounts_per_node,omitempty"`
@@ -52,6 +53,11 @@ func (j JobConfig) RefreshEvery() time.Duration {
 	d, _ := time.ParseDuration(j.RefreshInterval)
 	return d
 }
+func (j JobConfig) IdleTimeout() time.Duration {
+	d, _ := time.ParseDuration(j.SessionIdleTimeout)
+	return d
+}
+
 func (j JobConfig) LeaseTTL() time.Duration { d, _ := time.ParseDuration(j.SessionTTL); return d }
 
 // EffectiveIngress preserves pre-existing dedicated-endpoint and direct-node
@@ -212,18 +218,22 @@ func (c *Config) NormalizeJobs() error {
 			{&j.Timeout, "15s", 100 * time.Millisecond, 2 * time.Minute},
 			{&j.RefreshInterval, "10m", time.Minute, 24 * time.Hour},
 			{&j.SessionTTL, "0", time.Minute, 7 * 24 * time.Hour},
+			{&j.SessionIdleTimeout, "0", time.Minute, 30 * 24 * time.Hour},
 		} {
 			if *field.value == "" {
 				*field.value = field.fallback
 			}
 			d, err := time.ParseDuration(*field.value)
-			if field.value == &j.SessionTTL && err == nil && d == 0 {
+			if (field.value == &j.SessionTTL || field.value == &j.SessionIdleTimeout) && err == nil && d == 0 {
 				*field.value = "0"
 				continue
 			}
 			if err != nil || d < field.min || d > field.max {
 				return fmt.Errorf("job %q has an invalid duration", j.Name)
 			}
+		}
+		if j.IdleTimeout() > 0 && (j.Mode != "pinned" || j.DirectIngress()) {
+			return fmt.Errorf("job %q: session_idle_timeout requires pinned shared or endpoint ingress", j.Name)
 		}
 	}
 	return nil

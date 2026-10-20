@@ -175,7 +175,7 @@ func TestUncommittedRuntimeCannotPersistNewJobSessions(t *testing.T) {
 			if lease, exists := m.jobStore.Lease("accounts", "uncommitted"); exists {
 				t.Errorf("rolled-back runtime left a durable binding: %+v", lease)
 			}
-			if restored, _ := m.jobStore.Lease("accounts", "existing"); restored != original {
+			if restored, _ := m.jobStore.Lease("accounts", "existing"); !sameBindingExceptActivity(restored, original) {
 				t.Error("rollback changed an existing assignment")
 			}
 			reopened, err := jobs.Open(cfg.ResolveManagementPath("", "job-sessions.json"))

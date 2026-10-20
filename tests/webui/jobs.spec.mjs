@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { mockAPI, navigate } from './fixtures.mjs';
 
-const baseJob = {name:'accounts', mode:'pinned', selection:'manual', profile:'hk-fast', endpoint:'hk-only', ingress:'endpoint', password:'', target_url:'', size:0, concurrency:8, timeout:'15s', refresh_interval:'10m', session_ttl:'0', max_sessions:1024, max_accounts_per_node:0, probe_batch_size:32, probe_concurrency:4, max_response_bytes:2097152, expected_status:200, body_contains:''};
+const baseJob = {name:'accounts', mode:'pinned', selection:'manual', profile:'hk-fast', endpoint:'hk-only', ingress:'endpoint', password:'', target_url:'', size:0, concurrency:8, timeout:'15s', refresh_interval:'10m', session_ttl:'0', session_idle_timeout:'0', max_sessions:1024, max_accounts_per_node:0, probe_batch_size:32, probe_concurrency:4, max_response_bytes:2097152, expected_status:200, body_contains:''};
 const autoJob = {...baseJob,name:'catalog',mode:'pooled',selection:'auto',endpoint:'catalog',target_url:'https://example.com/catalog',size:5};
 async function setup(page, {locale='zh',width=1280,role='admin'}={}) {
   const state = {jobs:[structuredClone(baseJob),structuredClone(autoJob)], calls:[], saves:[], saveStatus:200, saveWait:null, accessWait:null, accessStatus:200, releaseWait:null, persistAcquire:false, refreshing:false, profileRegex:'', migrations:[], migrationStatus:200, migrationWait:null,
@@ -715,4 +715,29 @@ test('shared account helper rejects malformed IDs and displays masked server-iss
   await page.locator('#jobAccessSession').fill('account-01');await page.locator('[data-acquire-job]').click();
   await expect(page.locator('#jobAccessURL')).toHaveValue('http://account-01:application-accounts-secret@127.0.0.1:23230');
   await expect(page.locator('#jobAccessURL')).toHaveAttribute('type','password');
+});
+
+for(const width of [390,1280])test(`idle retention saves and exposes connection protection ${width}`,async({page},testInfo)=>{
+ const locale=width===390?'zh':'en';const state=await setup(page,{width,locale});await settings(page);
+ await page.locator('[data-job-row]').first().locator('summary').first().click();
+ const idle=page.locator('#job-0-session_idle_timeout');await expect(idle).toHaveValue('0');
+ await idle.fill('30s');await save(page);await expect(page.locator('#job-0-session_idle_timeout-error')).not.toHaveText('');expect(state.saves).toHaveLength(0);
+ await idle.fill('24h');await save(page);await expect(page.locator('#settingsSaveStatus')).toContainText(locale==='en'?'Configuration saved':'配置已保存');expect(state.saves[0].body.jobs[0].session_idle_timeout).toBe('24h');
+ await idle.evaluate(el=>el.scrollIntoView({block:'center'}));await page.screenshot({path:testInfo.outputPath('idle-settings.png')});
+ Object.assign(state.sessions[0],{active_connections:2,last_used_at:'2026-10-21T02:00:00Z'});
+ Object.assign(state.sessions[1],{active_connections:0,last_used_at:'2026-10-20T02:00:00Z',reclaim_at:'2026-10-21T02:00:00Z'});
+ await jobs(page);await expect(page.locator('[data-session-list]')).toContainText(locale==='en'?'In use; cleanup suspended':'连接使用中，暂停回收');
+ await expect(page.locator('[data-session-list]')).toContainText(locale==='en'?'Reclaim after':'预计回收');
+ await page.locator('[data-session-list]').scrollIntoViewIfNeeded();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ await page.screenshot({path:testInfo.outputPath('idle-bindings.png')});
+});
+
+
+test('switching an idle-cleanup app to pooled clears the inactive policy',async({page})=>{
+ const state=await setup(page);await settings(page);
+ await page.locator('[data-job-row]').first().locator('summary').first().click();
+ await page.locator('#job-0-session_idle_timeout').fill('24h');
+ await page.locator('#job-0-mode').selectOption('pooled');await save(page);
+ await expect(page.locator('#settingsSaveStatus')).toContainText('配置已保存');
+ expect(state.saves[0].body.jobs[0].session_idle_timeout).toBe('0');
 });

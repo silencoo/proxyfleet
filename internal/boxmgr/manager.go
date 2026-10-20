@@ -95,10 +95,12 @@ func WithLogger(l Logger) Option {
 
 // Manager owns the lifecycle of the active sing-box instance.
 type Manager struct {
-	jobStore *jobs.Store
-	mu       sync.RWMutex
-	reloadMu sync.Mutex
-	startMu  sync.Mutex
+	jobStore           *jobs.Store
+	jobMaintenanceStop chan struct{}
+	jobMaintenanceDone chan struct{}
+	mu                 sync.RWMutex
+	reloadMu           sync.Mutex
+	startMu            sync.Mutex
 
 	currentBox      *box.Box
 	managementOnly  bool
@@ -289,6 +291,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("load job sessions: %w", jobErr)
 	}
 	m.jobStore = jobStore
+	m.startJobMaintenance(ctx)
 	resumeJobAssignments = m.pauseNewJobAssignments()
 	if err := pool.ConfigureRuntimeState(cfg.RuntimeStatePath(), cfg.HealthStatePath()); err != nil {
 		return fmt.Errorf("load pool runtime state: %w", err)
@@ -1797,6 +1800,10 @@ func (m *Manager) Close() error {
 
 func (m *Manager) closeDetachedComponents() error {
 	state := m.detachForClose()
+	if m.jobMaintenanceStop != nil {
+		close(m.jobMaintenanceStop)
+		<-m.jobMaintenanceDone
+	}
 	// Freeze the producer side before waiting for any runtime-owned work. This
 	// guarantees that StopAndWait observes a closed probe lifecycle and that no
 	// new callback can begin while shutdown is deciding whether it is safe to
@@ -1870,7 +1877,11 @@ func (m *Manager) closeDetachedComponents() error {
 		}
 		activeManagerMu.Unlock()
 	}
-	return errors.Join(drainErr, probeErr, auxProbeErr, boxErr, lookupErr)
+	var jobErr error
+	if m.jobStore != nil {
+		jobErr = m.jobStore.FlushActivity()
+	}
+	return errors.Join(drainErr, probeErr, auxProbeErr, boxErr, lookupErr, jobErr)
 }
 
 func waitForWaitGroup(ctx context.Context, group *sync.WaitGroup) error {

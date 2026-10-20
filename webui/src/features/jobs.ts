@@ -6,13 +6,13 @@ export interface JobConfig {
   [key: string]: string | number;
   name: string; mode: string; selection: string; profile: string; endpoint: string; ingress: string; password: string;
   target_url: string; size: number; concurrency: number; timeout: string;
-  refresh_interval: string; session_ttl: string; max_sessions: number; max_accounts_per_node: number;
+  refresh_interval: string; session_ttl: string; session_idle_timeout: string; max_sessions: number; max_accounts_per_node: number;
   probe_batch_size: number; probe_concurrency: number; max_response_bytes: number;
   expected_status: number; body_contains: string;
 }
 interface SelectedNode { node: string; name?: string; duration_ms?: number; success_rate?: number; checked_at?: string }
 interface JobStatus { name: string; mode: string; selection: string; candidates: number; measured: number; refreshing: boolean; selected: SelectedNode[] }
-interface SessionInfo { job: string; session: string; node: string; state: string; expires_at: string; permanent?: boolean; revision: string }
+interface SessionInfo { job: string; session: string; node: string; state: string; expires_at: string; permanent?: boolean; revision: string; last_used_at?: string; active_connections?: number; reclaim_at?: string }
 interface NodeCapacity { node: string; name: string; accounts: number; limit: number; available: boolean }
 interface Access extends SessionInfo { proxy_url?: string; concurrency: number; timeout: string }
 interface SessionPage { sessions: SessionInfo[]; pagination: { page: number; total_items: number; total_pages: number } }
@@ -34,7 +34,7 @@ class JobAPIError extends Error {
 }
 
 const defaults: JobConfig = {name:'', mode:'pinned', selection:'manual', profile:'', endpoint:'', ingress:'shared', password:'', target_url:'', size:0,
-  concurrency:8, timeout:'15s', refresh_interval:'10m', session_ttl:'0', max_sessions:1024, max_accounts_per_node:0,
+  concurrency:8, timeout:'15s', refresh_interval:'10m', session_ttl:'0', session_idle_timeout:'0', max_sessions:1024, max_accounts_per_node:0,
   probe_batch_size:32, probe_concurrency:4, max_response_bytes:2097152, expected_status:200, body_contains:''};
 const ingressOf = (j?: Partial<JobConfig>): string => j?.ingress || (j?.endpoint ? 'endpoint' : j?.password ? 'shared' : 'direct');
 const applicationSecret = (): string => Array.from(crypto.getRandomValues(new Uint8Array(24)), b=>b.toString(16).padStart(2,'0')).join('');
@@ -88,6 +88,7 @@ class JobsEditor {
         const field = input.dataset.jobField!;
         result[field] = typeof defaults[field] === 'number' ? Number(input.value) : (['body_contains','password'].includes(field) ? input.value : input.value.trim());
       });
+      if(result.mode!=='pinned'||result.ingress==='direct') result.session_idle_timeout='0';
       return result;
     });
   }
@@ -131,8 +132,9 @@ class JobsEditor {
       ${this.field(j,i,'timeout','请求超时','100ms–2m；同时用于自动测速超时。')}</div></fieldset>
       <fieldset class="job-fieldset" data-pinned-fields><legend>账号绑定设置</legend><div class="job-grid">
       ${this.field(j,i,'session_ttl','绑定有效期','0 表示永久绑定（默认）；也可填写 1m–168h。旧绑定需通过迁移操作应用新的有效期。')}
+      ${this.field(j,i,'session_idle_timeout','空闲绑定回收','0 关闭（默认）；1m–720h，例如 24h。最后一条连接关闭后计时，活跃连接不会回收。回收后再次使用该 ID 可能分配其他节点。')}
       ${this.field(j,i,'max_accounts_per_node','每节点账号上限','按应用计算；0 不限，1 为一账号一节点。暂停和过期绑定仍占名额，满额拒绝分配。',[0,4096])}
-      ${this.field(j,i,'max_sessions','最大账号绑定数','过期记录仍占额度，需显式释放。',[1,4096])}</div></fieldset>
+      ${this.field(j,i,'max_sessions','最大账号绑定数','过期记录仍占额度；可显式释放或启用空闲回收。',[1,4096])}</div></fieldset>
       <fieldset class="job-fieldset" data-auto-fields><legend>目标测速</legend><div class="job-grid">
       ${this.field(j,i,'target_url','目标 URL','HTTP(S) GET 地址，不携带登录信息，不跟随重定向。')}
       ${this.field(j,i,'size','优选节点数','最多选择多少个可用节点。',[1,64])}
@@ -172,6 +174,7 @@ class JobsEditor {
     for (const [selector,active] of [['[data-auto-fields]',auto],['[data-pinned-fields]',pinned],['[data-shared-fields]',ingress==='shared'],['[data-endpoint-fields]',ingress==='endpoint']] as const) {
       const fields = row.querySelector<HTMLFieldSetElement>(selector)!; fields.hidden=!active; fields.disabled=!active;
     }
+    row.querySelector<HTMLInputElement>('[data-job-field="session_idle_timeout"]')!.disabled=!pinned||ingress==='direct';
     row.querySelector<HTMLElement>('[data-manual-note]')!.hidden=auto;
     const size = row.querySelector<HTMLInputElement>('[data-job-field="size"]')!;
     size.min=auto?'1':'0';
@@ -227,9 +230,10 @@ class JobsEditor {
       for (const [key,min,max] of [['concurrency',1,1024],['max_sessions',1,4096],['max_accounts_per_node',0,4096],['expected_status',200,299],['size',j.selection==='auto'?1:0,64],['probe_batch_size',j.selection==='auto'?Number(j.size):1,256],['probe_concurrency',1,16],['max_response_bytes',1,8388608]] as [string,number,number][]) {
         const n=Number(j[key]); if (!Number.isInteger(n)||n<min||n>max) return fail(i,key,tr('请输入 {min}–{max} 范围内的整数。',{min,max}));
       }
-      for (const [key,min,max] of [['timeout',100,120000],['session_ttl',60000,604800000],['refresh_interval',60000,86400000]] as [string,number,number][]) {
-        const n=durationMS(String(j[key])); if(key==='session_ttl'&&n===0)continue; if (!Number.isFinite(n)||n<min||n>max) return fail(i,key,tr('时长无效或超出范围，请使用 ms / s / m / h。'));
+      for (const [key,min,max] of [['timeout',100,120000],['session_ttl',60000,604800000],['session_idle_timeout',60000,2592000000],['refresh_interval',60000,86400000]] as [string,number,number][]) {
+        const n=durationMS(String(j[key])); if(['session_ttl','session_idle_timeout'].includes(key)&&n===0)continue; if (!Number.isFinite(n)||n<min||n>max) return fail(i,key,tr('时长无效或超出范围，请使用 ms / s / m / h。'));
       }
+      if (durationMS(j.session_idle_timeout)>0 && (j.mode!=='pinned'||j.ingress==='direct')) return fail(i,'session_idle_timeout',tr('空闲回收仅支持 pinned 的统一端口或独立入口。'));
       if (j.selection==='auto' || j.target_url) {
         try { const u=new URL(j.target_url); if (!['http:','https:'].includes(u.protocol)||u.username||u.password||u.hash||j.target_url.length>4096) throw new Error(); }
         catch { return fail(i,'target_url',tr('请输入不含凭据和片段的 HTTP(S) 目标 URL。')); }
@@ -459,7 +463,7 @@ class JobsRuntime {
       if(!Array.isArray(data.sessions)||data.sessions.some(s=>!s||typeof s.job!=='string'||typeof s.session!=='string'||typeof s.node!=='string'||typeof s.state!=='string')||
         !data.pagination||!Number.isInteger(data.pagination.page)||data.pagination.page<1||!Number.isInteger(data.pagination.total_items)||data.pagination.total_items<0||!Number.isInteger(data.pagination.total_pages)||data.pagination.total_pages<0)throw new Error(tr('服务器响应格式无效，请重试。'));
       this.page=data.pagination.page;this.pages=data.pagination.total_pages;this.sessions=data.sessions;
-      this.mount.querySelector<HTMLElement>('[data-session-list]')!.innerHTML=data.sessions.length?`<div class="job-table-wrap"><table class="job-session-table"><thead><tr><th>应用 / 账号</th><th>节点</th><th>状态 / 到期时间</th><th>操作</th></tr></thead><tbody>${data.sessions.map(s=>`<tr><td><strong>${esc(s.job)}</strong><div class="tt-mono">${esc(s.session)}</div></td><td class="tt-mono">${esc(s.node)}</td><td>${stateLabel(s.state)}<div class="field-help">${esc(expiry(s))}</div></td><td><div class="job-actions"><button type="button" class="btn btn-sm" data-migrate-job="${esc(s.job)}" data-migrate-session="${esc(s.session)}" ${this.configs.some(j=>j.name===s.job&&j.mode==='pinned')?'':'disabled'}>迁移 / 更新绑定</button><button type="button" class="btn btn-sm btn-danger" data-release-job="${esc(s.job)}" data-release-session="${esc(s.session)}">释放会话</button></div></td></tr>`).join('')}</tbody></table></div>`:'<p class="job-empty">没有匹配的会话。</p>';
+      this.mount.querySelector<HTMLElement>('[data-session-list]')!.innerHTML=data.sessions.length?`<div class="job-table-wrap"><table class="job-session-table"><thead><tr><th>应用 / 账号</th><th>节点</th><th>状态 / 到期时间</th><th>连接 / 空闲回收</th><th>操作</th></tr></thead><tbody>${data.sessions.map(s=>`<tr><td><strong>${esc(s.job)}</strong><div class="tt-mono">${esc(s.session)}</div></td><td class="tt-mono">${esc(s.node)}</td><td>${stateLabel(s.state)}<div class="field-help">${esc(expiry(s))}</div></td><td><span>${esc(tr("活跃连接：{count}",{count:s.active_connections??0}))}</span><div class="field-help">${esc(tr("最近使用：{time}",{time:date(s.last_used_at||"")}))}</div><div class="field-help">${esc(s.reclaim_at?tr("预计回收：{time}",{time:date(s.reclaim_at)}):(s.active_connections?tr("连接使用中，暂停回收"):tr("未计划空闲回收")))}</div></td><td><div class="job-actions"><button type="button" class="btn btn-sm" data-migrate-job="${esc(s.job)}" data-migrate-session="${esc(s.session)}" ${this.configs.some(j=>j.name===s.job&&j.mode==='pinned')?'':'disabled'}>迁移 / 更新绑定</button><button type="button" class="btn btn-sm btn-danger" data-release-job="${esc(s.job)}" data-release-session="${esc(s.session)}">释放会话</button></div></td></tr>`).join('')}</tbody></table></div>`:'<p class="job-empty">没有匹配的会话。</p>';
       this.mount.querySelector<HTMLElement>('[data-session-count]')!.textContent=tr('共 {count} 条 · {page} / {pages} 页',{count:data.pagination.total_items,page:this.page,pages:Math.max(1,this.pages)});
       const input=this.mount.querySelector<HTMLInputElement>('[data-session-page]')!;input.value=String(this.page);input.max=String(Math.max(1,this.pages));
       this.mount.querySelector<HTMLButtonElement>('[data-session-prev]')!.disabled=this.page<=1;

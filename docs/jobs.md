@@ -387,3 +387,49 @@ releases the binding once, even if called concurrently.
 recreates a session, or retries an application request on its own.
 Optional feedback failures are available as `client.last_feedback_error`; they
 do not hide an already-completed response or cause an application request replay.
+
+
+## Optional idle binding reclamation
+
+Pinned applications using **shared** or **endpoint** ingress can configure
+`session_idle_timeout: 24h` (1 minute–720 hours). `0` or omission disables cleanup
+and preserves the existing durable-binding behavior. Direct node-port ingress
+and pooled applications cannot enable it: direct traffic does not carry enough
+application/session identity to track safely.
+
+This is independent of `session_ttl`: TTL controls validity; idle retention
+controls when an unused record is removed and its application/node capacity is
+returned. Paused and expired bindings are also eligible when idle cleanup is
+explicitly enabled. Changing retention does not invalidate node-selection policy
+or migrate existing bindings. Removing an application does not delete its pins.
+
+- A validated proxy connection attempt updates activity. Management reads and
+  repeated API acquire calls do not keep a binding alive.
+- HTTP, HTTPS CONNECT and SOCKS5 CONNECT hold a revision-scoped activity reference
+  from before the upstream dial until the tunnel closes. Failed dials release it.
+- Any open tunnel protects the binding, even if no bytes are currently flowing.
+  The full idle interval starts again after the last tunnel closes. Merely closing
+  a browser does not immediately release its usable exit.
+- One maintenance loop uses committed configuration and runs every 30 seconds.
+  Deletion is atomic and rolled back on persistence failure; runtime replacement
+  fences cleanup. Activity is batch-persisted rather than written per request.
+- Process restart grants at least a full idle interval to every loaded binding,
+  because interrupted tunnels and the last unflushed activity cannot be recovered.
+  Frequent process restarts can therefore delay reclamation.
+- The sessions API and Applications table expose `last_used_at`,
+  `active_connections`, and `reclaim_at`. No reclaim time is shown for a currently
+  active or cleanup-disabled binding. Reclamation occurs on the next sweep after
+  the displayed time, not at an exact wall-clock deadline.
+
+Clients remain ordinary HTTP/SOCKS5 clients. Keep the same session ID while an
+exit is useful; use a **new, application-chosen ID** when replacing that session.
+Do not generate a fresh ID for every TCP connection. An unused old ID expires
+without a custom release call. Reusing it after reclamation may select another
+node. Cleanup does **not** promise that a new ID selects a different exit, nor
+that a site's HTTP 403 is automatically treated as a bad proxy.
+
+Long-lived account identities should normally leave idle cleanup disabled.
+Temporary scraper sessions can opt into a retention period longer than their
+normal resource-saving pauses (for example 24h). Size `max_sessions` for the
+number of replacements retained during that interval; cleanup is not permission
+to exceed the configured capacity before the deadline.

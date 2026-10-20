@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/silencoo/proxyfleet/internal/config"
+	"github.com/silencoo/proxyfleet/internal/jobs"
 	"github.com/silencoo/proxyfleet/internal/monitor"
 )
 
@@ -39,7 +40,7 @@ func testSharedApplications(t *testing.T, legacy bool) {
 	port := findManagerTestPort(t)
 	endpoint := config.EndpointConfig{Name: "default", Address: "127.0.0.1", Port: port, Username: "fleet", Password: "legacy-secret"}
 	cfg := &config.Config{Mode: "pool", LogLevel: "error", Listener: config.ListenerConfig{Address: endpoint.Address, Port: port, Username: endpoint.Username, Password: endpoint.Password}, Endpoints: []config.EndpointConfig{endpoint}, Profiles: []config.ProfileConfig{{Name: "one", NameRegex: "^one$"}, {Name: "two", NameRegex: "^two$"}}, Management: config.ManagementConfig{ProbeTarget: target.URL}, Pool: config.PoolConfig{RetryAttempts: 3}, Jobs: []config.JobConfig{
-		{Name: "a", Mode: "pinned", Ingress: "shared", Password: "application-a-secret", Profile: "one", MaxAccountsPerNode: 1},
+		{Name: "a", Mode: "pinned", Ingress: "shared", Password: "application-a-secret", Profile: "one", MaxAccountsPerNode: 1, SessionIdleTimeout: "24h"},
 		{Name: "b", Mode: "pinned", Ingress: "shared", Password: "application-b-secret", Profile: "one", MaxAccountsPerNode: 1},
 		{Name: "c", Mode: "pooled", Ingress: "shared", Password: "application-c-secret", Profile: "two"},
 	}}
@@ -172,7 +173,7 @@ func testSharedApplications(t *testing.T, legacy bool) {
 		request(scheme, "account-01", cfg.Jobs[0].Password, target.URL, true)
 		request(scheme, "account-01", rejected.Jobs[0].Password, target.URL, false)
 	}
-	if after, _ := m.jobStore.Lease("a", "account-01"); after != a {
+	if after, _ := m.jobStore.Lease("a", "account-01"); !sameBindingExceptActivity(after, a) || after.LastUsedAt.IsZero() {
 		t.Fatal("rejected password change altered binding")
 	}
 	// Rotation must apply atomically without changing node, revision or lifetime.
@@ -186,14 +187,14 @@ func testSharedApplications(t *testing.T, legacy bool) {
 		request(scheme, "account-01", oldPassword, target.URL, false)
 		request(scheme, "account-01", candidate.Jobs[0].Password, secure.URL, true)
 	}
-	if after, _ := m.jobStore.Lease("a", "account-01"); after != a {
+	if after, _ := m.jobStore.Lease("a", "account-01"); !sameBindingExceptActivity(after, a) || after.LastUsedAt.IsZero() {
 		t.Fatal("rotation altered durable binding")
 	}
 	cfg, _ = m.ConfigSnapshot()
 	m.Close()
 	m = start()
 	request("socks5", "account-01", cfg.Jobs[0].Password, secure.URL, true)
-	if after, _ := m.jobStore.Lease("a", "account-01"); after != a {
+	if after, _ := m.jobStore.Lease("a", "account-01"); !sameBindingExceptActivity(after, a) || after.LastUsedAt.IsZero() {
 		t.Fatal("restart altered binding")
 	}
 	if err := m.MonitorManager().ManualBlacklist(a.Node, time.Hour); err != nil {
@@ -216,4 +217,9 @@ func testSharedApplications(t *testing.T, legacy bool) {
 		request(scheme, "account-01", cfg.Jobs[0].Password, target.URL, false)
 		request(scheme, "fleet", endpoint.Password, target.URL, true)
 	}
+}
+
+func sameBindingExceptActivity(a, b jobs.Lease) bool {
+	a.LastUsedAt, b.LastUsedAt = time.Time{}, time.Time{}
+	return a == b
 }

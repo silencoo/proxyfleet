@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	M "github.com/sagernet/sing/common/metadata"
 	"github.com/silencoo/proxyfleet/internal/config"
 	"github.com/silencoo/proxyfleet/internal/jobs"
 )
@@ -656,5 +657,59 @@ func TestSharedPooledApplicationUsesItsOwnProfile(t *testing.T) {
 	p.setMemberEligible(p.memberByTag["c"], false)
 	if _, err := p.pickMember(ctx, "tcp"); err == nil {
 		t.Fatal("empty application profile fell back to ordinary pool")
+	}
+}
+
+func TestPinnedDialTracksIdleUntilConnectionCloses(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+			p := jobPoolFixture(t)
+			j := &p.options.Jobs[1]
+			j.Endpoint = "accounts"
+			j.SessionIdleTimeout = "1m"
+			p.options.JobEndpoints["accounts"] = config.EndpointConfig{Username: "worker", Password: "secret", Address: "127.0.0.1", Port: 2325}
+			ctx := adapter.WithContext(context.Background(), &adapter.InboundContext{Inbound: config.EndpointInboundTag("accounts"), User: "worker-session-test"})
+			var peer net.Conn
+			p.memberByTag["a"].outbound = &probeTransportOutbound{dial: func(context.Context) (net.Conn, error) {
+				if fail {
+					return nil, errors.New("dial rejected")
+				}
+				a, b := net.Pipe()
+				peer = b
+				return a, nil
+			}}
+			conn, err := p.DialContext(ctx, "tcp", M.ParseSocksaddr("example.com:443"))
+			if fail {
+				if err == nil {
+					t.Fatal("expected failure")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer peer.Close()
+			}
+			rows := p.ListJobSessions()
+			if len(rows) != 1 {
+				t.Fatal(rows)
+			}
+			if fail {
+				if rows[0].ActiveConnections != 0 || rows[0].LastUsedAt.IsZero() {
+					t.Fatal("failed dial leaked activity", rows)
+				}
+			} else {
+				if rows[0].ActiveConnections != 1 || !rows[0].ReclaimAt.IsZero() {
+					t.Fatal("missing active protection", rows)
+				}
+				if n, err := p.jobStore.SweepIdle(p.options.Jobs, time.Now().Add(time.Hour)); n != 0 || err != nil {
+					t.Fatal("live tunnel reclaimed", n, err)
+				}
+				conn.Close()
+				conn.Close()
+			}
+			if n, err := p.jobStore.SweepIdle(p.options.Jobs, time.Now().Add(61*time.Second)); n != 1 || err != nil {
+				t.Fatal("idle binding retained", n, err)
+			}
+		})
 	}
 }

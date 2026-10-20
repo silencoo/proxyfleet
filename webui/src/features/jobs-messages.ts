@@ -1,4 +1,15 @@
 export const jobMessages: Record<string,string> = {
+  '空闲绑定回收':'Idle binding retention',
+  '0 关闭（默认）；1m–720h，例如 24h。最后一条连接关闭后计时，活跃连接不会回收。回收后再次使用该 ID 可能分配其他节点。':'0 disables cleanup (default); 1m–720h, e.g. 24h. Starts after the last connection closes. Active connections are protected. Reusing a reclaimed ID may select another node.',
+  '空闲回收仅支持 pinned 的统一端口或独立入口。':'Idle cleanup requires pinned with shared or dedicated endpoint ingress.',
+  '连接 / 空闲回收':'Connections / idle cleanup',
+  '活跃连接：{count}':'Active connections: {count}',
+  '最近使用：{time}':'Last used: {time}',
+  '预计回收：{time}':'Reclaim after: {time}',
+  '连接使用中，暂停回收':'In use; cleanup suspended',
+  '未计划空闲回收':'No idle cleanup scheduled',
+  '过期记录仍占额度；可显式释放或启用空闲回收。':'Expired bindings still reserve capacity. Release explicitly or enable idle cleanup.',
+
   '切换已有应用的接入方式后，若绑定显示配置已变更，请在原节点更新绑定策略再恢复客户端。':'After changing access mode, if bindings show Policy changed, update them on their current nodes before resuming clients.',
   "默认共用主入口：用户名是账号 ID，密码区分应用。应用 ID 决定绑定归属，换密码不换节点。":"Share the primary port: username identifies the account, password identifies the application. Bindings belong to the application ID; rotating passwords keeps the node.",
   "应用密码":"Application password",
