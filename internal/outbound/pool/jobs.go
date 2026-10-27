@@ -558,6 +558,7 @@ func (p *poolOutbound) AcquireJob(name, session string) (jobs.Access, error) {
 		p.healthMu.RUnlock()
 		return a, jobs.ErrUnavailable
 	}
+	selected = p.jobAssignmentCandidates(j, selected, "")
 	l, err := p.jobStore.Acquire(j, key, session, selected)
 	p.healthMu.RUnlock()
 	if err != nil {
@@ -618,7 +619,7 @@ func (p *poolOutbound) ListJobNodes(name string) ([]jobs.NodeCapacity, error) {
 	}
 	counts := p.jobStore.AccountCounts(name)
 	result := []jobs.NodeCapacity{}
-	for _, n := range p.jobStatus(j).Selected {
+	for _, n := range p.jobAssignmentCandidates(j, p.jobStatus(j).Selected, "") {
 		result = append(result, jobs.NodeCapacity{Node: n.Node, Name: n.Name, Accounts: counts[n.Node], Limit: j.MaxAccountsPerNode, Available: j.MaxAccountsPerNode == 0 || counts[n.Node] < j.MaxAccountsPerNode})
 	}
 	return result, nil
@@ -650,6 +651,7 @@ func (p *poolOutbound) MigrateJob(name string, request jobs.Migration) (jobs.Acc
 		p.healthMu.RUnlock()
 		return jobs.Access{}, jobs.ErrUnavailable
 	}
+	selected = p.jobAssignmentCandidates(j, selected, "")
 	l, err := p.jobStore.Migrate(j, p.options.JobPolicies[j.Name], request, selected)
 	p.healthMu.RUnlock()
 	if err != nil {

@@ -44,17 +44,14 @@ func (p *poolOutbound) jobFailoverReason(j config.JobConfig, lease jobs.Lease) s
 	return "node_unavailable"
 }
 
-func (p *poolOutbound) failoverJob(j config.JobConfig, lease jobs.Lease, reason string) (jobs.Lease, error) {
-	p.healthMu.RLock()
-	defer p.healthMu.RUnlock()
-	if p.closed.Load() || p.jobStore == nil {
-		return jobs.Lease{}, jobs.ErrUnavailable
-	}
+// Filter new durable assignments, not the identity of an existing binding.
+// Generic retry eligibility alone is not evidence of transport recovery.
+func (p *poolOutbound) jobAssignmentCandidates(j config.JobConfig, candidates []jobs.SelectedNode, exclude string) []jobs.SelectedNode {
 	selected := []jobs.SelectedNode{}
 	unknown := []jobs.SelectedNode{}
-	for _, n := range p.jobStatus(j).Selected {
+	for _, n := range candidates {
 		member := p.memberByTag[n.Node]
-		if n.Node == lease.Node || !p.memberEligibleForProfile(member, "tcp", p.profiles[j.Profile]) {
+		if n.Node == exclude || !p.memberEligibleForProfile(member, "tcp", p.profiles[j.Profile]) {
 			continue
 		}
 		// The eligibility index also admits retries after blacklist expiry.
@@ -76,6 +73,16 @@ func (p *poolOutbound) failoverJob(j config.JobConfig, lease jobs.Lease, reason 
 	if len(selected) == 0 {
 		selected = unknown
 	}
+	return selected
+}
+
+func (p *poolOutbound) failoverJob(j config.JobConfig, lease jobs.Lease, reason string) (jobs.Lease, error) {
+	p.healthMu.RLock()
+	defer p.healthMu.RUnlock()
+	if p.closed.Load() || p.jobStore == nil {
+		return jobs.Lease{}, jobs.ErrUnavailable
+	}
+	selected := p.jobAssignmentCandidates(j, p.jobStatus(j).Selected, lease.Node)
 	return p.jobStore.Failover(j, p.options.JobPolicies[j.Name], lease, selected, reason, p.options.Metadata[lease.Node].Name)
 }
 

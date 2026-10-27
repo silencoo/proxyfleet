@@ -240,6 +240,23 @@ func testPinnedSessionEndpoint(t *testing.T, selection string) {
 			if s.Selection != "manual" || len(s.Selected) != wantManualSelected || s.Measured != 0 || s.Refreshing {
 				t.Fatalf("manual job needed benchmark warm-up: %+v", s)
 			}
+			// Establish transport health without application benchmarks. Once the
+			// first account confirms a node healthy, unknown nodes are not a
+			// capacity fallback; every intended slot must be confirmed healthy.
+			for _, node := range m.MonitorManager().Snapshot() {
+				if node.Blacklisted {
+					continue // Preserve the protected binding on later restarts.
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_, err := m.MonitorManager().Probe(ctx, node.Tag)
+				cancel()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if m.ListJobs()[0].Measured != 0 {
+				t.Fatal("transport probes created manual-job target measurements")
+			}
 			return m
 		}
 		for _, node := range m.MonitorManager().Snapshot() {
