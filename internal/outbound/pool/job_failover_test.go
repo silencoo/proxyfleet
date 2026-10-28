@@ -32,6 +32,9 @@ func failoverPool(t *testing.T, shared bool) (*poolOutbound, context.Context) {
 		md.Inbound = config.SharedJobInboundTag(j.Name)
 		md.User = "browser"
 	}
+	for _, m := range p.members {
+		m.outbound = &scriptedOutbound{}
+	}
 	return p, adapter.WithContext(context.Background(), md)
 }
 
@@ -55,8 +58,8 @@ func TestApplicationFailoverRecoversSameSessionForBothIngresses(t *testing.T) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					m, e := p.pickMember(ctx, "tcp")
-					if e != nil || m.tag != "b" {
+					m, e := dialTestJob(t, p, ctx)
+					if e != nil && !errors.Is(e, jobs.ErrConflict) || e == nil && m != "b" {
 						t.Errorf("concurrent recovery: %v %v", m, e)
 					}
 				}()
@@ -83,8 +86,8 @@ func TestApplicationFailoverMissingNodeAndScope(t *testing.T) {
 	_, _ = p.AcquireJob("accounts", "browser")
 	delete(p.memberByTag, "a")
 	p.profiles["fast"].allowed = map[string]struct{}{"b": {}}
-	m, err := p.pickMember(ctx, "tcp")
-	if err != nil || m.tag != "b" {
+	m, err := dialTestJob(t, p, ctx)
+	if err != nil || m != "b" {
 		t.Fatal(m, err)
 	}
 	l, _ := p.jobStore.Lease("accounts", "browser")
@@ -92,7 +95,7 @@ func TestApplicationFailoverMissingNodeAndScope(t *testing.T) {
 		t.Fatal(l)
 	}
 	p.setMemberEligible(p.memberByTag["b"], false)
-	if _, err := p.pickMember(ctx, "tcp"); !errors.Is(err, jobs.ErrUnavailable) {
+	if _, err := dialTestJob(t, p, ctx); !errors.Is(err, jobs.ErrUnavailable) {
 		t.Fatal("escaped cooldown/profile", err)
 	}
 }
@@ -136,16 +139,17 @@ func TestApplicationFailoverRechecksTransportHealthAfterBlacklistExpiry(t *testi
 				}
 			}
 			p.setMemberEligible(p.memberByTag["a"], false)
-			member, err := p.pickMember(ctx, "tcp")
+			member, err := dialTestJob(t, p, ctx)
 			if tc.want == "" {
 				if err == nil {
 					t.Fatal("unsafe failover was allowed")
 				}
 				after, _ := p.jobStore.Lease("accounts", "browser")
+				before.LastUsedAt, after.LastUsedAt = time.Time{}, time.Time{}
 				if !reflect.DeepEqual(before, after) {
 					t.Fatal("failed recovery changed the binding")
 				}
-			} else if err != nil || member.tag != tc.want {
+			} else if err != nil || member != tc.want {
 				t.Fatalf("recovered to %v, error %v; want %s", member, err, tc.want)
 			}
 		})
@@ -189,10 +193,11 @@ func TestApplicationFailoverDoesNotHandleTargetChallengesExpiryOrPolicyChanges(t
 				j.FailurePolicy = "strict"
 				p.setMemberEligible(p.memberByTag["a"], false)
 			}
-			if _, err := p.pickMember(ctx, "tcp"); err == nil {
+			if _, err := dialTestJob(t, p, ctx); err == nil {
 				t.Fatal("unexpected usable binding")
 			}
 			after, _ := p.jobStore.Lease("accounts", "browser")
+			before.LastUsedAt, after.LastUsedAt = time.Time{}, time.Time{}
 			if !reflect.DeepEqual(before, after) {
 				t.Fatal("unsafe automatic rebind", after)
 			}
@@ -252,7 +257,7 @@ func TestApplicationFailoverStopsAfterOneAlternate(t *testing.T) {
 		t.Fatal("unbounded retry")
 	}
 	l, _ := p.jobStore.Lease("accounts", "browser")
-	if l.FailoverCount != 1 || l.Node != "b" {
+	if l.FailoverCount != 0 || l.Node != "a" || l.LastFailover != nil {
 		t.Fatal(l)
 	}
 }
@@ -299,13 +304,25 @@ func TestApplicationFailoverCannotEscapeClosedOrUncommittedRuntime(t *testing.T)
 			} else {
 				defer p.jobStore.PauseNewAssignments()()
 			}
-			if _, err := p.pickMember(ctx, "tcp"); err == nil {
+			if _, err := dialTestJob(t, p, ctx); err == nil {
 				t.Fatal("recovery escaped runtime fence")
 			}
 			after, _ := p.jobStore.Lease("accounts", "browser")
+			before.LastUsedAt, after.LastUsedAt = time.Time{}, time.Time{}
 			if !reflect.DeepEqual(before, after) {
 				t.Fatal("runtime fence altered binding")
 			}
 		})
 	}
+}
+
+func dialTestJob(t *testing.T, p *poolOutbound, ctx context.Context) (string, error) {
+	t.Helper()
+	conn, err := p.DialContext(ctx, "tcp", M.ParseSocksaddr("example.test:443"))
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	l, _ := p.jobStore.Lease("accounts", "browser")
+	return l.Node, nil
 }

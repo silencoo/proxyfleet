@@ -1,6 +1,6 @@
 module github.com/silencoo/proxyfleet
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/oschwald/geoip2-golang v1.13.0

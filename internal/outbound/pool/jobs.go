@@ -272,6 +272,14 @@ func (p *poolOutbound) pickPinnedJobMember(ctx context.Context, j config.JobConf
 	if network != "tcp" {
 		return nil, jobs.ErrUnavailable
 	}
+	use, _ := ctx.Value(jobConnectionUseKey{}).(*jobConnectionUse)
+	if use != nil && use.failover != nil {
+		selected := p.jobAssignmentCandidates(j, []jobs.SelectedNode{{Node: use.failover.Node()}}, "")
+		if len(selected) == 0 {
+			return nil, jobs.ErrUnavailable
+		}
+		return p.memberByTag[selected[0].Node], nil
+	}
 	session, valid := p.jobSession(ctx, j)
 	if !valid {
 		return nil, jobs.ErrConflict
@@ -280,7 +288,18 @@ func (p *poolOutbound) pickPinnedJobMember(ctx context.Context, j config.JobConf
 	if err != nil {
 		return nil, err
 	}
-	if use, ok := ctx.Value(jobConnectionUseKey{}).(*jobConnectionUse); ok {
+	if use != nil && a.State != "ready" && j.AutomaticFailover() {
+		lease, exists := p.jobStore.Lease(j.Name, session)
+		if exists && lease.Policy == p.options.JobPolicies[j.Name] && !lease.Expired(time.Now()) {
+			if reason := p.jobFailoverReason(j, lease); reason != "" {
+				if err := p.prepareJobFailover(use, j, lease, reason); err != nil {
+					return nil, err
+				}
+				return p.memberByTag[use.failover.Node()], nil
+			}
+		}
+	}
+	if use != nil {
 		use.done, err = p.jobStore.Hold(j.Name, session, a.Revision)
 		if err != nil {
 			return nil, err
@@ -564,14 +583,8 @@ func (p *poolOutbound) AcquireJob(name, session string) (jobs.Access, error) {
 	if err != nil {
 		return a, err
 	}
-	if j.AutomaticFailover() && l.Policy == key && !l.Expired(time.Now()) {
-		if reason := p.jobFailoverReason(j, l); reason != "" {
-			l, err = p.failoverJob(j, l, reason)
-			if err != nil {
-				return jobs.Access{}, err
-			}
-		}
-	}
+	// Acquiring/reading credentials must not migrate an existing pin. Recovery
+	// is reserved and committed by the actual TCP connection path only.
 	return p.accessForLease(j, l, status.Candidates), nil
 }
 
@@ -585,7 +598,17 @@ func (p *poolOutbound) accessForLease(j config.JobConfig, l jobs.Lease, candidat
 		sample = values[l.Node]
 	}
 	a.State = p.jobLeaseState(j, l, sample, candidates)
-	if a.State != "ready" {
+	if a.State == "paused" && j.AutomaticFailover() && l.Policy == p.options.JobPolicies[j.Name] && !l.Expired(time.Now()) &&
+		(l.LastFailover == nil || time.Since(l.LastFailover.At) >= jobs.FailoverCooldown) && p.jobFailoverReason(j, l) != "" {
+		counts := p.jobStore.AccountCounts(j.Name)
+		for _, n := range p.jobAssignmentCandidates(j, p.jobStatus(j).Selected, l.Node) {
+			if j.MaxAccountsPerNode == 0 || counts[n.Node] < j.MaxAccountsPerNode {
+				a.FailoverAvailable = true
+				break
+			}
+		}
+	}
+	if a.State != "ready" && !a.FailoverAvailable {
 		return a
 	}
 	if !j.DirectIngress() {

@@ -76,14 +76,43 @@ func (p *poolOutbound) jobAssignmentCandidates(j config.JobConfig, candidates []
 	return selected
 }
 
-func (p *poolOutbound) failoverJob(j config.JobConfig, lease jobs.Lease, reason string) (jobs.Lease, error) {
+func (p *poolOutbound) prepareJobFailover(use *jobConnectionUse, j config.JobConfig, lease jobs.Lease, reason string) error {
 	p.healthMu.RLock()
 	defer p.healthMu.RUnlock()
 	if p.closed.Load() || p.jobStore == nil {
-		return jobs.Lease{}, jobs.ErrUnavailable
+		return jobs.ErrUnavailable
 	}
 	selected := p.jobAssignmentCandidates(j, p.jobStatus(j).Selected, lease.Node)
-	return p.jobStore.Failover(j, p.options.JobPolicies[j.Name], lease, selected, reason, p.options.Metadata[lease.Node].Name)
+	attempt, err := p.jobStore.BeginFailover(j, p.options.JobPolicies[j.Name], lease, selected, reason, p.options.Metadata[lease.Node].Name)
+	if err == nil {
+		use.failover, use.job = attempt, j
+	}
+	return err
+}
+
+func (p *poolOutbound) commitJobFailover(ctx context.Context, use *jobConnectionUse) error {
+	p.healthMu.RLock()
+	defer p.healthMu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.closed.Load() {
+		return jobs.ErrUnavailable
+	}
+	// A manual ban or runtime transition while the alternate dial was pending
+	// must not publish a route that is no longer authorized.
+	if len(p.jobAssignmentCandidates(use.job, []jobs.SelectedNode{{Node: use.failover.Node()}}, "")) == 0 {
+		return jobs.ErrUnavailable
+	}
+	_, done, err := use.failover.Commit()
+	if err != nil {
+		return err
+	}
+	if use.done != nil {
+		use.done()
+	}
+	use.done = done
+	return nil
 }
 
 // Capture the revision before dialing: a late failed dial must never overwrite

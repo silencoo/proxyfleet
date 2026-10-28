@@ -93,7 +93,8 @@ class JobClient:
 
     @staticmethod
     def check_access(access):
-        if access["state"] != "ready" or not access.get("proxy_url"):
+        recoverable = access["state"] == "paused" and access.get("failover_available") is True
+        if (access["state"] != "ready" and not recoverable) or not access.get("proxy_url"):
             raise JobUnavailable(f"Job {access['job']}: {access['state']}; recover the session explicitly")
 
     async def __aenter__(self):

@@ -19,12 +19,18 @@ func (s *Store) Hold(job, session, revision string) (func(), error) {
 		s.mu.Unlock()
 		return nil, ErrConflict
 	}
+	done := s.holdLocked(k, l)
+	s.mu.Unlock()
+	return done, nil
+}
+
+func (s *Store) holdLocked(k string, l Lease) func() {
+	revision := l.Version()
 	a := activityKey(l)
 	s.active[a]++
 	l.LastUsedAt = time.Now().UTC()
 	s.leases[k] = l
 	s.activityDirty = true
-	s.mu.Unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -40,7 +46,7 @@ func (s *Store) Hold(job, session, revision string) (func(), error) {
 				s.activityDirty = true
 			}
 		})
-	}, nil
+	}
 }
 
 // Restart grants a full idle interval: an unclean shutdown may have lost recent
@@ -82,7 +88,7 @@ func (s *Store) SweepIdle(configured []config.JobConfig, now time.Time) (int, er
 	}
 	removed := make(map[string]Lease)
 	for k, l := range s.leases {
-		if d := timeouts[l.Job]; d > 0 && s.active[activityKey(l)] == 0 && !now.Before(s.idleSince(l).Add(d)) {
+		if d := timeouts[l.Job]; d > 0 && s.failovers[k] == nil && s.active[activityKey(l)] == 0 && !now.Before(s.idleSince(l).Add(d)) {
 			removed[k] = l
 			delete(s.leases, k)
 		}

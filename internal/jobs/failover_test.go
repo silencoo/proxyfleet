@@ -29,9 +29,9 @@ func TestFailoverAtomicDurableAndPreservesLifetime(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			l, err := s.Failover(j, "policy", old, []SelectedNode{{Node: "b", Name: "US B"}, {Node: "c"}}, "node_missing", "US A")
-			if err != nil || l.Node != "b" || l.FailoverCount != 1 {
-				t.Errorf("duplicate/failed recovery: %+v %v", l, err)
+			_, err := commitTestFailover(s, j, "policy", old, []SelectedNode{{Node: "b", Name: "US B"}, {Node: "c"}}, "node_missing", "US A")
+			if err != nil && !errors.Is(err, ErrConflict) {
+				t.Errorf("failed recovery: %v", err)
 			}
 		}()
 	}
@@ -39,6 +39,9 @@ func TestFailoverAtomicDurableAndPreservesLifetime(t *testing.T) {
 	l, _ := s.Lease(j.Name, old.Session)
 	if l.Version() == old.Version() || !l.ExpiresAt.Equal(old.ExpiresAt) || l.Permanent != old.Permanent || l.Policy != old.Policy || l.LastFailover.FromNode != "a" || l.LastFailover.ToNode != "b" || l.LastFailover.FromName != "US A" {
 		t.Fatalf("lost identity/lifetime/audit: %+v", l)
+	}
+	if err := s.FlushActivity(); err != nil {
+		t.Fatal(err)
 	}
 	reopened, err := Open(path)
 	if err != nil {
@@ -50,7 +53,7 @@ func TestFailoverAtomicDurableAndPreservesLifetime(t *testing.T) {
 	if string(wantJSON) != string(gotJSON) {
 		t.Fatalf("recovery not durable: %+v", restored)
 	}
-	if _, err := reopened.Failover(j, "policy", restored, []SelectedNode{{Node: "c"}}, "dial_failed", ""); !errors.Is(err, ErrUnavailable) {
+	if _, err := commitTestFailover(reopened, j, "policy", restored, []SelectedNode{{Node: "c"}}, "dial_failed", ""); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("cooldown lost across restart: %v", err)
 	}
 	counts := s.AccountCounts(j.Name)
@@ -93,7 +96,7 @@ func TestFailoverRejectsUnsafeRecoveryAndRollsBack(t *testing.T) {
 			case "reason":
 				reason = "cloudflare"
 			}
-			if _, err := s.Failover(j, policy, old, nodes, reason, ""); err == nil {
+			if _, err := commitTestFailover(s, j, policy, old, nodes, reason, ""); err == nil {
 				t.Fatal("unsafe migration accepted")
 			}
 			now, _ := s.Lease(j.Name, old.Session)
@@ -108,21 +111,21 @@ func TestFailoverNeverOverwritesManualMigrationOrRelease(t *testing.T) {
 	s, _ := Open("")
 	j := recoveryConfig()
 	old, _ := s.Acquire(j, "p", "s", []SelectedNode{{Node: "a"}})
-	manual, err := s.Migrate(j, "p", Migration{Session: "s", Node: "c", ExpectedRevision: old.Version()}, []SelectedNode{{Node: "c"}})
+	_, err := s.Migrate(j, "p", Migration{Session: "s", Node: "c", ExpectedRevision: old.Version()}, []SelectedNode{{Node: "c"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Failover(j, "p", old, []SelectedNode{{Node: "b"}}, "dial_failed", "")
-	if err != nil || !reflect.DeepEqual(got, manual) {
+	got, err := commitTestFailover(s, j, "p", old, []SelectedNode{{Node: "b"}}, "dial_failed", "")
+	if !errors.Is(err, ErrConflict) {
 		t.Fatal("overwrote manual winner", got, err)
 	}
 	_ = s.Release(j.Name, "s")
-	if _, err := s.Failover(j, "p", old, []SelectedNode{{Node: "b"}}, "dial_failed", ""); !errors.Is(err, ErrNotFound) {
+	if _, err := commitTestFailover(s, j, "p", old, []SelectedNode{{Node: "b"}}, "dial_failed", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatal("recreated released binding", err)
 	}
-	fresh, _ := s.Acquire(j, "p", "s", []SelectedNode{{Node: "a"}})
-	got, err = s.Failover(j, "p", old, []SelectedNode{{Node: "b"}}, "dial_failed", "")
-	if err != nil || got.Version() != fresh.Version() {
+	_, _ = s.Acquire(j, "p", "s", []SelectedNode{{Node: "a"}})
+	got, err = commitTestFailover(s, j, "p", old, []SelectedNode{{Node: "b"}}, "dial_failed", "")
+	if !errors.Is(err, ErrConflict) {
 		t.Fatal("stale failure crossed release/reacquire")
 	}
 }
@@ -137,7 +140,7 @@ func TestFailoverConcurrentSessionsRespectCapacity(t *testing.T) {
 		wg.Add(1)
 		go func(l Lease) {
 			defer wg.Done()
-			_, err := s.Failover(j, "p", l, []SelectedNode{{Node: "target"}}, "node_missing", "")
+			_, err := commitTestFailover(s, j, "p", l, []SelectedNode{{Node: "target"}}, "node_missing", "")
 			if err != nil && !errors.Is(err, ErrCapacity) {
 				t.Error(err)
 			}
@@ -171,7 +174,7 @@ func TestPermanentFailoverDoesNotRenewOrRevert(t *testing.T) {
 	j := recoveryConfig()
 	j.SessionTTL = "0"
 	old, _ := s.Acquire(j, "p", "s", []SelectedNode{{Node: "a"}})
-	l, err := s.Failover(j, "p", old, []SelectedNode{{Node: "b"}}, "node_missing", "")
+	l, err := commitTestFailover(s, j, "p", old, []SelectedNode{{Node: "b"}}, "node_missing", "")
 	if err != nil || !l.Permanent || !l.ExpiresAt.IsZero() || l.Expired(time.Now().AddDate(100, 0, 0)) {
 		t.Fatal(l, err)
 	}
@@ -179,4 +182,18 @@ func TestPermanentFailoverDoesNotRenewOrRevert(t *testing.T) {
 	if again.Node != "b" {
 		t.Fatal("reverted recovery")
 	}
+}
+
+// Models a successful alternate dial for store-only tests.
+func commitTestFailover(s *Store, j config.JobConfig, policy string, old Lease, nodes []SelectedNode, reason, name string) (Lease, error) {
+	a, err := s.BeginFailover(j, policy, old, nodes, reason, name)
+	if err != nil {
+		return Lease{}, err
+	}
+	defer a.Abort()
+	l, done, err := a.Commit()
+	if done != nil {
+		done()
+	}
+	return l, err
 }

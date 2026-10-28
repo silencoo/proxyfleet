@@ -83,24 +83,25 @@ type Status struct {
 }
 
 type Access struct {
-	Job            string         `json:"job"`
-	Mode           string         `json:"mode"`
-	Selection      string         `json:"selection"`
-	State          string         `json:"state"` // ready, paused, expired, or policy_changed
-	Session        string         `json:"session,omitempty"`
-	Node           string         `json:"node,omitempty"`
-	NodeName       string         `json:"node_name,omitempty"`
-	ProxyURL       string         `json:"proxy_url,omitempty"`
-	ExpiresAt      time.Time      `json:"expires_at,omitempty"`
-	Permanent      bool           `json:"permanent,omitempty"`
-	Revision       string         `json:"revision,omitempty"`
-	Concurrency    int            `json:"concurrency"`
-	Timeout        string         `json:"timeout"`
-	TimeoutMS      int64          `json:"timeout_ms"`
-	ExpectedStatus int            `json:"expected_status"`
-	BodyContains   string         `json:"body_contains,omitempty"`
-	FailoverCount  uint64         `json:"failover_count,omitempty"`
-	LastFailover   *FailoverEvent `json:"last_failover,omitempty"`
+	FailoverAvailable bool           `json:"failover_available,omitempty"` // Dial may attempt recovery; not a committed migration.
+	Job               string         `json:"job"`
+	Mode              string         `json:"mode"`
+	Selection         string         `json:"selection"`
+	State             string         `json:"state"` // ready, paused, expired, or policy_changed
+	Session           string         `json:"session,omitempty"`
+	Node              string         `json:"node,omitempty"`
+	NodeName          string         `json:"node_name,omitempty"`
+	ProxyURL          string         `json:"proxy_url,omitempty"`
+	ExpiresAt         time.Time      `json:"expires_at,omitempty"`
+	Permanent         bool           `json:"permanent,omitempty"`
+	Revision          string         `json:"revision,omitempty"`
+	Concurrency       int            `json:"concurrency"`
+	Timeout           string         `json:"timeout"`
+	TimeoutMS         int64          `json:"timeout_ms"`
+	ExpectedStatus    int            `json:"expected_status"`
+	BodyContains      string         `json:"body_contains,omitempty"`
+	FailoverCount     uint64         `json:"failover_count,omitempty"`
+	LastFailover      *FailoverEvent `json:"last_failover,omitempty"`
 }
 
 // SessionInfo is a read-only view of an existing binding, without credentials.
@@ -165,6 +166,7 @@ type measurements struct {
 }
 
 type Store struct {
+	failovers        map[string]*failoverReservation
 	active           map[string]int
 	activityDirty    bool
 	openedAt         time.Time
@@ -434,12 +436,11 @@ func (s *Store) Acquire(j config.JobConfig, policy, session string, ranked []Sel
 	if len(ranked) == 0 {
 		return Lease{}, ErrUnavailable
 	}
-	count, loads := 0, make(map[string]int)
+	// Paused/expired pins and pending alternate reservations consume capacity.
+	count, loads := 0, s.accountLoadsLocked(j.Name)
 	for _, l := range s.leases {
 		if l.Job == j.Name {
 			count++
-			// Paused/expired bindings still reserve their slot until explicit release.
-			loads[l.Node]++
 		}
 	}
 	if count >= j.MaxSessions || len(s.leases) >= 4096 {
@@ -513,11 +514,9 @@ func (s *Store) Migrate(j config.JobConfig, policy string, request Migration, el
 		return Lease{}, ErrUnavailable
 	}
 	if old.Node != request.Node && j.MaxAccountsPerNode > 0 {
-		count := 0
-		for _, l := range s.leases {
-			if l.Job == j.Name && l.Node == request.Node {
-				count++
-			}
+		count := s.accountLoadsLocked(j.Name)[request.Node]
+		if r := s.failovers[key]; r != nil && r.target.Node == request.Node {
+			count--
 		}
 		if count >= j.MaxAccountsPerNode {
 			return Lease{}, ErrCapacity

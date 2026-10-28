@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-10-29
+
+### Security
+
+- Pin official builds to Go 1.26.10, including the `crypto/x509` GO-2026-6809 intermediate-certificate distrust fix. Rebuild existing binaries to receive the fix; Node.js and transport dependencies are unchanged.
+
+### Fixed
+
+- Persist opt-in application failover only after the alternate TCP connection succeeds. Failed alternates preserve the original binding, expiry, migration history and cooldown; strict bindings still never migrate automatically.
+- Reserve alternate account capacity before dialing, share reservations across concurrent attempts for one binding, and fence late commits against manual migration, release/reacquire, bans and runtime handoffs. Close successful sockets whose commit is rejected; reservations are not persisted.
+- Keep `/acquire` observational for existing bindings. Recoverable paused access includes `failover_available` and the existing proxy URL; update API clients that previously rejected every paused response. The bundled Python client accepts this hint while retaining explicit recovery on observed identity changes. Ordinary proxy clients require no changes.
+
 ## [3.5.0] - 2026-10-16
 
 ### Added

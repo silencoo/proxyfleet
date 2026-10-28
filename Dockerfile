@@ -6,7 +6,7 @@ RUN npm ci
 COPY webui ./webui
 RUN npm run check:webui && npm run build:webui
 
-FROM --platform=$BUILDPLATFORM golang:1.26.9-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm AS builder
 ENV GOTOOLCHAIN=local GOWORK=off
 ARG TARGETARCH
 ARG VERSION=dev

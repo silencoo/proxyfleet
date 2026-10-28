@@ -162,8 +162,9 @@ failure_policy: failover      # default: strict
 - Supported on shared application ports and dedicated application Endpoints, not
   legacy `ingress: direct` node ports or `pooled` jobs. No client SDK, preflight
   management request, password change or new session ID is required.
-- On a new connection (or explicit `/acquire`), a missing or confirmed unavailable
-  node can be atomically replaced from the same application's eligible Profile.
+- On a new TCP connection, a missing or confirmed unavailable node can be
+  replaced from the same application's eligible Profile **only after the alternate
+  connection succeeds**. `/acquire` never migrates an existing binding.
   Unknown health during restart and failed/stale **target** benchmarks alone do
   not trigger this transport recovery. Eligible alternatives still obey automatic
   selection when configured; there is no global-pool or direct fallback.
@@ -177,7 +178,11 @@ failure_policy: failover      # default: strict
   replayed, and existing tunnels are not moved or forcibly closed. Parallel browser
   connections can temporarily use old and new exits; this is not browser-session
   atomicity. Login/cookie state and site verification may need client recovery.
-- At most one automatic migration per binding per **30 seconds**, persisted across
+- Alternate capacity is reserved before dialing, including against new accounts
+  and manual migrations. Concurrent dials for the same revision share one reserved
+  target. Failed alternate dials release reservations without changing the original
+  pin, migration history or cooldown. A rejected commit closes the new socket.
+- At most one successful automatic migration per binding per **30 seconds**, persisted across
   restarts. Capacity is checked atomically per application. No spare eligible node,
   exhausted capacity, cooldown, persistence failure or runtime handoff fails closed
   and leaves the binding intact; no capacity limits are bypassed.
@@ -192,6 +197,14 @@ failure_policy: failover      # default: strict
   (`at`, `from_node`, `to_node`, optional display names, `reason`). The UI displays
   the latest transition and count; only the latest event is retained, not a full
   audit log. Listing bindings never triggers migration.
+- An `/acquire` response may retain `state: paused` and the original node while
+  returning `failover_available: true` plus the unchanged application `proxy_url`.
+  This is a best-effort indication that the next TCP connection can attempt recovery,
+  not proof of success or a capacity reservation. API clients should allow that
+  combination (the bundled Python client does); strict, expired and policy-changed
+  bindings do not receive it. Older API clients that reject all paused states must
+  be updated. Ordinary HTTP/SOCKS5 clients need no changes. The Python client still
+  requires explicit cookie/connection recovery if it later observes a changed node.
 
 This recovers **transport availability**, not Cloudflare verification. HTTPS
 content is opaque to the proxy; HTTP 403/429, verification pages or target feedback

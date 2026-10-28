@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 from aiohttp import ClientHttpProxyError, web
 
-from proxyfleet_jobs import Fleet, JobUnavailable
+from proxyfleet_jobs import Fleet, JobUnavailable, JobClient
 
 
 class JobClientTests(unittest.IsolatedAsyncioTestCase):
@@ -224,3 +224,17 @@ class JobClientTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecoveryHintTests(unittest.TestCase):
+    def test_only_explicit_paused_hint_allows_connection(self):
+        base = {"job": "test", "state": "paused", "proxy_url": "http://127.0.0.1:2323"}
+        JobClient.check_access({**base, "failover_available": True})
+        for state in ("paused", "expired", "policy_changed"):
+            for hint in (False, "true", True):
+                if state == "paused" and hint is True:
+                    continue
+                with self.assertRaises(JobUnavailable):
+                    JobClient.check_access({**base, "state": state, "failover_available": hint})
+        with self.assertRaises(JobUnavailable):
+            JobClient.check_access({**base, "proxy_url": "", "failover_available": True})

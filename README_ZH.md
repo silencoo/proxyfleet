@@ -210,7 +210,7 @@ Named Profiles 可按地域、协议、来源、节点名称正则和最低质�
 
 WebUI **系统设置 → 应用配置**可编辑全部 Job 参数，与 Profile 和 Endpoint 一起保存；**应用代理**页面提供运行状态、自动测速、HTTP/SOCKS5 地址生成，以及会话搜索、分页和显式释放。凭据默认遮罩，保存失败或配置冲突保留草稿。手动模式无需填写测速目标。
 
-节点来源与连接策略独立配置：默认 `selection: manual` 直接使用指定 Profile 的可用节点，无需目标 URL 或 Job 测速预热；显式设置 `selection: auto` 才按目标站点实测优选少量节点。两种来源均支持 `pooled`（新连接分配节点）和 `pinned`（固定会话节点）；`pool` / `hybrid` 模式可同时使用。新应用默认**共用主端口、按应用密码区分**：`账号ID:应用密码@地址:2323`；主入口必须启用、无 Profile 过滤且有普通池用户名/密码。应用密码须为 16–255 字节且与所有应用及入口密码不同。普通池原凭据继续可用，错误或已删除的应用密码不会退回普通池。共享端口支持 HTTP、HTTPS CONNECT、SOCKS5 CONNECT（TCP），不支持 SOCKS4/UDP；需要后者可另留普通入口。独立入口是可选高级配置，旧应用不自动转换，仍使用 `<入口用户名>-session-<账号ID>`。普通 HTTP/SOCKS5 客户端无需调用管理 API 或接入 SDK。每个 Job 对应一个应用，name 是稳定应用 ID，换应用密码不改变绑定。账号绑定默认永久（`session_ttl: "0"`），持久化且重启保留，默认 `failure_policy: strict`，节点失效只暂停、不自动切换。无头浏览器等可容忍出口变化的应用可显式启用 `failure_policy: failover`，在节点消失、不可用或 TCP 建连失败时保留原会话 ID 自动迁移；不续期、不突破应用容量，30 秒内最多迁移一次，不处理 Cloudflare 验证。`max_accounts_per_node` 按应用限制每节点账号数，1 为一账号一节点，0 不限；满额拒绝新绑定，暂停/过期记录仍占名额。界面可按应用查看、解绑、手动迁移或原节点更新绑定。已有有限期绑定需显式更新才能转为永久，降低上限不会驱逐已有账号。配置、管理 API、限制和 Python 接入示例见 [Jobs 使用文档](docs/jobs.md)。
+节点来源与连接策略独立配置：默认 `selection: manual` 直接使用指定 Profile 的可用节点，无需目标 URL 或 Job 测速预热；显式设置 `selection: auto` 才按目标站点实测优选少量节点。两种来源均支持 `pooled`（新连接分配节点）和 `pinned`（固定会话节点）；`pool` / `hybrid` 模式可同时使用。新应用默认**共用主端口、按应用密码区分**：`账号ID:应用密码@地址:2323`；主入口必须启用、无 Profile 过滤且有普通池用户名/密码。应用密码须为 16–255 字节且与所有应用及入口密码不同。普通池原凭据继续可用，错误或已删除的应用密码不会退回普通池。共享端口支持 HTTP、HTTPS CONNECT、SOCKS5 CONNECT（TCP），不支持 SOCKS4/UDP；需要后者可另留普通入口。独立入口是可选高级配置，旧应用不自动转换，仍使用 `<入口用户名>-session-<账号ID>`。普通 HTTP/SOCKS5 客户端无需调用管理 API 或接入 SDK。每个 Job 对应一个应用，name 是稳定应用 ID，换应用密码不改变绑定。账号绑定默认永久（`session_ttl: "0"`），持久化且重启保留，默认 `failure_policy: strict`，节点失效只暂停、不自动切换。无头浏览器等可容忍出口变化的应用可显式启用 `failure_policy: failover`，在节点消失、不可用或 TCP 建连失败时尝试备用节点，只有备用 TCP 建连成功后才保留原会话 ID 提交迁移；失败保留原绑定与冷却时间；不续期、不突破应用容量，30 秒内最多迁移一次，不处理 Cloudflare 验证。`max_accounts_per_node` 按应用限制每节点账号数，1 为一账号一节点，0 不限；满额拒绝新绑定，暂停/过期记录仍占名额。界面可按应用查看、解绑、手动迁移或原节点更新绑定。已有有限期绑定需显式更新才能转为永久，降低上限不会驱逐已有账号。配置、管理 API、限制和 Python 接入示例见 [Jobs 使用文档](docs/jobs.md)。
 
 ## 协议支持注意事项
 
@@ -297,7 +297,7 @@ proxies:
 
 ## 开发验证
 
-正式构建统一锁定 **Go 1.26.9**（`go.mod`）和 **Node.js 22.23.3**（`.node-version`），本地、Docker、GitHub CI 使用相同补丁版本。请先用版本管理器切换 Node，例如 `nvm install "$(cat .node-version)"`。构建脚本会检查 Node，并通过 `GOTOOLCHAIN` 精确选择 Go；首次需要时由 Go 下载并校验工具链，不替换系统全局 Go。离线构建需要提前安装或缓存对应工具链。
+正式构建统一锁定 **Go 1.26.10**（`go.mod`）和 **Node.js 22.23.3**（`.node-version`），本地、Docker、GitHub CI 使用相同补丁版本。请先用版本管理器切换 Node，例如 `nvm install "$(cat .node-version)"`。构建脚本会检查 Node，并通过 `GOTOOLCHAIN` 精确选择 Go；首次需要时由 Go 下载并校验工具链，不替换系统全局 Go。离线构建需要提前安装或缓存对应工具链。
 
 ```bash
 npm ci
@@ -317,9 +317,9 @@ npm run build -- --version v3.3.3
 
 CI 已提前构建前端时可使用 `--skip-webui`，本地默认不要加这个参数。Docker 会在独立阶段重新构建 WebUI，再调用同一个脚本；镜像版本可通过 `--build-arg VERSION=... --build-arg COMMIT=...` 指定。构建不会替换或重启运行中的服务；之前的 `artifacts/jobs/proxyfleet.exe` 属于历史验证产物，后续使用 `dist/`。
 
-升级工具链时须一起更新 `go.mod` / `.node-version`、Docker 精确镜像版本、`package.json` / `package-lock.json` 中的 Node engine；`npm run test:build` 会检查这些文件与 CI 的版本一致性。CI 从 `go.mod` 安装 Go 并禁用自动切换，Docker 下载依赖前也会验证编译器。现有 Release 下载文件名不变。这是编译工具链统一，不代表 OS 和基础镜像所有内容都已锁定。直接执行 Go 测试时可设置 `GOTOOLCHAIN=go1.26.9`，避免使用本机其他版本。
+升级工具链时须一起更新 `go.mod` / `.node-version`、Docker 精确镜像版本、`package.json` / `package-lock.json` 中的 Node engine；`npm run test:build` 会检查这些文件与 CI 的版本一致性。CI 从 `go.mod` 安装 Go 并禁用自动切换，Docker 下载依赖前也会验证编译器。现有 Release 下载文件名不变。这是编译工具链统一，不代表 OS 和基础镜像所有内容都已锁定。直接执行 Go 测试时可设置 `GOTOOLCHAIN=go1.26.10`，避免使用本机其他版本。
 
-Go 1.26.9 是兼容性锁定，并非要求使用最新 Go。新版 `x/net` 在 Go 1.27 下会切换 HTTP/2 实现，缺少 sing-box v1.12.12 依赖的私有连接池接口，导致链接失败。在完成内核传输层迁移与验证前，请保留锁定版本，不要单独升级编译器或 sing-box/gVisor/uTLS 这组依赖。
+Go 1.26.10 包含 `crypto/x509` GO-2026-6809 证书信任修复，同时是兼容性锁定，并非要求使用最新 Go。新版 `x/net` 在 Go 1.27 下会切换 HTTP/2 实现，缺少 sing-box v1.12.12 依赖的私有连接池接口，导致链接失败。在完成内核传输层迁移与验证前，请保留锁定版本，不要单独升级编译器或 sing-box/gVisor/uTLS 这组依赖。
 
 单独运行开发检查（系统 Go 更高时也必须显式指定工具链）：
 
@@ -329,8 +329,8 @@ npm run test:build
 npm run check:webui
 npm run build:webui
 npm run test:e2e
-GOTOOLCHAIN=go1.26.9 go test ./...
-GOTOOLCHAIN=go1.26.9 go vet ./...
+GOTOOLCHAIN=go1.26.10 go test ./...
+GOTOOLCHAIN=go1.26.10 go vet ./...
 
 # webui/dist 会嵌入 EXE；CI 会校验它与 TypeScript/CSS 源码一致。
 # 验证生产/完整协议构建

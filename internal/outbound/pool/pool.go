@@ -439,6 +439,9 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 	use := &jobConnectionUse{}
 	ctx = context.WithValue(ctx, jobConnectionUseKey{}, use)
 	defer func() {
+		if use.failover != nil {
+			use.failover.Abort()
+		}
 		if use.done != nil {
 			use.done()
 		}
@@ -482,6 +485,13 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 				p.decActive(member)
 				return nil, errPoolClosed
 			}
+			if use.failover != nil {
+				if err := p.commitJobFailover(ctx, use); err != nil {
+					_ = conn.Close()
+					p.decActive(member)
+					return nil, fmt.Errorf("application failover commit rejected: %w", err)
+				}
+			}
 			connectDuration := time.Since(dialStarted)
 			event := p.newTrafficEvent(ctx, member, destination.String(), network, attempt, requestStarted)
 			event.ConnectMS = connectDuration.Milliseconds()
@@ -506,8 +516,11 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 			return nil, err // Changing remote nodes cannot fix a local shortage.
 		}
 		p.recordFailure(member, err)
+		if use.failover != nil {
+			return nil, fmt.Errorf("application alternate dial failed: %w", err)
+		}
 		if canFailover && attempt < maxAttempts {
-			if _, recoveryErr := p.failoverJob(failoverConfig, failoverLease, "dial_failed"); recoveryErr != nil {
+			if recoveryErr := p.prepareJobFailover(use, failoverConfig, failoverLease, "dial_failed"); recoveryErr != nil {
 				return nil, fmt.Errorf("proxy dial failed; application failover unavailable: %w", recoveryErr)
 			}
 		}

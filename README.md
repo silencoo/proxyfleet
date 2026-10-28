@@ -168,7 +168,8 @@ advanced mode; old configurations retain their existing access mode. Pinned bind
 (`session_ttl: "0"`), survive restarts, and pause on node failure without switching by default.
 Opt-in `failure_policy: failover` recovers eligible pinned application traffic on
 node removal/unavailability or TCP dial failure while preserving session IDs and
-lifetimes; strict account bindings are unchanged. See [Jobs](docs/jobs.md#opt-in-application-failover) for limits.
+lifetimes; a replacement is persisted only after its TCP connection succeeds.
+Failed alternates preserve the original pin and cooldown; strict account bindings are unchanged. See [Jobs](docs/jobs.md#opt-in-application-failover) for limits.
 `max_accounts_per_node` limits bindings per node within each application: 1 is
 exclusive, 0 is unlimited. Full nodes reject new accounts; paused and expired
 bindings still reserve capacity. The UI supports manual migration and same-node
@@ -583,7 +584,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Development
 
-Official builds pin **Go 1.26.9** in `go.mod` and **Node.js 22.23.3** in `.node-version`. Local builds, Docker and GitHub CI use these same patch versions. Switch Node with your version manager before running the commands below (for example, `nvm install "$(cat .node-version)"`). The build checks Node and selects the exact Go toolchain via `GOTOOLCHAIN`; Go downloads and verifies it on first use if necessary, without changing your globally installed Go. Offline builds must preinstall/cache that toolchain.
+Official builds pin **Go 1.26.10** in `go.mod` and **Node.js 22.23.3** in `.node-version`. Local builds, Docker and GitHub CI use these same patch versions. Switch Node with your version manager before running the commands below (for example, `nvm install "$(cat .node-version)"`). The build checks Node and selects the exact Go toolchain via `GOTOOLCHAIN`; Go downloads and verifies it on first use if necessary, without changing your globally installed Go. Offline builds must preinstall/cache that toolchain.
 
 ```bash
 npm ci
@@ -602,9 +603,9 @@ Use `--skip-webui` only when the frontend was already built, such as the release
 
 To upgrade the official toolchains, update `go.mod` / `.node-version`, the exact Docker image tags, and the Node engine in `package.json` / `package-lock.json` together. `npm run test:build` rejects drift between these files and CI. GitHub installs Go from `go.mod` with automatic version switching disabled; Docker also checks its compiler before downloading dependencies. Release download names remain unchanged. These pins standardize compilers, not the entire OS/base-image contents.
 
-Go 1.26.9 is a compatibility pin, not a request to install the newest Go release. With the updated `x/net`, Go 1.27 selects an HTTP/2 implementation that removes a private connection-pool hook used by sing-box v1.12.12, causing a link failure. Keep the pinned compiler until the core transport has been migrated and tested; do not independently bump the compiler or the sing-box/gVisor/uTLS group.
+Go 1.26.10 includes the `crypto/x509` GO-2026-6809 certificate-distrust fix and is a compatibility pin, not a request to install the newest Go release. With the updated `x/net`, Go 1.27 selects an HTTP/2 implementation that removes a private connection-pool hook used by sing-box v1.12.12, causing a link failure. Keep the pinned compiler until the core transport has been migrated and tested; do not independently bump the compiler or the sing-box/gVisor/uTLS group.
 
-Individual development checks (set `GOTOOLCHAIN=go1.26.9` when running Go commands directly, especially if your system Go is newer):
+Individual development checks (set `GOTOOLCHAIN=go1.26.10` when running Go commands directly, especially if your system Go is newer):
 
 ```bash
 npm ci
@@ -612,8 +613,8 @@ npm run test:build
 npm run check:webui
 npm run build:webui
 npm run test:e2e
-GOTOOLCHAIN=go1.26.9 go test ./...
-GOTOOLCHAIN=go1.26.9 go vet ./...
+GOTOOLCHAIN=go1.26.10 go test ./...
+GOTOOLCHAIN=go1.26.10 go vet ./...
 
 # webui/dist is embedded into the executable; CI verifies it matches the TypeScript/CSS source.
 # Verify the production/full-protocol build
